@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EntregasApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260216041335_AddClientType")]
-    partial class AddClientType
+    [Migration("20260217055208_InicialPostgres")]
+    partial class InicialPostgres
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -81,6 +81,9 @@ namespace EntregasApi.Migrations
                     b.Property<string>("Phone")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
+
+                    b.Property<int>("Tag")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Type")
                         .IsRequired()
@@ -206,6 +209,39 @@ namespace EntregasApi.Migrations
                     b.ToTable("DeliveryRoutes");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.Investment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("SupplierId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date");
+
+                    b.HasIndex("SupplierId");
+
+                    b.ToTable("Investments");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.Order", b =>
                 {
                     b.Property<int>("Id")
@@ -230,6 +266,15 @@ namespace EntregasApi.Migrations
 
                     b.Property<DateTime>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("OrderType")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("PostponedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PostponedNote")
+                        .HasColumnType("text");
 
                     b.Property<decimal>("ShippingCost")
                         .HasColumnType("decimal(10,2)");
@@ -285,6 +330,41 @@ namespace EntregasApi.Migrations
                     b.HasIndex("OrderId");
 
                     b.ToTable("OrderItems");
+                });
+
+            modelBuilder.Entity("EntregasApi.Models.Supplier", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ContactName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name");
+
+                    b.ToTable("Suppliers");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.User", b =>
@@ -350,6 +430,17 @@ namespace EntregasApi.Migrations
                     b.Navigation("Delivery");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.Investment", b =>
+                {
+                    b.HasOne("EntregasApi.Models.Supplier", "Supplier")
+                        .WithMany("Investments")
+                        .HasForeignKey("SupplierId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Supplier");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.Order", b =>
                 {
                     b.HasOne("EntregasApi.Models.Client", "Client")
@@ -400,6 +491,11 @@ namespace EntregasApi.Migrations
                     b.Navigation("Delivery");
 
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("EntregasApi.Models.Supplier", b =>
+                {
+                    b.Navigation("Investments");
                 });
 #pragma warning restore 612, 618
         }

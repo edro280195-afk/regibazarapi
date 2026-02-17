@@ -14,8 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
 // ── Database ──
-var connectionString = builder.Configuration.GetConnectionString("Default")
-    ?? "Host=localhost;Database=entregas;Username=postgres;Password=postgres";
+var connectionString = builder.Configuration.GetConnectionString("Default");
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
