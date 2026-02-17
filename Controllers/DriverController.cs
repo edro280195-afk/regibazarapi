@@ -384,4 +384,59 @@ public class DriverController : ControllerBase
             }
         }
     }
+
+    /// <summary>POST /api/driver/{token}/expenses - Registrar gasto del repartidor</summary>
+    [HttpPost("expenses")]
+    public async Task<IActionResult> AddExpense(
+        string driverToken,
+        [FromForm] decimal amount,
+        [FromForm] string expenseType,
+        [FromForm] string? notes,
+        IFormFile? photo)
+    {
+        if (amount <= 0)
+            return BadRequest(new { message = "El monto debe ser mayor a 0." });
+
+        var route = await _db.DeliveryRoutes
+            .FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+
+        if (route == null) return NotFound(new { message = "Ruta no encontrada." });
+
+        var expense = new DriverExpense
+        {
+            DeliveryRouteId = route.Id,
+            Amount = amount,
+            ExpenseType = expenseType,
+            Notes = notes?.Trim(),
+            Date = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        if (photo != null && photo.Length > 0)
+        {
+            var uploadDir = Path.Combine(_env.ContentRootPath, "uploads", "expenses");
+            Directory.CreateDirectory(uploadDir);
+
+            var fileName = $"r{route.Id}_{Guid.NewGuid():N}{Path.GetExtension(photo.FileName)}";
+            var filePath = Path.Combine(uploadDir, fileName);
+
+            using var stream = new FileStream(filePath, FileMode.Create);
+            await photo.CopyToAsync(stream);
+
+            expense.EvidencePath = $"expenses/{fileName}";
+        }
+
+        _db.DriverExpenses.Add(expense);
+        await _db.SaveChangesAsync();
+
+        return Created("", new
+        {
+            expense.Id,
+            expense.Amount,
+            expense.ExpenseType,
+            expense.Notes,
+            expense.Date,
+            EvidenceUrl = !string.IsNullOrEmpty(expense.EvidencePath) ? $"/uploads/{expense.EvidencePath}" : null
+        });
+    }
 }
