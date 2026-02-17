@@ -62,16 +62,14 @@ builder.Services.AddScoped<ISuppliersService, SuppliersService>();
 builder.Services.AddSignalR();
 
 // ── CORS ──
-var frontendUrl = builder.Configuration["App:FrontendUrl"] ?? "http://localhost:4200";
-
+// 1. Definir la política
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowFrontend", policy =>
+    options.AddPolicy("NuevaPolitica", app =>
     {
-        policy.WithOrigins(frontendUrl)
-            .AllowAnyHeader()
-            .AllowAnyMethod()
-            .AllowCredentials(); // Requerido para SignalR
+        app.AllowAnyOrigin()
+           .AllowAnyHeader()
+           .AllowAnyMethod();
     });
 });
 
@@ -125,7 +123,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors("AllowFrontend");
+app.UseCors("NuevaPolitica");
 
 // Servir fotos de evidencia
 var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
