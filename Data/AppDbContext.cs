@@ -19,6 +19,8 @@ public class AppDbContext : DbContext
     public DbSet<Supplier> Suppliers => Set<Supplier>();
     public DbSet<Investment> Investments => Set<Investment>();
 
+    public DbSet<DriverExpense> DriverExpenses => Set<DriverExpense>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -68,6 +70,17 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(i => i.SupplierId);
             entity.HasIndex(i => i.Date);
+        });
+
+        modelBuilder.Entity<DriverExpense>(entity =>
+        {
+            entity.HasIndex(e => e.DeliveryRouteId);
+            entity.HasIndex(e => e.Date);
+
+            entity.HasOne(e => e.DeliveryRoute)
+                  .WithMany()
+                  .HasForeignKey(e => e.DeliveryRouteId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

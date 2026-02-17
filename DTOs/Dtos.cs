@@ -226,3 +226,72 @@ public record CreateInvestmentRequest
     [MaxLength(500)]
     public string? Notes { get; init; }
 }
+
+public record DriverExpenseDto(
+    int Id,
+    int DriverRouteId,
+    string? DriverName,
+    decimal Amount,
+    string ExpenseType,
+    DateTime Date,
+    string? Notes,
+    string? EvidenceUrl,
+    DateTime CreatedAt
+);
+
+public record CreateDriverExpenseRequest
+{
+    [Required]
+    public decimal Amount { get; init; }
+
+    [Required, MaxLength(50)]
+    public string ExpenseType { get; init; } = "Gasolina";
+
+    [MaxLength(500)]
+    public string? Notes { get; init; }
+}
+
+public record FinancialReportDto
+{
+    public string Period { get; init; } = string.Empty;
+    public DateTime StartDate { get; init; }
+    public DateTime EndDate { get; init; }
+    public decimal TotalIncome { get; init; }
+    public decimal TotalInvestment { get; init; }
+    public decimal TotalExpenses { get; init; }
+    public decimal NetProfit { get; init; }
+    public FinancialDetailsDto Details { get; init; } = new();
+}
+
+public record FinancialDetailsDto
+{
+    public List<InvestmentLineDto> Investments { get; init; } = new();
+    public List<IncomeLineDto> Incomes { get; init; } = new();
+    public List<ExpenseLineDto> Expenses { get; init; } = new();
+}
+
+public record InvestmentLineDto(
+    int Id,
+    string SupplierName,
+    decimal Amount,
+    DateTime Date,
+    string? Notes
+);
+
+public record IncomeLineDto(
+    int Id,
+    string ClientName,
+    decimal Total,
+    string OrderType,
+    DateTime CreatedAt
+);
+
+public record ExpenseLineDto(
+    int Id,
+    string? DriverName,
+    decimal Amount,
+    string ExpenseType,
+    DateTime Date,
+    string? Notes,
+    string? EvidenceUrl
+);
