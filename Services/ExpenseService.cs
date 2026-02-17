@@ -76,13 +76,15 @@ namespace EntregasApi.Services
 
         public async Task<FinancialReportDto> GetFinancialReportAsync(DateTime startDate, DateTime endDate)
         {
-            var endDateExclusive = endDate.Date.AddDays(1);
+            startDate = DateTime.SpecifyKind(startDate.Date, DateTimeKind.Utc);
+            endDate = DateTime.SpecifyKind(endDate.Date, DateTimeKind.Utc);
+            var endDateExclusive = endDate.AddDays(1);
 
             // Ingresos: Ordenes entregadas en el rango
             var deliveredOrders = await _db.Orders
                 .Include(o => o.Client)
                 .Where(o => o.Status == Models.OrderStatus.Delivered
-                            && o.Delivery.DeliveredAt >= startDate
+                            && o.CreatedAt >= startDate
                             && o.CreatedAt < endDateExclusive)
                 .ToListAsync();
 
@@ -197,13 +199,13 @@ namespace EntregasApi.Services
 
             if (firstHalf)
             {
-                start = new DateTime(year, month, 1);
-                end = new DateTime(year, month, 16); // exclusive
+                start = new DateTime(year, month, 1, 0, 0, 0, DateTimeKind.Utc);
+                end = new DateTime(year, month, 16, 0, 0, 0, DateTimeKind.Utc);
             }
             else
             {
-                start = new DateTime(year, month, 16);
-                end = new DateTime(year, month, DateTime.DaysInMonth(year, month)).AddDays(1); // exclusive
+                start = new DateTime(year, month, 16, 0, 0, 0, DateTimeKind.Utc);
+                end = new DateTime(year, month, DateTime.DaysInMonth(year, month), 0, 0, 0, DateTimeKind.Utc).AddDays(1);
             }
 
             return (start, end);
