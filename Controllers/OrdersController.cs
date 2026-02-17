@@ -27,7 +27,7 @@ public class OrdersController : ControllerBase
         _config = config;
     }
 
-    private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
+    private string FrontendUrl => _config["App:FrontendUrl"] ?? "https://regibazar.com";
 
     // ... [GET GetAll y POST UploadExcel SE QUEDAN IGUAL] ...
     [HttpGet]
