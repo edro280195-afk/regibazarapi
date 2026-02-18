@@ -295,6 +295,107 @@ public class OrdersController : ControllerBase
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
 
+    // -----------------------------------------------------------------------
+    // NUEVOS ENDPOINTS SOLICITADOS
+    // -----------------------------------------------------------------------
+
+    /// <summary>PUT /api/orders/{id} - Actualiza detalles, cliente y estado</summary>
+    [HttpPut("{id}")]
+    public async Task<ActionResult<OrderSummaryDto>> UpdateOrderDetails(int id, [FromBody] UpdateOrderDetailsRequest req)
+    {
+        // 1. Buscamos la orden incluyendo al Cliente (porque vamos a editar sus datos)
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Orden no encontrada");
+
+        // 2. Actualizamos datos del Cliente
+        // Nota: Esto actualiza al cliente en DB, afectando sus futuras compras (generalmente deseado)
+        if (order.Client != null)
+        {
+            order.Client.Name = req.ClientName;
+            order.Client.Address = req.ClientAddress;
+            order.Client.Phone = req.ClientPhone;
+        }
+
+        // 3. Obtenemos configuración para costos de envío
+        var settings = await _db.AppSettings.FirstAsync();
+
+        // 4. Lógica de Tipo de Orden (Delivery vs PickUp) y Costo
+        if (Enum.TryParse<OrderType>(req.OrderType, true, out var newType))
+        {
+            // Solo si cambió el tipo, ajustamos el costo
+            if (order.OrderType != newType)
+            {
+                order.OrderType = newType;
+                if (newType == OrderType.PickUp)
+                {
+                    order.ShippingCost = 0; // PickUp es gratis
+                }
+                else
+                {
+                    order.ShippingCost = settings.DefaultShippingCost; // Delivery cobra
+                }
+            }
+        }
+
+        // 5. Actualizar Estado
+        if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
+        {
+            order.Status = newStatus;
+        }
+
+        // 6. Actualizar Datos de Posponer
+        order.PostponedAt = req.PostponedAt;
+        order.PostponedNote = req.PostponedNote;
+
+        // 7. Recalcular Total Final (Subtotal + Nuevo Costo Envío)
+        // El subtotal no cambia aquí, pero el total sí podría cambiar por el envío
+        order.Total = order.Subtotal + order.ShippingCost;
+
+        await _db.SaveChangesAsync();
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
+    /// <summary>PUT /api/orders/{orderId}/items/{itemId} - Edita un producto específico</summary>
+    [HttpPut("{orderId}/items/{itemId}")]
+    public async Task<ActionResult<OrderSummaryDto>> UpdateOrderItem(int orderId, int itemId, [FromBody] UpdateOrderItemRequest req)
+    {
+        // 1. Buscamos la orden y sus items
+        var order = await _db.Orders
+            .Include(o => o.Items)
+            .Include(o => o.Client)
+            .FirstOrDefaultAsync(o => o.Id == orderId);
+
+        if (order == null) return NotFound("Orden no encontrada");
+
+        // 2. Buscamos el item específico dentro de esa orden
+        var item = order.Items.FirstOrDefault(i => i.Id == itemId);
+        if (item == null) return NotFound("El producto no existe en esta orden");
+
+        // 3. Actualizamos los valores del producto
+        item.ProductName = req.ProductName;
+        item.Quantity = req.Quantity;
+        item.UnitPrice = req.UnitPrice;
+
+        // 4. Recalculamos el total de ESA línea (Cantidad * Precio)
+        item.LineTotal = item.Quantity * item.UnitPrice;
+
+        // 5. ¡IMPORTANTE! Recalculamos los totales de la Orden completa
+        // Sumamos todos los LineTotal de los items (incluyendo el que acabamos de editar)
+        order.Subtotal = order.Items.Sum(i => i.LineTotal);
+
+        // Sumamos el envío (que no cambió)
+        order.Total = order.Subtotal + order.ShippingCost;
+
+        await _db.SaveChangesAsync();
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
     [HttpDelete("wipe")]
     // [Authorize(Roles = "Admin")] // <--- Recomendado si tienes roles
     public async Task<IActionResult> WipeAllOrders()

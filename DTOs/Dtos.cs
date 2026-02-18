@@ -295,3 +295,21 @@ public record ExpenseLineDto(
     string? Notes,
     string? EvidenceUrl
 );
+
+// DTO para actualizar la orden completa
+public record UpdateOrderDetailsRequest(
+    string Status,
+    string OrderType,
+    DateTime? PostponedAt,
+    string? PostponedNote,
+    string ClientName,
+    string ClientAddress,
+    string ClientPhone
+);
+
+// DTO para actualizar un producto individual
+public record UpdateOrderItemRequest(
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice
+);
