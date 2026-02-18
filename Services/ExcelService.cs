@@ -209,6 +209,7 @@ public class ExcelService : IExcelService
             order.AccessToken,              // 13. AccessToken
             $"{frontendBaseUrl}/pedido/{order.AccessToken}", // 14. Link
             order.ExpiresAt,                // 15. ExpiresAt
+            order.CreatedAt,
             order.Items.Select(i => new OrderItemDto(
                 i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal
             )).ToList()                     // 16. Items

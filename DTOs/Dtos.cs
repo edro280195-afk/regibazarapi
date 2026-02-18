@@ -31,6 +31,7 @@ public record OrderSummaryDto(
     string AccessToken,    // 13. string
     string ClientLink,     // 14. string
     DateTime ExpiresAt,    // 15. DateTime
+    DateTime CreatedAt,  // Fecha de creación
     List<OrderItemDto> Items // 16. List
 );
 
