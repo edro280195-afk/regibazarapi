@@ -1,13 +1,12 @@
 using EntregasApi.Data;
 using EntregasApi.DTOs;
-using EntregasApi.Models; // Asegúrate de tener esto para el Enum
+using EntregasApi.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace EntregasApi.Controllers;
 
-// TUS DTOs SE QUEDAN IGUAL
 public record ClientDto(
     int Id,
     string Name,
@@ -37,9 +36,6 @@ public class ClientsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<List<ClientDto>>> GetAll()
     {
-        // PASO 1: Consulta a Base de Datos
-        // Usamos un tipo anónimo (Select new { ... }) para que EF Core
-        // pueda traducir el cálculo de la suma y el ordenamiento a SQL puro.
         var dbData = await _db.Clients
             .Select(c => new
             {
@@ -47,25 +43,21 @@ public class ClientsController : ControllerBase
                 c.Name,
                 c.Phone,
                 c.Address,
-                c.Tag, // Traemos el Enum tal cual (sin ToString todavía)
+                c.Tag,
                 OrdersCount = c.Orders.Count(),
-                // Calculamos el total gastado directamente en la BD
                 TotalSpent = c.Orders
                     .Where(o => o.Status != Models.OrderStatus.Canceled)
                     .Sum(o => o.Total)
             })
-            .OrderByDescending(x => x.TotalSpent) // Ahora sí, SQL entiende por qué columna ordenar
+            .OrderByDescending(x => x.TotalSpent)
             .ToListAsync();
 
-        // PASO 2: Transformación en Memoria
-        // Ahora convertimos los resultados crudos a tu DTO bonito.
-        // Aquí es seguro usar .ToString() y otras lógicas de C#.
         var clients = dbData.Select(c => new ClientDto(
             c.Id,
             c.Name,
             c.Phone,
             c.Address,
-            c.Tag.ToString(), // Convertimos el Enum a String aquí
+            c.Tag.ToString(),
             c.OrdersCount,
             c.TotalSpent
         )).ToList();
@@ -73,7 +65,6 @@ public class ClientsController : ControllerBase
         return Ok(clients);
     }
 
-    // EL PUT (UPDATE) SE QUEDA IGUAL, YA ESTABA BIEN
     [HttpPut("{id}")]
     public async Task<IActionResult> Update(int id, [FromBody] UpdateClientRequest req)
     {
@@ -93,18 +84,33 @@ public class ClientsController : ControllerBase
         return Ok(client);
     }
 
-    /// <summary>DELETE /api/clients/wipe - BORRADO TOTAL (Clientas + Sus Pedidos)</summary>
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var client = await _db.Clients.FindAsync(id);
+
+        if (client == null) return NotFound();
+
+        _db.Clients.Remove(client);
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            return BadRequest("No se puede eliminar el cliente porque tiene pedidos asociados. Borra los pedidos primero.");
+        }
+        return NoContent();
+    }
+
     [HttpDelete("wipe")]
-    // [Authorize(Roles = "Admin")] // Recomendado
     public async Task<IActionResult> WipeAllClients()
     {
-        // PASO 1: Limpieza de dependencias (para evitar errores de llave foránea)
-        // Borramos primero lo más profundo: Items -> Entregas -> Órdenes
         await _db.OrderItems.ExecuteDeleteAsync();
         await _db.Deliveries.ExecuteDeleteAsync();
         await _db.Orders.ExecuteDeleteAsync();
 
-        // PASO 2: Ahora sí, borramos todas las clientas
         await _db.Clients.ExecuteDeleteAsync();
 
         return NoContent();

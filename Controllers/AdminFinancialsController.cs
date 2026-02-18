@@ -35,28 +35,20 @@ namespace EntregasApi.Controllers
             }
         }
 
+        /// <summary>
+        /// GET api/admin/financials?startDate=2025-01-01&endDate=2025-01-15
+        /// Reporte financiero consolidado: ingresos, inversiones, gastos, utilidad neta
+        /// </summary>
         [HttpGet("financials")]
         public async Task<ActionResult<FinancialReportDto>> GetFinancialReport(
-     [FromQuery] DateTime startDate,
-     [FromQuery] DateTime endDate)
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate)
         {
             if (startDate > endDate)
                 return BadRequest(new { message = "startDate no puede ser mayor que endDate." });
 
-            try
-            {
-                var report = await _service.GetFinancialReportAsync(startDate, endDate);
-                return Ok(report);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = ex.Message,
-                    inner = ex.InnerException?.Message,
-                    stack = ex.StackTrace
-                });
-            }
+            var report = await _service.GetFinancialReportAsync(startDate, endDate);
+            return Ok(report);
         }
     }
 }
