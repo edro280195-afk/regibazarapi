@@ -115,7 +115,9 @@ public record ClientOrderView(
     bool IsCurrentDelivery = false,
     int? DeliveriesAhead = null,
     double? ClientLatitude = null,
-    double? ClientLongitude = null
+    double? ClientLongitude = null,
+
+    DateTime? CreatedAt = null
 );
 
 public record DriverLocationDto(
