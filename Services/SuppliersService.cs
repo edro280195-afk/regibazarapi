@@ -135,7 +135,7 @@ namespace EntregasApi.Services
             {
                 SupplierId = supplierId,
                 Amount = request.Amount,
-                Date = DateTime.SpecifyKind(request.Date, DateTimeKind.Utc),
+                Date = DateTime.SpecifyKind(request.Date.Date.AddHours(12), DateTimeKind.Utc),
                 Notes = request.Notes?.Trim(),
                 CreatedAt = DateTime.UtcNow,
 
