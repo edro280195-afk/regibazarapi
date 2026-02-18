@@ -15,7 +15,7 @@ namespace EntregasApi.Services
         }
 
         // ═══════════════════════════════════════════
-        //  SUPPLIERS
+        //  SUPPLIERS (PROVEEDORES)
         // ═══════════════════════════════════════════
 
         public async Task<List<SupplierDto>> GetAllSuppliersAsync()
@@ -72,7 +72,7 @@ namespace EntregasApi.Services
 
             if (supplier == null) return false;
 
-            // Eliminar inversiones asociadas (cascade manual por si no está configurado en DB)
+            // Eliminar inversiones asociadas
             _db.Investments.RemoveRange(supplier.Investments);
             _db.Suppliers.Remove(supplier);
             await _db.SaveChangesAsync();
@@ -81,33 +81,67 @@ namespace EntregasApi.Services
         }
 
         // ═══════════════════════════════════════════
-        //  INVESTMENTS
+        //  INVESTMENTS (GASTOS / INVERSIONES)
         // ═══════════════════════════════════════════
 
         public async Task<List<InvestmentDto>> GetInvestmentsAsync(int supplierId)
         {
-            return await _db.Investments
+            // Nota: Aquí usamos una proyección manual antes del MapToInvDto si fuera necesario,
+            // pero como MapToInvDto es estático y simple, EF Core suele traducirlo bien en memoria.
+            var investments = await _db.Investments
                 .Where(i => i.SupplierId == supplierId)
                 .OrderByDescending(i => i.Date)
                 .ThenByDescending(i => i.CreatedAt)
-                .Select(i => MapToInvDto(i))
                 .ToListAsync();
+
+            return investments.Select(i => MapToInvDto(i)).ToList();
         }
 
         public async Task<InvestmentDto> CreateInvestmentAsync(int supplierId, CreateInvestmentRequest request)
         {
-            // Validar que el proveedor exista
+            // 1. Validar que el proveedor exista
             var supplierExists = await _db.Suppliers.AnyAsync(s => s.Id == supplierId);
             if (!supplierExists)
                 throw new InvalidOperationException($"Proveedor con Id {supplierId} no encontrado.");
 
+            // 2. Lógica de Multi-Moneda 💵
+            decimal finalRate = 1.0m;
+            string finalCurrency = "MXN";
+
+            // Normalizamos la entrada (quitamos espacios y pasamos a mayúsculas)
+            if (!string.IsNullOrWhiteSpace(request.Currency))
+            {
+                finalCurrency = request.Currency.Trim().ToUpper();
+            }
+
+            if (finalCurrency == "USD")
+            {
+                // Si es Dólares, el tipo de cambio es OBLIGATORIO
+                if (request.ExchangeRate == null || request.ExchangeRate <= 0)
+                {
+                    throw new InvalidOperationException("Para registros en USD, el Tipo de Cambio es obligatorio y debe ser mayor a 0.");
+                }
+                finalRate = request.ExchangeRate.Value;
+            }
+            else
+            {
+                // Si es cualquier otra cosa (o MXN), asumimos Pesos y TC = 1
+                finalCurrency = "MXN";
+                finalRate = 1.0m;
+            }
+
+            // 3. Crear entidad
             var investment = new Investment
             {
                 SupplierId = supplierId,
                 Amount = request.Amount,
                 Date = request.Date,
                 Notes = request.Notes?.Trim(),
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+
+                // Nuevos campos guardados
+                Currency = finalCurrency,
+                ExchangeRate = finalRate
             };
 
             _db.Investments.Add(investment);
@@ -130,7 +164,7 @@ namespace EntregasApi.Services
         }
 
         // ═══════════════════════════════════════════
-        //  MAPPERS
+        //  MAPPERS (TRANSFORMADORES)
         // ═══════════════════════════════════════════
 
         private static SupplierDto MapToDto(Supplier s) => new(
@@ -142,13 +176,18 @@ namespace EntregasApi.Services
             s.CreatedAt
         );
 
+        // Aquí agregamos los nuevos campos al DTO de salida
         private static InvestmentDto MapToInvDto(Investment i) => new(
-            i.Id,
-            i.SupplierId,
-            i.Amount,
-            i.Date,
-            i.Notes,
-            i.CreatedAt
+            Id: i.Id,
+            SupplierId: i.SupplierId,
+            Amount: i.Amount,
+            Date: i.Date,
+            Notes: i.Notes,
+            CreatedAt: i.CreatedAt,
+            // Nuevos datos:
+            Currency: i.Currency ?? "MXN", // Protección contra nulos viejos
+            ExchangeRate: i.ExchangeRate == 0 ? 1 : i.ExchangeRate, // Protección contra ceros viejos
+            TotalMXN: i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate) // Cálculo automático
         );
     }
 }

@@ -22,5 +22,8 @@ namespace EntregasApi.Models
 
         // Navigation
         public List<Investment> Investments { get; set; } = new();
+
+        public string Currency { get; set; } = "MXN"; // Guardamos "MXN" o "USD"
+        public decimal ExchangeRate { get; set; } = 1.0m;
     }
 }

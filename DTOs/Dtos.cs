@@ -212,7 +212,11 @@ public record InvestmentDto(
     decimal Amount,
     DateTime Date,
     string? Notes,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+
+    string Currency,
+    decimal ExchangeRate,
+     decimal TotalMXN
 );
 
 public record CreateInvestmentRequest
@@ -225,6 +229,9 @@ public record CreateInvestmentRequest
 
     [MaxLength(500)]
     public string? Notes { get; init; }
+
+    public string Currency { get; set; } = "MXN";
+    public decimal? ExchangeRate { get; set; }
 }
 
 public record DriverExpenseDto(

@@ -22,5 +22,15 @@ namespace EntregasApi.Models
         // Navigation
         [ForeignKey(nameof(SupplierId))]
         public Supplier Supplier { get; set; } = null!;
+
+        // ---------------------------------------------------------
+        [MaxLength(10)]
+        public string Currency { get; set; } = "MXN"; // Por defecto Pesos
+
+        [Column(TypeName = "decimal(18,4)")] // 4 decimales para mayor precisión en el tipo de cambio
+        public decimal ExchangeRate { get; set; } = 1.0m; // Por defecto 1
+        // ---------------------------------------------------------
+
+
     }
 }
