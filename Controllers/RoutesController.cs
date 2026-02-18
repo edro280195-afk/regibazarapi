@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using EntregasApi.Data;
 using EntregasApi.DTOs;
 using EntregasApi.Models;
+using EntregasApi.Hubs; // <--- Importante
 using EntregasApi.Services;
 
 namespace EntregasApi.Controllers;
@@ -16,12 +18,14 @@ public class RoutesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ITokenService _tokenService;
     private readonly IConfiguration _config;
+    private readonly IHubContext<LogisticsHub> _hub; // <--- Usamos LogisticsHub
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<LogisticsHub> hub)
     {
         _db = db;
         _tokenService = tokenService;
         _config = config;
+        _hub = hub;
     }
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
@@ -37,7 +41,7 @@ public class RoutesController : ControllerBase
             .Include(o => o.Client)
             .Where(o => req.OrderIds.Contains(o.Id)
                         && o.Status == Models.OrderStatus.Pending
-                        && o.OrderType == OrderType.Delivery) // <--- ¡AQUÍ ESTÁ EL FILTRO MÁGICO! 🚫 PickUp
+                        && o.OrderType == OrderType.Delivery)
             .ToListAsync();
 
         if (!orders.Any())
@@ -46,7 +50,11 @@ public class RoutesController : ControllerBase
         var route = new DeliveryRoute
         {
             DriverToken = _tokenService.GenerateAccessToken(),
-            Status = RouteStatus.Pending
+            Status = RouteStatus.Pending,
+            CreatedAt = DateTime.UtcNow,
+            // Asignamos un nombre default si no viene uno (puedes mejorarlo recibiéndolo del req)
+            Name = $"Ruta {DateTime.Now:dd/MM HH:mm}",
+            ScheduledDate = DateTime.Today
         };
 
         _db.DeliveryRoutes.Add(route);
@@ -78,6 +86,7 @@ public class RoutesController : ControllerBase
     {
         var routeIds = await _db.DeliveryRoutes
             .OrderByDescending(r => r.CreatedAt)
+            .Take(50) // Limitamos a 50 para optimizar
             .Select(r => r.Id)
             .ToListAsync();
 
@@ -96,6 +105,48 @@ public class RoutesController : ControllerBase
         if (route == null) return NotFound();
         return Ok(await MapRouteDto(id));
     }
+
+    // ═══════════════════════════════════════════
+    //  CHAT ADMIN (NUEVO)
+    // ═══════════════════════════════════════════
+
+    [HttpGet("{id}/chat")]
+    public async Task<ActionResult<List<ChatMessage>>> GetChatHistory(int id)
+    {
+        var messages = await _db.ChatMessages
+            .Where(m => m.DeliveryRouteId == id)
+            .OrderBy(m => m.Timestamp)
+            .ToListAsync();
+        return Ok(messages);
+    }
+
+    [HttpPost("{id}/chat")]
+    public async Task<ActionResult<ChatMessage>> SendAdminMessage(int id, [FromBody] SendMessageRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FindAsync(id);
+        if (route == null) return NotFound();
+
+        var msg = new ChatMessage
+        {
+            DeliveryRouteId = id,
+            Sender = "Admin", // Siempre es Admin en este endpoint
+            Text = req.Text,
+            Timestamp = DateTime.UtcNow
+        };
+
+        _db.ChatMessages.Add(msg);
+        await _db.SaveChangesAsync();
+
+        // Notificar al Chofer (y a quien esté escuchando)
+        await _hub.Clients.Group($"Route_{route.DriverToken}") // Usamos el token como ID de sala o el ID de ruta
+            .SendAsync("ReceiveChatMessage", msg);
+
+        return Ok(msg);
+    }
+
+    // ═══════════════════════════════════════════
+    //  HELPERS & DELETE
+    // ═══════════════════════════════════════════
 
     private async Task<RouteDto> MapRouteDto(int routeId)
     {
@@ -134,13 +185,11 @@ public class RoutesController : ControllerBase
         );
     }
 
-    /// <summary>DELETE /api/routes/{id} - Cancelar ruta y liberar pedidos</summary>
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id)
     {
         var route = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries)
-            .ThenInclude(d => d.Order)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order)
             .FirstOrDefaultAsync(r => r.Id == id);
 
         if (route == null) return NotFound();
@@ -153,11 +202,11 @@ public class RoutesController : ControllerBase
             }
         }
 
-        // 3. Borrar la ruta
         _db.DeliveryRoutes.Remove(route);
-
         await _db.SaveChangesAsync();
-
         return NoContent();
     }
 }
+
+// DTO auxiliar para el chat
+public record SendMessageRequest(string Text);

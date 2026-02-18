@@ -29,7 +29,10 @@ public class OrdersController : ControllerBase
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "https://regibazar.com";
 
-    // ... [GET GetAll y POST UploadExcel SE QUEDAN IGUAL] ...
+    // ---------------------------------------------------------
+    // GET & UPLOAD (SIN CAMBIOS)
+    // ---------------------------------------------------------
+
     [HttpGet]
     public async Task<ActionResult<List<OrderSummaryDto>>> GetAll()
     {
@@ -55,85 +58,122 @@ public class OrdersController : ControllerBase
         return Ok(result);
     }
 
-    /// <summary>POST /api/orders/manual - Crea orden manualmente (con fusión)</summary>
+    // ---------------------------------------------------------
+    // CREATE MANUAL (CON LÓGICA DE FUSIÓN CORREGIDA) 🧠✨
+    // ---------------------------------------------------------
+
+    /// <summary>POST /api/orders/manual - Crea o FUSIONA pedidos pendientes</summary>
     [HttpPost("manual")]
     public async Task<ActionResult<OrderSummaryDto>> CreateManual(ManualOrderRequest req)
     {
         var settings = await _db.AppSettings.FirstAsync();
 
-        var client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == req.ClientName.ToLower());
+        // 1. Buscamos o Creamos al Cliente
+        var client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == req.ClientName.Trim().ToLower());
 
         if (client == null)
         {
-            client = new Client { Name = req.ClientName, Phone = req.ClientPhone, Address = req.ClientAddress, Type = req.ClientType ?? "Nueva" };
+            client = new Client
+            {
+                Name = req.ClientName.Trim(),
+                Phone = req.ClientPhone,
+                Address = req.ClientAddress,
+                Type = req.ClientType ?? "Nueva",
+                CreatedAt = DateTime.UtcNow
+            };
             _db.Clients.Add(client);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(); // Guardamos para tener el ID
         }
         else
         {
+            // Actualizamos datos de contacto si vienen nuevos
             if (!string.IsNullOrEmpty(req.ClientPhone)) client.Phone = req.ClientPhone;
             if (!string.IsNullOrEmpty(req.ClientAddress)) client.Address = req.ClientAddress;
             if (!string.IsNullOrEmpty(req.ClientType)) client.Type = req.ClientType;
         }
 
-        var order = await _db.Orders
-            .Include(o => o.Items)
-            .FirstOrDefaultAsync(o => o.ClientId == client.Id && o.Status == Models.OrderStatus.Pending);
+        // 2. BUSCAMOS SI YA TIENE UN PEDIDO ABIERTO (PENDIENTE) 🕵️‍♂️
+        var existingOrder = await _db.Orders
+            .Include(o => o.Items) // Importante traer los items para no borrarlos
+            .FirstOrDefaultAsync(o => o.ClientId == client.Id
+                                   && o.Status == Models.OrderStatus.Pending);
 
-        // Determinamos el tipo de orden desde el request (string a Enum)
-        Enum.TryParse<OrderType>(req.OrderType, true, out var orderType);
+        // Parseamos el tipo de orden que viene del request
+        Enum.TryParse<OrderType>(req.OrderType, true, out var reqOrderType);
 
-        if (order == null)
+        if (existingOrder != null)
         {
-            var accessToken = _tokenService.GenerateAccessToken();
-            order = new Order
+            // --- FUSIÓN (MERGE) ---
+            // Ya existe un pedido abierto, le agregamos lo nuevo.
+
+            // Actualizamos al tipo más reciente
+            existingOrder.OrderType = reqOrderType;
+            existingOrder.ShippingCost = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost;
+
+            // Agregamos los items nuevos a la lista existente
+            foreach (var item in req.Items)
             {
-                ClientId = client.Id,
-                AccessToken = accessToken,
-                // Regla: PickUp = Envío Gratis ($0)
-                ShippingCost = (orderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
-                ExpiresAt = DateTime.UtcNow.AddHours(settings.LinkExpirationHours),
-                Status = Models.OrderStatus.Pending,
-                OrderType = orderType, // Guardamos el tipo
-                Items = new List<OrderItem>()
-            };
-            _db.Orders.Add(order);
+                var lineTotal = item.UnitPrice * item.Quantity;
+                existingOrder.Items.Add(new OrderItem
+                {
+                    ProductName = item.ProductName,
+                    Quantity = item.Quantity,
+                    UnitPrice = item.UnitPrice,
+                    LineTotal = lineTotal
+                });
+            }
+
+            // Recalculamos totales sumando lo viejo + lo nuevo
+            existingOrder.Subtotal = existingOrder.Items.Sum(i => i.LineTotal);
+            existingOrder.Total = existingOrder.Subtotal + existingOrder.ShippingCost;
+
+            // Actualizamos fecha para que suba en la lista (opcional, para que se vea reciente)
+            existingOrder.CreatedAt = DateTime.UtcNow;
         }
         else
         {
-            // Si ya existe y es manual, podemos actualizar el tipo si la clienta cambió de opinión
-            // Ejemplo: Era Delivery pero ahora dice "paso por el", cambiamos a PickUp y quitamos costo
-            if (orderType == OrderType.PickUp)
+            // --- CREACIÓN NUEVA ---
+            // No tiene pendientes, creamos uno nuevo.
+
+            var accessToken = _tokenService.GenerateAccessToken();
+            var newOrder = new Order
             {
-                order.OrderType = OrderType.PickUp;
-                order.ShippingCost = 0;
+                ClientId = client.Id,
+                AccessToken = accessToken,
+                ShippingCost = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
+                ExpiresAt = DateTime.UtcNow.AddHours(settings.LinkExpirationHours),
+                Status = Models.OrderStatus.Pending,
+                OrderType = reqOrderType,
+                Items = new List<OrderItem>(),
+                CreatedAt = DateTime.UtcNow
+            };
+
+            foreach (var item in req.Items)
+            {
+                var lineTotal = item.UnitPrice * item.Quantity;
+                newOrder.Items.Add(new OrderItem
+                {
+                    ProductName = item.ProductName,
+                    Quantity = item.Quantity,
+                    UnitPrice = item.UnitPrice,
+                    LineTotal = lineTotal
+                });
             }
-            // Si era PickUp y ahora pide Delivery, podríamos cobrar envío (lógica opcional, por ahora lo dejamos simple)
-        }
 
-        foreach (var item in req.Items)
-        {
-            var lineTotal = item.UnitPrice * item.Quantity;
-            order.Items.Add(new OrderItem
-            {
-                ProductName = item.ProductName,
-                Quantity = item.Quantity,
-                UnitPrice = item.UnitPrice,
-                LineTotal = lineTotal
-            });
-        }
+            newOrder.Subtotal = newOrder.Items.Sum(i => i.LineTotal);
+            newOrder.Total = newOrder.Subtotal + newOrder.ShippingCost;
 
-        decimal subtotal = order.Items.Sum(i => i.LineTotal);
-        order.Subtotal = subtotal;
-        order.Total = subtotal + order.ShippingCost;
+            _db.Orders.Add(newOrder);
+            existingOrder = newOrder; // Referencia para el return
+        }
 
         await _db.SaveChangesAsync();
 
-        return Ok(ExcelService.MapToSummary(order, client, FrontendUrl));
+        return Ok(ExcelService.MapToSummary(existingOrder, client, FrontendUrl));
     }
 
     // ---------------------------------------------------------
-    // AQUÍ ESTÁ EL CAMBIO IMPORTANTE USANDO TU CLASE 'Delivery'
+    // ACTUALIZACIONES, BORRADO Y OTROS
     // ---------------------------------------------------------
 
     /// <summary>DELETE /api/orders/{id} - Borrado inteligente</summary>
@@ -219,10 +259,14 @@ public class OrdersController : ControllerBase
         return Ok(dto);
     }
 
+    // ---------------------------------------------------------
+    // ENDPOINTS DE TRACKING Y ACTUALIZACIÓN
+    // ---------------------------------------------------------
+
+
     [HttpPatch("{id}/status")]
     public async Task<ActionResult<OrderSummaryDto>> UpdateStatus(int id, [FromBody] UpdateOrderStatusRequest req)
     {
-        // 1. Evitar el 500 por Body vacío
         if (req == null) return BadRequest("No llegaron datos 😿");
 
         var order = await _db.Orders
@@ -234,60 +278,45 @@ public class OrdersController : ControllerBase
 
         var settings = await _db.AppSettings.FirstAsync();
 
-        // 2. Lógica de Cambio de Tipo (Delivery <-> PickUp)
         if (Enum.TryParse<OrderType>(req.OrderType, true, out var newType))
         {
-            // Solo si hubo cambio de tipo
             if (order.OrderType != newType)
             {
                 order.OrderType = newType;
 
-                // Si ahora es PICKUP (Pasar a recoger)
                 if (newType == OrderType.PickUp)
                 {
-                    order.ShippingCost = 0; // Envío gratis
-
-                    // --- INICIO LÓGICA: SACAR DE RUTA ---
+                    order.ShippingCost = 0;
+                    // Lógica para sacar de ruta si estaba asignado...
                     var delivery = await _db.Deliveries
                         .Include(d => d.DeliveryRoute)
                         .FirstOrDefaultAsync(d => d.OrderId == id);
 
                     if (delivery != null)
                     {
-                        // Checamos si la ruta se va a quedar vacía
                         var deliveriesInRoute = await _db.Deliveries
                             .CountAsync(d => d.DeliveryRouteId == delivery.DeliveryRouteId);
-
-                        // Borramos la entrega
                         _db.Deliveries.Remove(delivery);
-
-                        // Si era la única entrega de esa ruta, borramos la ruta entera para no dejar basura
                         if (deliveriesInRoute <= 1)
                         {
-                            // Opcional: Solo si quieres borrar la ruta si se queda sin pedidos
-                            // _db.DeliveryRoutes.Remove(delivery.DeliveryRoute); 
+                            // Opcional: Borrar ruta vacía
                         }
                     }
                 }
                 else
                 {
-                    // Si cambió a Delivery, le cobramos el envío default
                     order.ShippingCost = settings.DefaultShippingCost;
                 }
             }
         }
 
-        // 3. Actualizar Status
         if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
         {
             order.Status = newStatus;
         }
 
-        // 4. Actualizar Datos de Posponer
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
-
-        // 5. Recalcular Total Final
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
@@ -296,14 +325,13 @@ public class OrdersController : ControllerBase
     }
 
     // -----------------------------------------------------------------------
-    // NUEVOS ENDPOINTS SOLICITADOS
+    // NUEVOS ENDPOINTS (EDICIÓN TOTAL)
     // -----------------------------------------------------------------------
 
     /// <summary>PUT /api/orders/{id} - Actualiza detalles, cliente y estado</summary>
     [HttpPut("{id}")]
     public async Task<ActionResult<OrderSummaryDto>> UpdateOrderDetails(int id, [FromBody] UpdateOrderDetailsRequest req)
     {
-        // 1. Buscamos la orden incluyendo al Cliente (porque vamos a editar sus datos)
         var order = await _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Items)
@@ -311,8 +339,7 @@ public class OrdersController : ControllerBase
 
         if (order == null) return NotFound("Orden no encontrada");
 
-        // 2. Actualizamos datos del Cliente
-        // Nota: Esto actualiza al cliente en DB, afectando sus futuras compras (generalmente deseado)
+        // Actualizamos datos del Cliente
         if (order.Client != null)
         {
             order.Client.Name = req.ClientName;
@@ -320,39 +347,26 @@ public class OrdersController : ControllerBase
             order.Client.Phone = req.ClientPhone;
         }
 
-        // 3. Obtenemos configuración para costos de envío
         var settings = await _db.AppSettings.FirstAsync();
 
-        // 4. Lógica de Tipo de Orden (Delivery vs PickUp) y Costo
+        // Lógica de Tipo de Orden
         if (Enum.TryParse<OrderType>(req.OrderType, true, out var newType))
         {
-            // Solo si cambió el tipo, ajustamos el costo
             if (order.OrderType != newType)
             {
                 order.OrderType = newType;
-                if (newType == OrderType.PickUp)
-                {
-                    order.ShippingCost = 0; // PickUp es gratis
-                }
-                else
-                {
-                    order.ShippingCost = settings.DefaultShippingCost; // Delivery cobra
-                }
+                if (newType == OrderType.PickUp) order.ShippingCost = 0;
+                else order.ShippingCost = settings.DefaultShippingCost;
             }
         }
 
-        // 5. Actualizar Estado
         if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
         {
             order.Status = newStatus;
         }
 
-        // 6. Actualizar Datos de Posponer
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
-
-        // 7. Recalcular Total Final (Subtotal + Nuevo Costo Envío)
-        // El subtotal no cambia aquí, pero el total sí podría cambiar por el envío
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
@@ -364,7 +378,6 @@ public class OrdersController : ControllerBase
     [HttpPut("{orderId}/items/{itemId}")]
     public async Task<ActionResult<OrderSummaryDto>> UpdateOrderItem(int orderId, int itemId, [FromBody] UpdateOrderItemRequest req)
     {
-        // 1. Buscamos la orden y sus items
         var order = await _db.Orders
             .Include(o => o.Items)
             .Include(o => o.Client)
@@ -372,23 +385,15 @@ public class OrdersController : ControllerBase
 
         if (order == null) return NotFound("Orden no encontrada");
 
-        // 2. Buscamos el item específico dentro de esa orden
         var item = order.Items.FirstOrDefault(i => i.Id == itemId);
         if (item == null) return NotFound("El producto no existe en esta orden");
 
-        // 3. Actualizamos los valores del producto
         item.ProductName = req.ProductName;
         item.Quantity = req.Quantity;
         item.UnitPrice = req.UnitPrice;
-
-        // 4. Recalculamos el total de ESA línea (Cantidad * Precio)
         item.LineTotal = item.Quantity * item.UnitPrice;
 
-        // 5. ¡IMPORTANTE! Recalculamos los totales de la Orden completa
-        // Sumamos todos los LineTotal de los items (incluyendo el que acabamos de editar)
         order.Subtotal = order.Items.Sum(i => i.LineTotal);
-
-        // Sumamos el envío (que no cambió)
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
@@ -396,20 +401,120 @@ public class OrdersController : ControllerBase
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
 
+    // -----------------------------------------------------------------------
+    // ENDPOINT DE LIMPIEZA DE DUPLICADOS (ADMIN)
+    // -----------------------------------------------------------------------
+
+    [HttpPost("admin/merge-duplicates")]
+    public async Task<IActionResult> FixDuplicates()
+    {
+        // 1. Traemos TODOS los pedidos pendientes con sus clientes e items
+        var allPending = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Where(o => o.Status == Models.OrderStatus.Pending)
+            .ToListAsync();
+
+        // 2. Agrupamos por NOMBRE de clienta (limpiando espacios y mayúsculas)
+        //    Así "Juana Perez" y "juana perez " serán la misma persona.
+        var groupedByName = allPending
+            .GroupBy(o => o.Client.Name.Trim().ToLower())
+            .Where(g => g.Count() > 1) // Solo las que tengan duplicados
+            .ToList();
+
+        int fixedCount = 0;
+
+        foreach (var group in groupedByName)
+        {
+            // Ordenamos por fecha: La más vieja será la "Maestra"
+            var orders = group.OrderBy(o => o.CreatedAt).ToList();
+            var masterOrder = orders.First();
+            var duplicates = orders.Skip(1).ToList();
+
+            foreach (var dup in duplicates)
+            {
+                // Mover items del duplicado al maestro
+                foreach (var item in dup.Items.ToList()) // ToList para evitar error de modificación
+                {
+                    // Desligamos del pedido viejo y asignamos al nuevo
+                    item.OrderId = masterOrder.Id;
+                    masterOrder.Items.Add(item);
+                }
+
+                // Borramos el pedido duplicado
+                _db.Orders.Remove(dup);
+
+                // Opcional: Si el duplicado tenía un cliente diferente al maestro,
+                // ese cliente se quedará "huérfano" (sin pedidos).
+                // Podríamos borrarlo aquí, pero es más seguro dejarlo y limpiarlo luego.
+            }
+
+            // Recalcular totales
+            masterOrder.Subtotal = masterOrder.Items.Sum(i => i.LineTotal);
+            masterOrder.Total = masterOrder.Subtotal + masterOrder.ShippingCost;
+
+            // Actualizar fecha para que suba en la lista
+            masterOrder.CreatedAt = DateTime.UtcNow;
+
+            fixedCount++;
+        }
+
+        await _db.SaveChangesAsync();
+        return Ok($"¡Listo! Se fusionaron pedidos duplicados de {fixedCount} clientas por Nombre.");
+    }
+
+    // ---------------------------------------------------------
+    // 🕵️‍♂️ ENDPOINT DE DIAGNÓSTICO (SOLO PARA VER QUÉ PASA)
+    // ---------------------------------------------------------
+
+    [HttpGet("debug/pending")]
+    public async Task<IActionResult> DebugPendingOrders()
+    {
+        // 1. Traer TODOS los pedidos que NO han sido entregados ni cancelados
+        var activeOrders = await _db.Orders
+            .Include(o => o.Client)
+            .Where(o => o.Status == Models.OrderStatus.Pending)
+            .OrderBy(o => o.Client.Name)
+            .Select(o => new
+            {
+                OrderId = o.Id,
+                ClientNameRaw = o.Client.Name, // Nombre tal cual está en DB
+                ClientNameNormalized = o.Client.Name.Trim().ToLower(), // Nombre como lo compara el fusionador
+                o.Status,
+                o.CreatedAt,
+                o.Total,
+                ItemsCount = o.Items.Count
+            })
+            .ToListAsync();
+
+        // 2. Agruparlos nosotros mismos para ver quién tiene más de 1
+        var duplicates = activeOrders
+            .GroupBy(x => x.ClientNameNormalized)
+            .Where(g => g.Count() > 1)
+            .Select(g => new
+            {
+                Name = g.Key,
+                Count = g.Count(),
+                Orders = g.ToList()
+            })
+            .ToList();
+
+        return Ok(new
+        {
+            Message = $"Hay {activeOrders.Count} pedidos pendientes en total.",
+            PotentialDuplicates = duplicates.Count, // Si esto es 0, es que no hay nada que fusionar
+            DuplicateDetails = duplicates,
+            AllPendingList = activeOrders // Aquí verás la lista completa
+        });
+    }
+
     [HttpDelete("wipe")]
-    // [Authorize(Roles = "Admin")] // <--- Recomendado si tienes roles
+    // [Authorize(Roles = "Admin")]
     public async Task<IActionResult> WipeAllOrders()
     {
-        // 1. Borramos el detalle de los productos de todas las órdenes
         await _db.OrderItems.ExecuteDeleteAsync();
-
-        // 2. Borramos las entregas vinculadas (Tabla Deliveries)
-        // Nota: Esto no borra las Rutas (DeliveryRoutes), solo las asignaciones de pedidos
         await _db.Deliveries.ExecuteDeleteAsync();
-
-        // 3. Finalmente borramos las cabeceras de las órdenes
         await _db.Orders.ExecuteDeleteAsync();
-
         return NoContent();
     }
 }
