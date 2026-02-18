@@ -20,7 +20,7 @@ public record OrderSummaryDto(
     string ClientName,
     string Status,
     decimal Total,         // 11. decimal
-    string TrackingUrl,
+    string Link,
     int ItemsCount,
     string OrderType,      // 6. string
     DateTime CreatedAt,  // Fecha de creación

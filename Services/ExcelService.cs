@@ -207,7 +207,7 @@ public class ExcelService : IExcelService
             client?.Name ?? "Cliente Desconocido",        // 2. ClientName
             order.Status.ToString(),                      // 3. Status (¡AHORA SÍ ES STATUS!) ✅
             order.Total,                                  // 4. Total
-            $"{frontendBaseUrl}/pedido/{order.AccessToken}", // 5. TrackingUrl
+            Link:$"{frontendBaseUrl}/pedido/{order.AccessToken}", // 5. TrackingUrl
             order.Items.Count,                            // 6. ItemsCount
             order.OrderType.ToString(),                   // 7. OrderType
             order.CreatedAt,                              // 8. CreatedAt
