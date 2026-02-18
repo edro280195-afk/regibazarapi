@@ -101,7 +101,8 @@ public class ClientViewController : ControllerBase
             IsCurrentDelivery: isCurrentDelivery,
             DeliveriesAhead: deliveriesAhead,
             ClientLatitude: order.Client.Latitude,
-            ClientLongitude: order.Client.Longitude
+            ClientLongitude: order.Client.Longitude,
+            CreatedAt: order.CreatedAt
         ));
     }
 
