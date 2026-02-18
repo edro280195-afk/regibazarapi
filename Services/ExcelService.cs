@@ -191,28 +191,45 @@ public class ExcelService : IExcelService
         return map;
     }
 
-    public static OrderSummaryDto MapToSummary(Order order, Client client, string frontendBaseUrl)
+    // ... resto del archivo ExcelService ...
+
+    public static OrderSummaryDto MapToSummary(Order order, Client? client, string frontendBaseUrl)
     {
+        // 1. Sanitizar el tipo de cliente
+        string finalType = "Nueva";
+        if (client != null && !string.IsNullOrEmpty(client.Type) && client.Type != "None")
+        {
+            finalType = client.Type;
+        }
+
         return new OrderSummaryDto(
-            order.Id,                       // 1. Id
-            client.Name,                    // 2. ClientName
-            client.Type ?? "Nueva",         // 3. ClientType
-            client.Phone,                   // 4. Phone
-            client.Address,                 // 5. Address
-            order.OrderType.ToString(),     // 6. OrderType (Enum -> string)
-            order.PostponedAt,              // 7. PostponedAt
-            order.PostponedNote,            // 8. PostponedNote
-            order.Subtotal,                 // 9. Subtotal
-            order.ShippingCost,             // 10. ShippingCost
-            order.Total,                    // 11. Total
-            order.Status.ToString(),        // 12. Status (Enum -> string)
-            order.AccessToken,              // 13. AccessToken
-            $"{frontendBaseUrl}/pedido/{order.AccessToken}", // 14. Link
-            order.ExpiresAt,                // 15. ExpiresAt
-            order.CreatedAt,
-            order.Items.Select(i => new OrderItemDto(
-                i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal
-            )).ToList()                     // 16. Items
+            order.Id,                                     // 1. Id
+            client?.Name ?? "Cliente Desconocido",        // 2. ClientName
+            order.Status.ToString(),                      // 3. Status (¡AHORA SÍ ES STATUS!) ✅
+            order.Total,                                  // 4. Total
+            $"{frontendBaseUrl}/pedido/{order.AccessToken}", // 5. TrackingUrl
+            order.Items.Count,                            // 6. ItemsCount
+            order.OrderType.ToString(),                   // 7. OrderType
+            order.CreatedAt,                              // 8. CreatedAt
+            finalType,                                    // 9. ClientType (¡AHORA SÍ ES TIPO!) ✅
+
+            // --- EXTRAS ---
+            client?.Phone,                                // 10. Phone
+            client?.Address,                              // 11. Address
+            order.PostponedAt,                            // 12. PostponedAt
+            order.PostponedNote,                          // 13. PostponedNote
+            Items: order.Items.Select(i => new OrderItemDto(     // 14. Items
+                i.Id,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.LineTotal
+            )).ToList(),
+            ShippingCost: order.ShippingCost,
+            AccessToken: order.AccessToken,
+            ExpiresAt: order.ExpiresAt,
+            Subtotal: order.Subtotal
+
         );
     }
 }

@@ -18,21 +18,35 @@ public record ExcelUploadResult(
 public record OrderSummaryDto(
     int Id,
     string ClientName,
+    string Status,
+    decimal Total,         // 11. decimal
+    string TrackingUrl,
+    int ItemsCount,
+    string OrderType,      // 6. string
+    DateTime CreatedAt,  // Fecha de creación
     string ClientType,
+
     string? ClientPhone,
     string? ClientAddress,
-    string OrderType,      // 6. string
     DateTime? PostponedAt, // 7. DateTime?
     string? PostponedNote, // 8. string?
     decimal Subtotal,      // 9. decimal
     decimal ShippingCost,  // 10. decimal
-    decimal Total,         // 11. decimal
-    string Status,         // 12. string
     string AccessToken,    // 13. string
-    string ClientLink,     // 14. string
     DateTime ExpiresAt,    // 15. DateTime
-    DateTime CreatedAt,  // Fecha de creación
     List<OrderItemDto> Items // 16. List
+);
+
+public record OrderTrackingDto(
+    int Id,
+    string ClientName,
+    string Status,
+    decimal Total,
+    int ItemsCount,
+    string OrderType,
+    List<OrderItemDto> Items,
+    DateTime CreatedAt,
+    string ClientType
 );
 
 public record OrderItemDto(
@@ -45,11 +59,19 @@ public record OrderItemDto(
 
 public record ManualOrderRequest(
     string ClientName,
-    string ClientType,
-    string OrderType,
     string? ClientPhone,
     string? ClientAddress,
-    List<ManualOrderItemRequest> Items
+    string? ClientType,
+    string OrderType,
+    List<ManualOrderItem> Items,
+    DateTime? PostponedAt = null,
+    string? PostponedNote = null,
+    string Status = "Pending"
+);
+public record ManualOrderItem(
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice
 );
 
 public record ManualOrderItemRequest(
