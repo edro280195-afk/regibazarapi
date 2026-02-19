@@ -58,9 +58,6 @@ public class OrdersController : ControllerBase
         return Ok(result);
     }
 
-    // ---------------------------------------------------------
-    // CREATE MANUAL (CON LÓGICA DE FUSIÓN CORREGIDA) 🧠✨
-    // ---------------------------------------------------------
 
     /// <summary>POST /api/orders/manual - Crea o FUSIONA pedidos pendientes</summary>
     [HttpPost("manual")]
@@ -278,40 +275,47 @@ public class OrdersController : ControllerBase
 
         var settings = await _db.AppSettings.FirstAsync();
 
-        if (Enum.TryParse<OrderType>(req.OrderType, true, out var newType))
-        {
-            if (order.OrderType != newType)
-            {
-                order.OrderType = newType;
-
-                if (newType == OrderType.PickUp)
-                {
-                    order.ShippingCost = 0;
-                    // Lógica para sacar de ruta si estaba asignado...
-                    var delivery = await _db.Deliveries
-                        .Include(d => d.DeliveryRoute)
-                        .FirstOrDefaultAsync(d => d.OrderId == id);
-
-                    if (delivery != null)
-                    {
-                        var deliveriesInRoute = await _db.Deliveries
-                            .CountAsync(d => d.DeliveryRouteId == delivery.DeliveryRouteId);
-                        _db.Deliveries.Remove(delivery);
-                        if (deliveriesInRoute <= 1)
-                        {
-                            // Opcional: Borrar ruta vacía
-                        }
-                    }
-                }
-                else
-                {
-                    order.ShippingCost = settings.DefaultShippingCost;
-                }
-            }
-        }
-
         if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
         {
+            int puntosCalculados = (int)(order.Total / 10m);
+
+            // CASO A: Lo acaban de marcar como Entregado (+ PUNTOS)
+            if (newStatus == Models.OrderStatus.Delivered && order.Status != Models.OrderStatus.Delivered)
+            {
+                if (puntosCalculados > 0 && order.Client != null)
+                {
+                    _db.LoyaltyTransactions.Add(new LoyaltyTransaction
+                    {
+                        ClientId = order.Client.Id,
+                        Points = puntosCalculados,
+                        Reason = $"Compra Entregada #{order.Id}",
+                        Date = DateTime.UtcNow
+                    });
+
+                    order.Client.CurrentPoints += puntosCalculados;
+                    order.Client.LifetimePoints += puntosCalculados;
+                    order.Client.Type = "Frecuente";
+                }
+            }
+            // CASO B: Estaba Entregado y lo regresaron a Pendiente/Cancelado (- PUNTOS)
+            else if (order.Status == Models.OrderStatus.Delivered && newStatus != Models.OrderStatus.Delivered)
+            {
+                if (puntosCalculados > 0 && order.Client != null)
+                {
+                    _db.LoyaltyTransactions.Add(new LoyaltyTransaction
+                    {
+                        ClientId = order.Client.Id,
+                        Points = -puntosCalculados, // Puntos Negativos
+                        Reason = $"Reversión de estado de pedido #{order.Id}",
+                        Date = DateTime.UtcNow
+                    });
+
+                    order.Client.CurrentPoints -= puntosCalculados;
+                    order.Client.LifetimePoints -= puntosCalculados;
+                }
+            }
+
+            // Aplicamos el cambio de estatus real a la orden
             order.Status = newStatus;
         }
 

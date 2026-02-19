@@ -199,29 +199,57 @@ public class DriverController : ControllerBase
         [FromForm] CompleteDeliveryRequest req, [FromForm] List<IFormFile>? photos)
     {
         var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
-        if (route == null) return NotFound();
+        if (route == null) return NotFound("Ruta no encontrada.");
 
-        var delivery = await _db.Deliveries.Include(d => d.Order)
+        // IMPORTANTE: Incluimos al Cliente para poder sumarle los puntos
+        var delivery = await _db.Deliveries
+            .Include(d => d.Order)
+                .ThenInclude(o => o.Client)
             .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
-        if (delivery == null) return NotFound();
 
-        delivery.Status = DeliveryStatus.Delivered;
-        delivery.DeliveredAt = DateTime.UtcNow;
-        delivery.Notes = req.Notes;
-        delivery.Order.Status = Models.OrderStatus.Delivered;
+        if (delivery == null) return NotFound("Entrega no encontrada.");
+
+        // Solo procesamos si no estaba ya entregado (para evitar doble suma de puntos si le pican dos veces)
+        if (delivery.Status != DeliveryStatus.Delivered)
+        {
+            delivery.Status = DeliveryStatus.Delivered;
+            delivery.DeliveredAt = DateTime.UtcNow;
+            delivery.Notes = req.Notes;
+            delivery.Order.Status = Models.OrderStatus.Delivered;
+
+            // -----------------------------------------------------------
+            // 🎀 LÓGICA DE REGIPUNTOS (10 pts por cada $100)
+            // -----------------------------------------------------------
+            int puntosGanados = (int)(delivery.Order.Total / 10m);
+            if (puntosGanados > 0 && delivery.Order.Client != null)
+            {
+                var transaccion = new LoyaltyTransaction
+                {
+                    ClientId = delivery.Order.Client.Id,
+                    Points = puntosGanados,
+                    Reason = $"Entrega exitosa de ruta #{delivery.Order.Id}",
+                    Date = DateTime.UtcNow
+                };
+                _db.LoyaltyTransactions.Add(transaccion);
+
+                delivery.Order.Client.CurrentPoints += puntosGanados;
+                delivery.Order.Client.LifetimePoints += puntosGanados;
+                delivery.Order.Client.Type = "Frecuente"; // Sube de categoría
+            }
+        }
 
         if (photos != null) await SavePhotos(delivery, photos, EvidenceType.DeliveryProof);
 
         await _db.SaveChangesAsync();
 
-        // Notificar
+        // Notificar en tiempo real
         await _hub.Clients.Group($"order_{delivery.Order.AccessToken}").SendAsync("DeliveryUpdate", new { Status = "Delivered" });
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "Delivered" });
 
         var nextId = await AutoAdvanceToNext(route.Id, delivery.SortOrder);
         await CheckRouteCompletion(route.Id);
 
-        return Ok(new { message = "Entrega registrada.", nextDeliveryId = nextId });
+        return Ok(new { message = "Entrega registrada y puntos asignados.", nextDeliveryId = nextId });
     }
 
     [HttpPost("fail/{deliveryId}")]

@@ -23,6 +23,8 @@ public class Client
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public string Type { get; set; } = "Nueva";
     public ClientTag Tag { get; set; } = ClientTag.None;
-
+    public int CurrentPoints { get; set; } = 0;
+    public int LifetimePoints { get; set; } = 0;
     public ICollection<Order> Orders { get; set; } = new List<Order>();
+    
 }
