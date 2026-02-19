@@ -73,7 +73,6 @@ public class ClientViewController : ControllerBase
         }
 
         // Determinar el status real para la clienta
-        // Si la delivery está InTransit, el status del pedido es "InTransit" (diferente a InRoute)
         var clientStatus = order.Status.ToString();
         if (order.DeliveryRouteId.HasValue)
         {
@@ -85,8 +84,16 @@ public class ClientViewController : ControllerBase
             }
         }
 
+        // --- LIMPIEZA DE TIPO DE CLIENTA ---
+        string finalType = "Nueva";
+        if (order.Client != null && !string.IsNullOrEmpty(order.Client.Type) && order.Client.Type != "None")
+        {
+            finalType = order.Client.Type;
+        }
+
         return Ok(new ClientOrderView(
-            ClientName: order.Client.Name,
+            ClientId: order.ClientId,                          // <--- 1. ¡Agregado!
+            ClientName: order.Client?.Name ?? "Cliente",
             Items: order.Items.Select(i => new OrderItemDto(
                 i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal
             )).ToList(),
@@ -100,9 +107,10 @@ public class ClientViewController : ControllerBase
             TotalDeliveries: totalDeliveries,
             IsCurrentDelivery: isCurrentDelivery,
             DeliveriesAhead: deliveriesAhead,
-            ClientLatitude: order.Client.Latitude,
-            ClientLongitude: order.Client.Longitude,
-            CreatedAt: order.CreatedAt
+            ClientLatitude: order.Client?.Latitude,
+            ClientLongitude: order.Client?.Longitude,
+            CreatedAt: order.CreatedAt,
+            ClientType: finalType                              // <--- 2. ¡Agregado!
         ));
     }
 

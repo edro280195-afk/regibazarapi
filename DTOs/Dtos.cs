@@ -124,6 +124,7 @@ public record FailDeliveryRequest(string Reason, string? Notes);
 
 // ── Client View ──
 public record ClientOrderView(
+    int ClientId,
     string ClientName,
     List<OrderItemDto> Items,
     decimal Subtotal,
@@ -137,9 +138,9 @@ public record ClientOrderView(
     bool IsCurrentDelivery = false,
     int? DeliveriesAhead = null,
     double? ClientLatitude = null,
-    double? ClientLongitude = null,
-
-    DateTime? CreatedAt = null
+    double? ClientLongitude = null,   
+    DateTime? CreatedAt = null,
+    string? ClientType = null
 );
 
 public record DriverLocationDto(
