@@ -382,7 +382,8 @@ public class DriverController : ControllerBase
     public async Task<IActionResult> SendMessageToClient(string driverToken, int deliveryId, [FromBody] SendMessageRequest req)
     {
         var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
-        var delivery = await _db.Deliveries.Include(d => d.Order).FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route?.Id);
+        var delivery = await _db.Deliveries.Include(d => d.Order)
+        .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
 
         if (route == null || delivery == null) return NotFound();
 
