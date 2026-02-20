@@ -67,16 +67,17 @@ builder.Services.AddSignalR();
 // 1. Definir la política
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", builder =>
+    options.AddPolicy("AllowAll", policy =>
     {
-        builder
+        policy
             .WithOrigins(
                 "http://localhost:4200",
-                "https://regibazar.com/"
+                "https://regibazar.com",
+                "https://www.regibazar.com" // Corregido: 3 Ws en lugar de 4
             )
             .AllowAnyMethod()
             .AllowAnyHeader()
-            .AllowCredentials();
+            .AllowCredentials(); // Necesario para SignalR
     });
 });
 
@@ -130,9 +131,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// 1. Primero enrutar
+app.UseRouting();
+
+// 2. LUEGO aplicar la política de CORS
 app.UseCors("AllowAll");
 
-// Servir fotos de evidencia
+// 3. Servir fotos de evidencia
 var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
 Directory.CreateDirectory(uploadsDir);
 app.UseStaticFiles(new StaticFileOptions
@@ -142,9 +147,11 @@ app.UseStaticFiles(new StaticFileOptions
     RequestPath = "/uploads"
 });
 
+// 4. Autenticación y Autorización
 app.UseAuthentication();
 app.UseAuthorization();
 
+// 5. Mapear endpoints
 app.MapControllers();
 app.MapHub<TrackingHub>("/hubs/tracking");
 app.MapHub<OrderHub>("/hubs/orders");
