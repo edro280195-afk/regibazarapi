@@ -47,7 +47,8 @@ public class ClientsController : ControllerBase
                 OrdersCount = c.Orders.Count(),
                 TotalSpent = c.Orders
                     .Where(o => o.Status != Models.OrderStatus.Canceled)
-                    .Sum(o => o.Total)
+                    .Sum(o => o.Total),
+                    c.Type
             })
             .OrderByDescending(x => x.TotalSpent)
             .ToListAsync();
