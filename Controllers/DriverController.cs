@@ -102,6 +102,8 @@ public class DriverController : ControllerBase
         await _hub.Clients.Group($"Route_{driverToken}")
             .SendAsync("ReceiveChatMessage", msg);
 
+        await _hub.Clients.Group("Admins").SendAsync("ReceiveChatMessage", msg);
+
         return Ok(msg);
     }
 
@@ -359,5 +361,47 @@ public class DriverController : ControllerBase
         _db.DriverExpenses.Add(expense);
         await _db.SaveChangesAsync();
         return Ok(expense);
+    }
+
+
+    [HttpGet("deliver/{deliveryId}/chat")]
+    public async Task<IActionResult> GetClientChat(string driverToken, int deliveryId)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound();
+
+        var msgs = await _db.ChatMessages
+            .Where(m => m.DeliveryRouteId == route.Id && m.DeliveryId == deliveryId)
+            .OrderBy(m => m.Timestamp)
+            .ToListAsync();
+
+        return Ok(msgs);
+    }
+
+    [HttpPost("deliver/{deliveryId}/chat")]
+    public async Task<IActionResult> SendMessageToClient(string driverToken, int deliveryId, [FromBody] SendMessageRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        var delivery = await _db.Deliveries.Include(d => d.Order).FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route?.Id);
+
+        if (route == null || delivery == null) return NotFound();
+
+        var msg = new ChatMessage
+        {
+            DeliveryRouteId = route.Id,
+            DeliveryId = delivery.Id,
+            Sender = "Driver",
+            Text = req.Text,
+            Timestamp = DateTime.UtcNow
+        };
+
+        _db.ChatMessages.Add(msg);
+        await _db.SaveChangesAsync();
+
+        // 🔔 ¡Ring ring! Le avisamos a la clienta por SignalR
+        await _hub.Clients.Group($"order_{delivery.Order.AccessToken}")
+            .SendAsync("ReceiveClientChatMessage", msg);
+
+        return Ok(msg);
     }
 }

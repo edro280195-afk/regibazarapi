@@ -146,6 +146,65 @@ public class ClientViewController : ControllerBase
 
         return BadRequest(new { message = $"El pedido ya se encuentra en estado: {order.Status}" });
     }
+
+    // ═══════════════════════════════════════════
+    //  CHAT CLIENTA ↔️ CHOFER
+    // ═══════════════════════════════════════════
+
+    [HttpGet("chat")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetChat(string accessToken)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
+        if (order == null || order.DeliveryRouteId == null) return Ok(new List<ChatMessage>());
+
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+        if (delivery == null) return Ok(new List<ChatMessage>());
+
+        // 🕵️‍♂️ MAGIA ANTI-CHISMES: Si ya se entregó o canceló, ocultamos el chat
+        if (order.Status == Models.OrderStatus.Delivered || order.Status == Models.OrderStatus.NotDelivered || order.Status == Models.OrderStatus.Canceled)
+            return Ok(new List<ChatMessage>());
+
+        var msgs = await _db.ChatMessages
+            .Where(m => m.DeliveryId == delivery.Id)
+            .OrderBy(m => m.Timestamp)
+            .ToListAsync();
+
+        return Ok(msgs);
+    }
+
+    [HttpPost("chat")]
+    [AllowAnonymous]
+    public async Task<IActionResult> SendMessage(string accessToken, [FromBody] SendMessageRequest req)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
+        if (order == null || order.DeliveryRouteId == null) return NotFound("Pedido no activo en ruta.");
+
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+        if (delivery == null) return NotFound();
+
+        var msg = new ChatMessage
+        {
+            DeliveryRouteId = order.DeliveryRouteId.Value,
+            DeliveryId = delivery.Id,
+            Sender = "Client",
+            Text = req.Text,
+            Timestamp = DateTime.UtcNow
+        };
+
+        _db.ChatMessages.Add(msg);
+        await _db.SaveChangesAsync();
+
+        // 🔔 Le avisamos al chofer (y al admin si está viendo el mapa)
+        var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId);
+        if (route != null)
+        {
+            await _hub.Clients.Group($"Route_{route.DriverToken}")
+                .SendAsync("ReceiveClientChatMessage", msg);
+        }
+
+        return Ok(msg);
+    }
     private ObjectResult Gone(string message)
     {
         return StatusCode(410, new { message });
