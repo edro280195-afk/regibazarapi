@@ -156,18 +156,26 @@ public class ClientViewController : ControllerBase
     public async Task<IActionResult> GetChat(string accessToken)
     {
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
-        if (order == null || order.DeliveryRouteId == null) return Ok(new List<ChatMessage>());
+        if (order == null || order.DeliveryRouteId == null) return Ok(new List<object>());
 
         var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
-        if (delivery == null) return Ok(new List<ChatMessage>());
+        if (delivery == null) return Ok(new List<object>());
 
-        // 🕵️‍♂️ MAGIA ANTI-CHISMES: Si ya se entregó o canceló, ocultamos el chat
         if (order.Status == Models.OrderStatus.Delivered || order.Status == Models.OrderStatus.NotDelivered || order.Status == Models.OrderStatus.Canceled)
-            return Ok(new List<ChatMessage>());
+            return Ok(new List<object>());
 
         var msgs = await _db.ChatMessages
             .Where(m => m.DeliveryId == delivery.Id)
             .OrderBy(m => m.Timestamp)
+            // 🚀 ANTÍDOTO: Creamos un objeto ligero sin relaciones para evitar el ciclo JSON
+            .Select(m => new {
+                id = m.Id,
+                deliveryRouteId = m.DeliveryRouteId,
+                deliveryId = m.DeliveryId,
+                sender = m.Sender,
+                text = m.Text,
+                timestamp = m.Timestamp
+            })
             .ToListAsync();
 
         return Ok(msgs);
@@ -195,15 +203,25 @@ public class ClientViewController : ControllerBase
         _db.ChatMessages.Add(msg);
         await _db.SaveChangesAsync();
 
-        // 🔔 Le avisamos al chofer (y al admin si está viendo el mapa)
+        // 🚀 ANTÍDOTO: Empacamos solo los datos seguros
+        var msgDto = new
+        {
+            id = msg.Id,
+            deliveryRouteId = msg.DeliveryRouteId,
+            deliveryId = msg.DeliveryId,
+            sender = msg.Sender,
+            text = msg.Text,
+            timestamp = msg.Timestamp
+        };
+
         var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId);
         if (route != null)
         {
             await _hub.Clients.Group($"Route_{route.DriverToken}")
-                .SendAsync("ReceiveClientChatMessage", msg);
+                .SendAsync("ReceiveClientChatMessage", msgDto); // Mandamos el ligero
         }
 
-        return Ok(msg);
+        return Ok(msgDto); // Regresamos el ligero
     }
     private ObjectResult Gone(string message)
     {

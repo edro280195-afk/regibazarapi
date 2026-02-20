@@ -63,52 +63,9 @@ public class DriverController : ControllerBase
         });
     }
 
-    // ═══════════════════════════════════════════
-    //  CHAT CHOFER (NUEVO)
-    // ═══════════════════════════════════════════
-
-    [HttpGet("chat")]
-    public async Task<IActionResult> GetChat(string driverToken)
-    {
-        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
-        if (route == null) return NotFound();
-
-        var msgs = await _db.ChatMessages
-            .Where(m => m.DeliveryRouteId == route.Id)
-            .OrderBy(m => m.Timestamp)
-            .ToListAsync();
-
-        return Ok(msgs);
-    }
-
-    [HttpPost("chat")]
-    public async Task<IActionResult> SendDriverMessage(string driverToken, [FromBody] SendMessageRequest req)
-    {
-        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
-        if (route == null) return NotFound();
-
-        var msg = new ChatMessage
-        {
-            DeliveryRouteId = route.Id,
-            Sender = "Driver",
-            Text = req.Text,
-            Timestamp = DateTime.UtcNow
-        };
-
-        _db.ChatMessages.Add(msg);
-        await _db.SaveChangesAsync();
-
-        // Notificar al Admin (que escucha en el grupo del token o id)
-        await _hub.Clients.Group($"Route_{driverToken}")
-            .SendAsync("ReceiveChatMessage", msg);
-
-        await _hub.Clients.Group("Admins").SendAsync("ReceiveChatMessage", msg);
-
-        return Ok(msg);
-    }
 
     // ═══════════════════════════════════════════
-    //  OPERACIONES DE RUTA (TU LÓGICA ORIGINAL)
+    //  OPERACIONES DE RUTA
     // ═══════════════════════════════════════════
 
     [HttpPost("start")]
@@ -364,6 +321,59 @@ public class DriverController : ControllerBase
     }
 
 
+    // ═══════════════════════════════════════════
+    //  CHAT CHOFER ↔️ ADMIN
+    // ═══════════════════════════════════════════
+
+    [HttpGet("chat")]
+    public async Task<IActionResult> GetChat(string driverToken)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound();
+
+        var msgs = await _db.ChatMessages
+            .Where(m => m.DeliveryRouteId == route.Id && m.DeliveryId == null) // Filtro para que solo vea los del admin
+            .OrderBy(m => m.Timestamp)
+            .Select(m => new {
+                id = m.Id,
+                sender = m.Sender,
+                text = m.Text,
+                timestamp = m.Timestamp
+            })
+            .ToListAsync();
+
+        return Ok(msgs);
+    }
+
+    [HttpPost("chat")]
+    public async Task<IActionResult> SendDriverMessage(string driverToken, [FromBody] SendMessageRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound();
+
+        var msg = new ChatMessage
+        {
+            DeliveryRouteId = route.Id,
+            Sender = "Driver",
+            Text = req.Text,
+            Timestamp = DateTime.UtcNow
+        };
+
+        _db.ChatMessages.Add(msg);
+        await _db.SaveChangesAsync();
+
+        var msgDto = new { id = msg.Id, sender = msg.Sender, text = msg.Text, timestamp = msg.Timestamp, deliveryRouteId = msg.DeliveryRouteId };
+
+        await _hub.Clients.Group($"Route_{driverToken}").SendAsync("ReceiveChatMessage", msgDto);
+        await _hub.Clients.Group("Admins").SendAsync("ReceiveChatMessage", msgDto);
+
+        return Ok(msgDto);
+    }
+
+    // ═══════════════════════════════════════════
+    //  CHAT CHOFER ↔️ CLIENTA
+    // ═══════════════════════════════════════════
+
     [HttpGet("deliver/{deliveryId}/chat")]
     public async Task<IActionResult> GetClientChat(string driverToken, int deliveryId)
     {
@@ -373,6 +383,12 @@ public class DriverController : ControllerBase
         var msgs = await _db.ChatMessages
             .Where(m => m.DeliveryRouteId == route.Id && m.DeliveryId == deliveryId)
             .OrderBy(m => m.Timestamp)
+            .Select(m => new {
+                id = m.Id,
+                sender = m.Sender,
+                text = m.Text,
+                timestamp = m.Timestamp
+            })
             .ToListAsync();
 
         return Ok(msgs);
@@ -382,10 +398,12 @@ public class DriverController : ControllerBase
     public async Task<IActionResult> SendMessageToClient(string driverToken, int deliveryId, [FromBody] SendMessageRequest req)
     {
         var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
-        var delivery = await _db.Deliveries.Include(d => d.Order)
-        .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
+        if (route == null) return NotFound("Ruta no encontrada.");
 
-        if (route == null || delivery == null) return NotFound();
+        var delivery = await _db.Deliveries.Include(d => d.Order)
+            .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
+
+        if (delivery == null) return NotFound("Entrega no encontrada.");
 
         var msg = new ChatMessage
         {
@@ -399,10 +417,12 @@ public class DriverController : ControllerBase
         _db.ChatMessages.Add(msg);
         await _db.SaveChangesAsync();
 
+        var msgDto = new { id = msg.Id, deliveryId = msg.DeliveryId, sender = msg.Sender, text = msg.Text, timestamp = msg.Timestamp };
+
         // 🔔 ¡Ring ring! Le avisamos a la clienta por SignalR
         await _hub.Clients.Group($"order_{delivery.Order.AccessToken}")
-            .SendAsync("ReceiveClientChatMessage", msg);
+            .SendAsync("ReceiveClientChatMessage", msgDto);
 
-        return Ok(msg);
+        return Ok(msgDto);
     }
 }
