@@ -351,3 +351,5 @@ public record UpdateOrderItemRequest(
     int Quantity,
     decimal UnitPrice
 );
+
+public record SendMessageRequest(string Text);

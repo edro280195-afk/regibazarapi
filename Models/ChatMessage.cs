@@ -17,6 +17,8 @@ namespace EntregasApi.Models
 
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 
+        public int? DeliveryId { get; set; }
+
         // Relación
         [ForeignKey(nameof(DeliveryRouteId))]
         public DeliveryRoute DeliveryRoute { get; set; } = null!;

@@ -18,7 +18,7 @@ public class RoutesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ITokenService _tokenService;
     private readonly IConfiguration _config;
-    private readonly IHubContext<LogisticsHub> _hub; // <--- Usamos LogisticsHub
+    private readonly IHubContext<LogisticsHub> _hub;
 
     public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<LogisticsHub> hub)
     {
@@ -209,4 +209,3 @@ public class RoutesController : ControllerBase
 }
 
 // DTO auxiliar para el chat
-public record SendMessageRequest(string Text);
