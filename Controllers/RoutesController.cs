@@ -18,9 +18,9 @@ public class RoutesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ITokenService _tokenService;
     private readonly IConfiguration _config;
-    private readonly IHubContext<LogisticsHub> _hub;
+    private readonly IHubContext<TrackingHub> _hub;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<LogisticsHub> hub)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<TrackingHub> hub)
     {
         _db = db;
         _tokenService = tokenService;
@@ -106,42 +106,61 @@ public class RoutesController : ControllerBase
         return Ok(await MapRouteDto(id));
     }
 
-    // ═══════════════════════════════════════════
-    //  CHAT ADMIN (NUEVO)
-    // ═══════════════════════════════════════════
+    // Asegúrate de que el constructor use IHubContext<TrackingHub>
+    // private readonly IHubContext<TrackingHub> _hub;
 
     [HttpGet("{id}/chat")]
-    public async Task<ActionResult<List<ChatMessage>>> GetChatHistory(int id)
+    public async Task<IActionResult> GetRouteChat(int id)
     {
-        var messages = await _db.ChatMessages
-            .Where(m => m.DeliveryRouteId == id)
+        var msgs = await _db.ChatMessages
+            // 🚀 FILTRO CLAVE: Solo mensajes donde DeliveryId sea NULL (Admin <-> Chofer)
+            .Where(m => m.DeliveryRouteId == id && m.DeliveryId == null)
             .OrderBy(m => m.Timestamp)
+            .Select(m => new {
+                id = m.Id,
+                sender = m.Sender,
+                text = m.Text,
+                timestamp = m.Timestamp,
+                deliveryRouteId = m.DeliveryRouteId
+            })
             .ToListAsync();
-        return Ok(messages);
+
+        return Ok(msgs);
     }
 
     [HttpPost("{id}/chat")]
-    public async Task<ActionResult<ChatMessage>> SendAdminMessage(int id, [FromBody] SendMessageRequest req)
+    public async Task<IActionResult> SendAdminMessage(int id, [FromBody] SendMessageRequest req)
     {
         var route = await _db.DeliveryRoutes.FindAsync(id);
-        if (route == null) return NotFound();
+        if (route == null) return NotFound("Ruta no encontrada");
 
         var msg = new ChatMessage
         {
-            DeliveryRouteId = id,
-            Sender = "Admin", // Siempre es Admin en este endpoint
+            DeliveryRouteId = route.Id,
+            Sender = "Admin", // El Admin siempre es el Admin
             Text = req.Text,
-            Timestamp = DateTime.UtcNow
+            Timestamp = DateTime.UtcNow,
+            DeliveryId = null // 🚀 IMPORTANTE: Forzamos que sea nulo para que no se filtre a las clientas
         };
 
         _db.ChatMessages.Add(msg);
         await _db.SaveChangesAsync();
 
-        // Notificar al Chofer (y a quien esté escuchando)
-        await _hub.Clients.Group($"Route_{route.DriverToken}") // Usamos el token como ID de sala o el ID de ruta
-            .SendAsync("ReceiveChatMessage", msg);
+        // Creamos el objeto ligero (Antídoto para el Error 500)
+        var msgDto = new
+        {
+            id = msg.Id,
+            sender = msg.Sender,
+            text = msg.Text,
+            timestamp = msg.Timestamp,
+            deliveryRouteId = msg.DeliveryRouteId
+        };
 
-        return Ok(msg);
+        // 🔔 Avisamos al chofer (Usando el Hub unificado)
+        await _hub.Clients.Group($"Route_{route.DriverToken}")
+            .SendAsync("ReceiveChatMessage", msgDto);
+
+        return Ok(msgDto);
     }
 
     // ═══════════════════════════════════════════
