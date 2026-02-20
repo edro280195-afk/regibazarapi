@@ -54,7 +54,7 @@ public class RoutesController : ControllerBase
             CreatedAt = DateTime.UtcNow,
             // Asignamos un nombre default si no viene uno (puedes mejorarlo recibiéndolo del req)
             Name = $"Ruta {DateTime.Now:dd/MM HH:mm}",
-            ScheduledDate = DateTime.Today
+            ScheduledDate = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc)
         };
 
         _db.DeliveryRoutes.Add(route);
