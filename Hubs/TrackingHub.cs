@@ -4,34 +4,23 @@ namespace EntregasApi.Hubs;
 
 public class TrackingHub : Hub
 {
-    /// <summary>
-    /// Las clientas se suscriben a su pedido para recibir updates de GPS.
-    /// Se llama desde el frontend: connection.invoke("JoinOrder", accessToken)
-    /// </summary>
+    // 1. Clientas se unen para ver GPS
     public async Task JoinOrder(string accessToken)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, $"order_{accessToken}");
     }
 
-    public async Task LeaveOrder(string accessToken)
+    // 2. Admin se une para escuchar notificaciones globales
+    public async Task JoinAdminGroup()
     {
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"order_{accessToken}");
+        await Groups.AddToGroupAsync(Context.ConnectionId, "Admins");
     }
 
-    /// <summary>
-    /// El panel admin se suscribe para ver todas las actualizaciones.
-    /// </summary>
-    public async Task JoinAdmin()
-    {
-        await Groups.AddToGroupAsync(Context.ConnectionId, "admin");
-    }
-
-    /// <summary>
-    /// El repartidor se suscribe a su ruta.
-    /// </summary>
+    // 3. Chofer/Admin se unen al radio de una ruta específica
     public async Task JoinRoute(string driverToken)
     {
-        await Groups.AddToGroupAsync(Context.ConnectionId, $"route_{driverToken}");
+        // Nota: Asegúrate de que tu Angular manda llamar 'JoinRoute', no 'JoinRouteGroup'
+        await Groups.AddToGroupAsync(Context.ConnectionId, $"Route_{driverToken}");
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)

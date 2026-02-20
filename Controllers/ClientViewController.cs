@@ -14,9 +14,9 @@ namespace EntregasApi.Controllers;
 public class ClientViewController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IHubContext<OrderHub> _hub;
+    private readonly IHubContext<TrackingHub> _hub;
 
-    public ClientViewController(AppDbContext db, IHubContext<OrderHub> hub)
+    public ClientViewController(AppDbContext db, IHubContext<TrackingHub> hub)
     {
         _db = db;
         _hub = hub;

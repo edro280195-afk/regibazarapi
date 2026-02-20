@@ -13,10 +13,10 @@ namespace EntregasApi.Controllers;
 public class DriverController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IHubContext<LogisticsHub> _hub;
+    private readonly IHubContext<TrackingHub> _hub;
     private readonly IWebHostEnvironment _env;
 
-    public DriverController(AppDbContext db, IHubContext<LogisticsHub> hub, IWebHostEnvironment env)
+    public DriverController(AppDbContext db, IHubContext<TrackingHub> hub, IWebHostEnvironment env)
     {
         _db = db;
         _hub = hub;
