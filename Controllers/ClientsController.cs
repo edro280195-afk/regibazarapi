@@ -14,7 +14,8 @@ public record ClientDto(
     string? Address,
     string Tag,
     int OrdersCount,
-    decimal TotalSpent
+    decimal TotalSpent,
+    string? Type = null
 );
 
 public record UpdateClientRequest(
@@ -60,7 +61,8 @@ public class ClientsController : ControllerBase
             c.Address,
             c.Tag.ToString(),
             c.OrdersCount,
-            c.TotalSpent
+            c.TotalSpent,
+            c.Type
         )).ToList();
 
         return Ok(clients);
