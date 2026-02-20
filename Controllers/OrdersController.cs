@@ -405,6 +405,34 @@ public class OrdersController : ControllerBase
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
 
+    /// <summary>POST /api/orders/{orderId}/items - Agrega un producto a un pedido existente</summary>
+    [HttpPost("{orderId}/items")]
+    public async Task<ActionResult<OrderSummaryDto>> AddOrderItem(int orderId, [FromBody] UpdateOrderItemRequest req)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Items)
+            .Include(o => o.Client)
+            .FirstOrDefaultAsync(o => o.Id == orderId);
+
+        if (order == null) return NotFound("Orden no encontrada");
+
+        var newItem = new OrderItem
+        {
+            ProductName = req.ProductName,
+            Quantity = req.Quantity,
+            UnitPrice = req.UnitPrice,
+            LineTotal = req.Quantity * req.UnitPrice
+        };
+
+        order.Items.Add(newItem);
+        order.Subtotal = order.Items.Sum(i => i.LineTotal);
+        order.Total = order.Subtotal + order.ShippingCost;
+
+        await _db.SaveChangesAsync();
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
     // -----------------------------------------------------------------------
     // ENDPOINT DE LIMPIEZA DE DUPLICADOS (ADMIN)
     // -----------------------------------------------------------------------

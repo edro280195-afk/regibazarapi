@@ -173,7 +173,9 @@ public enum OrderStatus
     Delivered = 2,    // Entregado
     NotDelivered = 3, // No Entregado (intento fallido)
     Canceled = 4,     // Cancelado (Nuevo)
-    Postponed = 5     // Pospuesto (Nuevo)
+    Postponed = 5,     // Pospuesto (Nuevo)
+    Confirmed = 6,  // Clienta confirmó el pedido
+    Sent = 7
 }
 
 public record UpdateOrderStatusRequest(
@@ -337,7 +339,10 @@ public record UpdateOrderDetailsRequest(
     string? PostponedNote,
     string ClientName,
     string ClientAddress,
-    string ClientPhone
+    string ClientPhone,
+    List<string>? Tags,          // ← nuevo
+    string? DeliveryTime,        // ← nuevo
+    string? PickupDate
 );
 
 // DTO para actualizar un producto individual

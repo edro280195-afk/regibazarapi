@@ -142,5 +142,7 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<TrackingHub>("/hubs/tracking");
+app.MapHub<OrderHub>("/hubs/orders");
+app.MapHub<LogisticsHub>("/hubs/logistics");
 
 app.Run();

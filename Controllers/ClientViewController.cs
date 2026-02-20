@@ -1,8 +1,11 @@
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using EntregasApi.Data;
 using EntregasApi.DTOs;
+using EntregasApi.Hubs;
 using EntregasApi.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 
 namespace EntregasApi.Controllers;
 
@@ -11,10 +14,12 @@ namespace EntregasApi.Controllers;
 public class ClientViewController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IHubContext<OrderHub> _hub;
 
-    public ClientViewController(AppDbContext db)
+    public ClientViewController(AppDbContext db, IHubContext<OrderHub> hub)
     {
         _db = db;
+        _hub = hub;
     }
 
     /// <summary>GET /api/pedido/{token} - Vista pública del pedido</summary>
@@ -113,7 +118,34 @@ public class ClientViewController : ControllerBase
             ClientType: finalType                              // <--- 2. ¡Agregado!
         ));
     }
+    /// <summary>POST /api/pedido/{token}/confirm - La clienta confirma su pedido</summary>
+    [HttpPost("confirm")]
+    [AllowAnonymous] // Cualquier clienta con el link puede hacerlo
+    public async Task<IActionResult> ConfirmOrder(string accessToken)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
+        if (order == null) return NotFound(new { message = "Pedido no encontrado." });
+        if (order.ExpiresAt < DateTime.UtcNow) return StatusCode(410, new { message = "Este enlace ha expirado." });
+
+        // Solo se puede confirmar si estaba Pendiente o Pospuesto
+        if (order.Status == Models.OrderStatus.Pending || order.Status == Models.OrderStatus.Postponed)
+        {
+            order.Status = Models.OrderStatus.Confirmed;
+            await _db.SaveChangesAsync();
+
+            await _hub.Clients.Group("Admins").SendAsync("OrderConfirmed", new
+            {
+                OrderId = order.Id,
+                ClientName = order.Client?.Name ?? "Clienta",
+                NewStatus = "Confirmed"
+            });
+
+            return Ok(new { message = "¡Pedido confirmado exitosamente! 💖" });
+        }
+
+        return BadRequest(new { message = $"El pedido ya se encuentra en estado: {order.Status}" });
+    }
     private ObjectResult Gone(string message)
     {
         return StatusCode(410, new { message });
