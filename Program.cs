@@ -67,11 +67,16 @@ builder.Services.AddSignalR();
 // 1. Definir la política
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("NuevaPolitica", app =>
+    options.AddPolicy("AllowAll", builder =>
     {
-        app.AllowAnyOrigin()
-           .AllowAnyHeader()
-           .AllowAnyMethod();
+        builder
+            .WithOrigins(
+                "http://localhost:4200",
+                "https://regibazar.com/"
+            )
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
     });
 });
 
@@ -125,7 +130,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors("NuevaPolitica");
+app.UseCors("AllowAll");
 
 // Servir fotos de evidencia
 var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
