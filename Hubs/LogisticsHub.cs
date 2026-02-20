@@ -9,6 +9,10 @@ public class LogisticsHub : Hub
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, $"Route_{routeId}");
     }
+    public async Task JoinAdminGroup()
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, "Admins");
+    }
 
     // El chofer sale del grupo (opcional, SignalR lo maneja al desconectar, pero útil para control)
     public async Task LeaveRouteGroup(string routeId)
