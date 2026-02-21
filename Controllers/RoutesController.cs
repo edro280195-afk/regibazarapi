@@ -207,22 +207,59 @@ public class RoutesController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id)
     {
+        // 1. Buscamos la ruta y sus entregas
         var route = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries).ThenInclude(d => d.Order)
+            .Include(r => r.Deliveries)
             .FirstOrDefaultAsync(r => r.Id == id);
 
         if (route == null) return NotFound();
 
-        foreach (var delivery in route.Deliveries)
+        // 2. 🚀 ATAQUE DIRECTO: Buscamos las órdenes en su propia tabla y las soltamos
+        var linkedOrders = await _db.Orders.Where(o => o.DeliveryRouteId == id).ToListAsync();
+
+        if (linkedOrders.Any())
         {
-            if (delivery.Order.Status != Models.OrderStatus.Delivered)
+            foreach (var order in linkedOrders)
             {
-                delivery.Order.Status = Models.OrderStatus.Pending;
+                order.DeliveryRouteId = null; // Rompemos la cadena
+
+                if (order.Status != Models.OrderStatus.Delivered)
+                {
+                    order.Status = Models.OrderStatus.Pending;
+                }
             }
+
+            // Obligamos a EF Core a guardar ESTO antes de siquiera pensar en borrar la ruta
+            await _db.SaveChangesAsync();
         }
 
+        // 3. Limpiar ChatMessages
+        var chats = await _db.ChatMessages.Where(c => c.DeliveryRouteId == id).ToListAsync();
+        if (chats.Any())
+        {
+            _db.ChatMessages.RemoveRange(chats);
+        }
+
+        // 4. Limpiar Gastos (Descomenta esto si tienes DriverExpenses en tu DbContext)
+        /*
+        var expenses = await _db.DriverExpenses.Where(e => e.DriverRouteId == id).ToListAsync();
+        if (expenses.Any()) 
+        {
+            _db.DriverExpenses.RemoveRange(expenses);
+        }
+        */
+
+        // 5. Borrar los registros intermedios de entregas
+        if (route.Deliveries.Any())
+        {
+            _db.Deliveries.RemoveRange(route.Deliveries);
+        }
+
+        // 6. Ahora sí, la ruta está completamente huérfana. Le damos cuello.
         _db.DeliveryRoutes.Remove(route);
+
         await _db.SaveChangesAsync();
+
         return NoContent();
     }
 }

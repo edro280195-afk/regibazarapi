@@ -17,17 +17,19 @@ public class OrdersController : ControllerBase
     private readonly IExcelService _excelService;
     private readonly ITokenService _tokenService;
     private readonly IConfiguration _config;
+    private readonly IPushNotificationService _pushService;
+    private readonly string FrontendUrl;
 
     public OrdersController(AppDbContext db, IExcelService excelService,
-        ITokenService tokenService, IConfiguration config)
+        ITokenService tokenService, IConfiguration config, IPushNotificationService pushService)
     {
         _db = db;
         _excelService = excelService;
         _tokenService = tokenService;
         _config = config;
+        _pushService = pushService;
+        FrontendUrl = config["App:FrontendUrl"] ?? "https://regibazar.com";
     }
-
-    private string FrontendUrl => _config["App:FrontendUrl"] ?? "https://regibazar.com";
 
     // ---------------------------------------------------------
     // GET & UPLOAD (SIN CAMBIOS)
@@ -44,6 +46,112 @@ public class OrdersController : ControllerBase
 
         return Ok(orders.Select(o =>
             ExcelService.MapToSummary(o, o.Client, FrontendUrl)).ToList());
+    }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult<OrderSummaryDto>> GetOrder(int id)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Order no encontrada");
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
+    [HttpGet("paged")]
+    public async Task<ActionResult<PagedResult<OrderSummaryDto>>> GetPaged(
+        [FromQuery] int page = 1, 
+        [FromQuery] int pageSize = 50, 
+        [FromQuery] string search = "",
+        [FromQuery] string status = "",
+        [FromQuery] string clientType = "")
+    {
+        var query = _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            if (status == "PaymentPending")
+            {
+                query = query.Where(o => o.Status == EntregasApi.Models.OrderStatus.Pending || o.Status == EntregasApi.Models.OrderStatus.InRoute);
+            }
+            else if (Enum.TryParse<EntregasApi.Models.OrderStatus>(status, true, out var parsedStatus))
+            {
+                query = query.Where(o => o.Status == parsedStatus);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(clientType))
+        {
+            query = query.Where(o => o.Client.Type == clientType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var searchStr = search.ToLower().Trim();
+            // Try to parse search as order ID if it's numeric or #123
+            if (searchStr.StartsWith("#") && int.TryParse(searchStr.Substring(1), out int idVal1))
+            {
+                query = query.Where(o => o.Id == idVal1);
+            }
+            else if (int.TryParse(searchStr, out int idVal2))
+            {
+                query = query.Where(o => o.Id == idVal2 || o.Client.Name.ToLower().Contains(searchStr));
+            }
+            else
+            {
+                query = query.Where(o => o.Client.Name.ToLower().Contains(searchStr) 
+                                      || (o.Client.Phone != null && o.Client.Phone.Contains(searchStr)));
+            }
+        }
+
+        var total = await query.CountAsync();
+        
+        var orders = await query
+            .OrderByDescending(o => o.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        var items = orders.Select(o => ExcelService.MapToSummary(o, o.Client, FrontendUrl)).ToList();
+
+        return Ok(new PagedResult<OrderSummaryDto>(items, total, page, pageSize));
+    }
+
+    [HttpGet("stats")]
+    public async Task<ActionResult<OrderStatsDto>> GetOrderStats()
+    {
+        // 🚀 CORRECCIÓN: Generamos las fechas y las forzamos a ser UTC para que PostgreSQL no truene
+        var today = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc);
+        var endOfToday = today.AddDays(1).AddTicks(-1);
+
+        var totalOrders = await _db.Orders.CountAsync();
+        var pendingOrders = await _db.Orders.CountAsync(o => o.Status == EntregasApi.Models.OrderStatus.Pending);
+
+        var pendingAmount = await _db.Orders
+            .Where(o => o.Status == EntregasApi.Models.OrderStatus.Pending || o.Status == EntregasApi.Models.OrderStatus.InRoute)
+            .SelectMany(o => o.Items)
+            .SumAsync(i => i.Quantity * i.UnitPrice);
+
+        var collectedToday = await _db.Orders
+            .Where(o => o.Status == EntregasApi.Models.OrderStatus.Delivered && o.CreatedAt >= today && o.CreatedAt <= endOfToday)
+            .SelectMany(o => o.Items)
+            .SumAsync(i => i.Quantity * i.UnitPrice);
+
+        return Ok(new OrderStatsDto(totalOrders, pendingOrders, pendingAmount, collectedToday));
+    }
+
+    [HttpGet("generate-vapid")]
+    [AllowAnonymous]
+    public ActionResult GenerateVapid()
+    {
+        var keys = WebPush.VapidHelper.GenerateVapidKeys();
+        return Ok(new { keys.PublicKey, keys.PrivateKey });
     }
 
     [HttpPost("upload")]
@@ -324,6 +432,32 @@ public class OrdersController : ControllerBase
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
+
+        // Enviar Push Notification basada en el nuevo estado
+        if (newStatus == EntregasApi.Models.OrderStatus.Shipped && order.Client != null)
+        {
+            await _pushService.SendNotificationToClientAsync(
+                order.Client.Id, 
+                "Tu pedido ha sido empacado 📦", 
+                "Tu pedido está listo y empacado para entrega.", 
+                $"/o/{order.AccessToken}");
+        }
+        else if (newStatus == EntregasApi.Models.OrderStatus.Delivered && order.Client != null)
+        {
+            await _pushService.SendNotificationToClientAsync(
+                order.Client.Id, 
+                "Pedido Entregado 🌸", 
+                "¡Gracias por tu compra en Regi Bazar!", 
+                $"/o/{order.AccessToken}");
+        }
+        else if (newStatus == EntregasApi.Models.OrderStatus.InRoute && order.Client != null)
+        {
+            await _pushService.SendNotificationToClientAsync(
+                order.Client.Id, 
+                "Pedido en Ruta ✨", 
+                "Tu pedido ha salido y se encuentra en ruta de entrega", 
+                $"/o/{order.AccessToken}");
+        }
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }

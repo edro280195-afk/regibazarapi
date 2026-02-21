@@ -24,6 +24,7 @@ public class AppDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
+    public DbSet<PushSubscriptionModel> PushSubscriptions => Set<PushSubscriptionModel>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

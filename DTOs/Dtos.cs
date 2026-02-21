@@ -7,6 +7,14 @@ public record LoginRequest(string Email, string Password);
 public record LoginResponse(string Token, string Name, DateTime ExpiresAt);
 public record RegisterRequest(string Name, string Email, string Password);
 
+// ── General ──
+public record PagedResult<T>(
+    List<T> Items,
+    int TotalCount,
+    int CurrentPage,
+    int PageSize
+);
+
 // ── Excel Upload ──
 public record ExcelUploadResult(
     int OrdersCreated,
@@ -159,6 +167,13 @@ public record DashboardDto(
     int NotDeliveredOrders,
     int ActiveRoutes,
     decimal TotalRevenue
+);
+
+public record OrderStatsDto(
+    int Total,
+    int Pending,
+    decimal PendingAmount,
+    decimal CollectedToday
 );
 
 public enum OrderType
