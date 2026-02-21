@@ -103,5 +103,25 @@ public class AppDbContext : DbContext
             DefaultShippingCost = 60m,
             LinkExpirationHours = 72
         });
+
+        modelBuilder.Entity<PushSubscriptionModel>(entity =>
+        {
+            entity.ToTable("PushSubscriptions");
+
+            entity.HasIndex(e => e.Endpoint)
+                  .IsUnique();
+
+            entity.HasIndex(e => new { e.Role, e.ClientId })
+                  .HasDatabaseName("IX_PushSub_Role_ClientId");
+
+            entity.HasIndex(e => new { e.Role, e.DriverRouteToken })
+                  .HasDatabaseName("IX_PushSub_Role_DriverToken");
+
+            entity.Property(e => e.Role)
+                  .HasDefaultValue("client");
+
+            entity.Property(e => e.CreatedAt)
+                  .HasDefaultValueSql("NOW()");
+        });
     }
 }
