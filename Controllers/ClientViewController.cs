@@ -112,8 +112,10 @@ public class ClientViewController : ControllerBase
             TotalDeliveries: totalDeliveries,
             IsCurrentDelivery: isCurrentDelivery,
             DeliveriesAhead: deliveriesAhead,
+
             ClientLatitude: order.Client?.Latitude,
             ClientLongitude: order.Client?.Longitude,
+            ClientAddress: order.Client?.Address,
             CreatedAt: order.CreatedAt,
             ClientType: finalType                              // <--- 2. ¡Agregado!
         ));

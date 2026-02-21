@@ -140,7 +140,8 @@ public record ClientOrderView(
     double? ClientLatitude = null,
     double? ClientLongitude = null,   
     DateTime? CreatedAt = null,
-    string? ClientType = null
+    string? ClientType = null,
+    string? ClientAddress = null
 );
 
 public record DriverLocationDto(
