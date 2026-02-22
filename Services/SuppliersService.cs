@@ -20,15 +20,18 @@ namespace EntregasApi.Services
 
         public async Task<List<SupplierDto>> GetAllSuppliersAsync()
         {
-            return await _db.Suppliers
+            var suppliers = await _db.Suppliers
+                .Include(s => s.Investments)
                 .OrderBy(s => s.Name)
-                .Select(s => MapToDto(s))
                 .ToListAsync();
+            return suppliers.Select(s => MapToDto(s)).ToList();
         }
 
         public async Task<SupplierDto?> GetSupplierByIdAsync(int id)
         {
-            var supplier = await _db.Suppliers.FindAsync(id);
+            var supplier = await _db.Suppliers
+                .Include(s => s.Investments)
+                .FirstOrDefaultAsync(s => s.Id == id);
             return supplier == null ? null : MapToDto(supplier);
         }
 
@@ -173,7 +176,8 @@ namespace EntregasApi.Services
             s.ContactName,
             s.Phone,
             s.Notes,
-            s.CreatedAt
+            s.CreatedAt,
+            s.Investments != null ? s.Investments.Sum(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate)) : 0m
         );
 
         // Aquí agregamos los nuevos campos al DTO de salida

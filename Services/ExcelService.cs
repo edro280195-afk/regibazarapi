@@ -228,8 +228,8 @@ public class ExcelService : IExcelService
             ShippingCost: order.ShippingCost,
             AccessToken: order.AccessToken,
             ExpiresAt: order.ExpiresAt,
-            Subtotal: order.Subtotal
-
+            Subtotal: order.Subtotal,
+            AdvancePayment: order.AdvancePayment
         );
     }
 }

@@ -230,7 +230,7 @@ public class OrdersController : ControllerBase
 
             // Recalculamos totales sumando lo viejo + lo nuevo
             existingOrder.Subtotal = existingOrder.Items.Sum(i => i.LineTotal);
-            existingOrder.Total = existingOrder.Subtotal + existingOrder.ShippingCost;
+            existingOrder.Total = existingOrder.Subtotal + existingOrder.ShippingCost - existingOrder.AdvancePayment;
 
             // Actualizamos fecha para que suba en la lista (opcional, para que se vea reciente)
             existingOrder.CreatedAt = DateTime.UtcNow;
@@ -266,7 +266,7 @@ public class OrdersController : ControllerBase
             }
 
             newOrder.Subtotal = newOrder.Items.Sum(i => i.LineTotal);
-            newOrder.Total = newOrder.Subtotal + newOrder.ShippingCost;
+            newOrder.Total = newOrder.Subtotal + newOrder.ShippingCost - newOrder.AdvancePayment;
 
             _db.Orders.Add(newOrder);
             existingOrder = newOrder; // Referencia para el return
@@ -333,7 +333,7 @@ public class OrdersController : ControllerBase
         if (order.Items.Any())
         {
             order.Subtotal = order.Items.Sum(i => i.LineTotal);
-            order.Total = order.Subtotal + order.ShippingCost;
+            order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
         }
         else
         {
@@ -350,6 +350,8 @@ public class OrdersController : ControllerBase
     [HttpGet("dashboard")]
     public async Task<ActionResult<DashboardDto>> Dashboard()
     {
+        var totalInvestment = await _db.Investments.SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
+
         var dto = new DashboardDto(
             TotalClients: await _db.Clients.CountAsync(),
             TotalOrders: await _db.Orders.CountAsync(),
@@ -359,7 +361,8 @@ public class OrdersController : ControllerBase
             ActiveRoutes: await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active),
             TotalRevenue: await _db.Orders
                 .Where(o => o.Status == Models.OrderStatus.Delivered)
-                .SumAsync(o => o.Total)
+                .SumAsync(o => o.Total),
+            TotalInvestment: totalInvestment
         );
         return Ok(dto);
     }
@@ -429,7 +432,7 @@ public class OrdersController : ControllerBase
 
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
-        order.Total = order.Subtotal + order.ShippingCost;
+        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
 
         await _db.SaveChangesAsync();
 
@@ -498,6 +501,10 @@ public class OrdersController : ControllerBase
             }
         }
 
+        // Requerimiento 3 y 4: Edición de Shipping Cost y Abono
+        if (req.ShippingCost.HasValue) order.ShippingCost = req.ShippingCost.Value;
+        if (req.AdvancePayment.HasValue) order.AdvancePayment = req.AdvancePayment.Value;
+
         if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
         {
             order.Status = newStatus;
@@ -505,7 +512,7 @@ public class OrdersController : ControllerBase
 
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
-        order.Total = order.Subtotal + order.ShippingCost;
+        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
 
         await _db.SaveChangesAsync();
 
@@ -532,7 +539,7 @@ public class OrdersController : ControllerBase
         item.LineTotal = item.Quantity * item.UnitPrice;
 
         order.Subtotal = order.Items.Sum(i => i.LineTotal);
-        order.Total = order.Subtotal + order.ShippingCost;
+        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
 
         await _db.SaveChangesAsync();
 
@@ -560,7 +567,7 @@ public class OrdersController : ControllerBase
 
         order.Items.Add(newItem);
         order.Subtotal = order.Items.Sum(i => i.LineTotal);
-        order.Total = order.Subtotal + order.ShippingCost;
+        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
 
         await _db.SaveChangesAsync();
 
@@ -617,7 +624,7 @@ public class OrdersController : ControllerBase
 
             // Recalcular totales
             masterOrder.Subtotal = masterOrder.Items.Sum(i => i.LineTotal);
-            masterOrder.Total = masterOrder.Subtotal + masterOrder.ShippingCost;
+            masterOrder.Total = masterOrder.Subtotal + masterOrder.ShippingCost - masterOrder.AdvancePayment;
 
             // Actualizar fecha para que suba en la lista
             masterOrder.CreatedAt = DateTime.UtcNow;

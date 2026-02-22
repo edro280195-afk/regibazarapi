@@ -42,7 +42,8 @@ public record OrderSummaryDto(
     decimal ShippingCost,  // 10. decimal
     string AccessToken,    // 13. string
     DateTime ExpiresAt,    // 15. DateTime
-    List<OrderItemDto> Items // 16. List
+    List<OrderItemDto> Items, // 16. List
+    decimal AdvancePayment = 0m
 );
 
 public record OrderTrackingDto(
@@ -149,7 +150,8 @@ public record ClientOrderView(
     double? ClientLongitude = null,   
     DateTime? CreatedAt = null,
     string? ClientType = null,
-    string? ClientAddress = null
+    string? ClientAddress = null,
+    decimal AdvancePayment = 0m
 );
 
 public record DriverLocationDto(
@@ -166,7 +168,8 @@ public record DashboardDto(
     int DeliveredOrders,
     int NotDeliveredOrders,
     int ActiveRoutes,
-    decimal TotalRevenue
+    decimal TotalRevenue,
+    decimal TotalInvestment
 );
 
 public record OrderStatsDto(
@@ -215,7 +218,8 @@ public record SupplierDto(
     string? ContactName,
     string? Phone,
     string? Notes,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    decimal TotalInvested = 0m
 );
 
 public record CreateSupplierRequest
@@ -358,7 +362,9 @@ public record UpdateOrderDetailsRequest(
     string ClientPhone,
     List<string>? Tags,          // ← nuevo
     string? DeliveryTime,        // ← nuevo
-    string? PickupDate
+    string? PickupDate,
+    decimal? ShippingCost = null,
+    decimal? AdvancePayment = null
 );
 
 // DTO para actualizar un producto individual

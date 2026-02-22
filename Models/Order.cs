@@ -43,6 +43,9 @@ public class Order
     public string? Tags { get; set; }
     public string? DeliveryTime { get; set; }
     public string? PickupDate { get; set; }
+
+    [Column(TypeName = "decimal(10,2)")]
+    public decimal AdvancePayment { get; set; } = 0m;
 }
 
 public class OrderItem

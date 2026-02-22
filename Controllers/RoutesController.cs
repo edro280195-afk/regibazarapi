@@ -40,7 +40,7 @@ public class RoutesController : ControllerBase
         var orders = await _db.Orders
             .Include(o => o.Client)
             .Where(o => req.OrderIds.Contains(o.Id)
-                        && o.Status == Models.OrderStatus.Pending
+                        && (o.Status == Models.OrderStatus.Pending || o.Status == Models.OrderStatus.Confirmed || o.Status == Models.OrderStatus.Shipped)
                         && o.OrderType == OrderType.Delivery)
             .ToListAsync();
 
@@ -60,8 +60,14 @@ public class RoutesController : ControllerBase
         _db.DeliveryRoutes.Add(route);
         await _db.SaveChangesAsync();
 
+        // Ordenamos la lista de la db para que coincida exactamente con el orden recibido del optimizador
+        var sortedOrders = req.OrderIds
+            .Select(id => orders.FirstOrDefault(o => o.Id == id))
+            .Where(o => o != null)
+            .ToList();
+
         int sortOrder = 1;
-        foreach (var order in orders)
+        foreach (var order in sortedOrders)
         {
             order.DeliveryRouteId = route.Id;
             order.Status = Models.OrderStatus.InRoute;

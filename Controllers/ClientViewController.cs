@@ -117,7 +117,8 @@ public class ClientViewController : ControllerBase
             ClientLongitude: order.Client?.Longitude,
             ClientAddress: order.Client?.Address,
             CreatedAt: order.CreatedAt,
-            ClientType: finalType                              // <--- 2. ¡Agregado!
+            ClientType: finalType,                             // <--- 2. ¡Agregado!
+            AdvancePayment: order.AdvancePayment
         ));
     }
     /// <summary>POST /api/pedido/{token}/confirm - La clienta confirma su pedido</summary>
