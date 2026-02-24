@@ -30,6 +30,7 @@ public class ClientViewController : ControllerBase
             .Include(o => o.Client)
             .Include(o => o.Items)
             .Include(o => o.DeliveryRoute)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
         if (order == null)
@@ -117,8 +118,12 @@ public class ClientViewController : ControllerBase
             ClientLongitude: order.Client?.Longitude,
             ClientAddress: order.Client?.Address,
             CreatedAt: order.CreatedAt,
-            ClientType: finalType,                             // <--- 2. ¡Agregado!
-            AdvancePayment: order.AdvancePayment
+            ClientType: finalType,
+            AdvancePayment: order.AdvancePayment,
+            Payments: (order.Payments ?? new List<OrderPayment>())
+                .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+            AmountPaid: order.AmountPaid,
+            BalanceDue: order.BalanceDue
         ));
     }
     /// <summary>POST /api/pedido/{token}/confirm - La clienta confirma su pedido</summary>

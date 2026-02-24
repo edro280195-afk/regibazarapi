@@ -50,5 +50,45 @@ namespace EntregasApi.Controllers
             var report = await _service.GetFinancialReportAsync(startDate, endDate);
             return Ok(report);
         }
+
+        // ═══════════════════════════════════════════
+        //  ADMIN CRUD EXPENSES
+        // ═══════════════════════════════════════════
+
+        [HttpPost("expenses")]
+        public async Task<ActionResult<DriverExpenseDto>> CreateExpense([FromBody] CreateAdminExpenseRequest request)
+        {
+            try
+            {
+                var expense = await _service.CreateAdminExpenseAsync(request);
+                return Ok(expense);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPut("expenses/{id}")]
+        public async Task<ActionResult<DriverExpenseDto>> UpdateExpense(int id, [FromBody] UpdateAdminExpenseRequest request)
+        {
+            try
+            {
+                var expense = await _service.UpdateExpenseAsync(id, request);
+                return Ok(expense);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpDelete("expenses/{id}")]
+        public async Task<IActionResult> DeleteExpense(int id)
+        {
+            var success = await _service.DeleteExpenseAsync(id);
+            if (!success) return NotFound();
+            return Ok(new { message = "Gasto eliminado correctamente." });
+        }
     }
 }

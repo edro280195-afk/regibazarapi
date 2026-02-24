@@ -34,6 +34,7 @@ public class DriverController : ControllerBase
 
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o.Client)
+            .Include(d => d.Order).ThenInclude(o => o.Payments)
             .Include(d => d.Evidences)
             .Where(d => d.DeliveryRouteId == route.Id)
             .OrderBy(d => d.SortOrder)
@@ -58,7 +59,13 @@ public class DriverController : ControllerBase
                 DeliveredAt: d.DeliveredAt,
                 Notes: d.Notes,
                 FailureReason: d.FailureReason,
-                EvidenceUrls: d.Evidences.Select(e => $"/uploads/{e.ImagePath}").ToList()
+                EvidenceUrls: d.Evidences.Select(e => $"/uploads/{e.ImagePath}").ToList(),
+                ClientPhone: "",
+                PaymentMethod: "",
+                Payments: (d.Order.Payments ?? new List<OrderPayment>())
+                    .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+                AmountPaid: d.Order.AmountPaid,
+                BalanceDue: d.Order.BalanceDue
             )).ToList()
         });
     }
@@ -164,6 +171,8 @@ public class DriverController : ControllerBase
         var delivery = await _db.Deliveries
             .Include(d => d.Order)
                 .ThenInclude(o => o.Client)
+            .Include(d => d.Order)
+                .ThenInclude(o => o.Payments)
             .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
 
         if (delivery == null) return NotFound("Entrega no encontrada.");
@@ -175,6 +184,23 @@ public class DriverController : ControllerBase
             delivery.DeliveredAt = DateTime.UtcNow;
             delivery.Notes = req.Notes;
             delivery.Order.Status = Models.OrderStatus.Delivered;
+
+            // Registrar pagos del chofer
+            if (req.Payments != null && req.Payments.Any())
+            {
+                foreach (var p in req.Payments)
+                {
+                    _db.OrderPayments.Add(new OrderPayment
+                    {
+                        OrderId = delivery.OrderId,
+                        Amount = p.Amount,
+                        Method = p.Method,
+                        Date = DateTime.UtcNow,
+                        RegisteredBy = "Driver",
+                        Notes = p.Notes
+                    });
+                }
+            }
 
             // -----------------------------------------------------------
             // 🎀 LÓGICA DE REGIPUNTOS (10 pts por cada $100)

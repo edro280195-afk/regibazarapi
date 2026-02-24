@@ -41,6 +41,7 @@ public class OrdersController : ControllerBase
         var orders = await _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Items)
+            .Include(o => o.Payments)
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
@@ -54,6 +55,7 @@ public class OrdersController : ControllerBase
         var order = await _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Items)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null) return NotFound("Order no encontrada");
@@ -72,11 +74,19 @@ public class OrdersController : ControllerBase
         var query = _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Items)
+            .Include(o => o.Payments)
             .AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(status))
         {
-            if (status == "PaymentPending")
+            if (status == "Pending")
+            {
+                // Excluir Delivered, Canceled y Forzar no PickUp (según Requerimiento 1)
+                query = query.Where(o => o.Status != EntregasApi.Models.OrderStatus.Delivered 
+                                      && o.Status != EntregasApi.Models.OrderStatus.Canceled 
+                                      && o.OrderType != DTOs.OrderType.PickUp);
+            }
+            else if (status == "PaymentPending")
             {
                 query = query.Where(o => o.Status == EntregasApi.Models.OrderStatus.Pending || o.Status == EntregasApi.Models.OrderStatus.InRoute);
             }
@@ -230,7 +240,7 @@ public class OrdersController : ControllerBase
 
             // Recalculamos totales sumando lo viejo + lo nuevo
             existingOrder.Subtotal = existingOrder.Items.Sum(i => i.LineTotal);
-            existingOrder.Total = existingOrder.Subtotal + existingOrder.ShippingCost - existingOrder.AdvancePayment;
+            existingOrder.Total = existingOrder.Subtotal + existingOrder.ShippingCost;
 
             // Actualizamos fecha para que suba en la lista (opcional, para que se vea reciente)
             existingOrder.CreatedAt = DateTime.UtcNow;
@@ -241,12 +251,38 @@ public class OrdersController : ControllerBase
             // No tiene pendientes, creamos uno nuevo.
 
             var accessToken = _tokenService.GenerateAccessToken();
+            // 1. Obtenemos la hora real en Nuevo Laredo (Monterrey)
+            var mexicoZone = TimeZoneInfo.FindSystemTimeZoneById("America/Monterrey");
+            var mexicoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, mexicoZone);
+
+            // 2. Calculamos los días que faltan para el próximo Lunes a las 00:00:00
+            // En C#, DayOfWeek: Domingo=0, Lunes=1... Sabado=6
+            int daysUntilMonday = (8 - (int)mexicoTime.DayOfWeek) % 7;
+            if (daysUntilMonday == 0)
+            {
+                // Si el pedido se está haciendo en Lunes, la caducidad es el LUNES QUE SIGUE (en 7 días)
+                daysUntilMonday = 7;
+            }
+
+            // 3. Establecemos la fecha base (Próximo lunes a la medianoche exacta 00:00:00)
+            DateTime localExpiration = mexicoTime.Date.AddDays(daysUntilMonday);
+
+            // 4. Regla de negocio: Si es frecuente, le regalamos otra semana entera (hasta el 2do domingo)
+            if (client.Type == "Frecuente")
+            {
+                localExpiration = localExpiration.AddDays(7);
+            }
+
+            // 5. Regresamos la fecha a UTC para que PostgreSQL sea feliz
+            DateTime expirationUtc = TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone);
+
+            // 6. Creamos la orden con la fecha calculada
             var newOrder = new Order
             {
                 ClientId = client.Id,
                 AccessToken = accessToken,
                 ShippingCost = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
-                ExpiresAt = DateTime.UtcNow.AddHours(settings.LinkExpirationHours),
+                ExpiresAt = expirationUtc, // 🚀 ¡Magia matemática!
                 Status = Models.OrderStatus.Pending,
                 OrderType = reqOrderType,
                 Items = new List<OrderItem>(),
@@ -266,7 +302,7 @@ public class OrdersController : ControllerBase
             }
 
             newOrder.Subtotal = newOrder.Items.Sum(i => i.LineTotal);
-            newOrder.Total = newOrder.Subtotal + newOrder.ShippingCost - newOrder.AdvancePayment;
+            newOrder.Total = newOrder.Subtotal + newOrder.ShippingCost;
 
             _db.Orders.Add(newOrder);
             existingOrder = newOrder; // Referencia para el return
@@ -321,6 +357,7 @@ public class OrdersController : ControllerBase
         var order = await _db.Orders
             .Include(o => o.Items)
             .Include(o => o.Client)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.Id == orderId);
 
         if (order == null) return NotFound("Pedido no encontrado 😿");
@@ -333,7 +370,7 @@ public class OrdersController : ControllerBase
         if (order.Items.Any())
         {
             order.Subtotal = order.Items.Sum(i => i.LineTotal);
-            order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
+            order.Total = order.Subtotal + order.ShippingCost;
         }
         else
         {
@@ -346,24 +383,162 @@ public class OrdersController : ControllerBase
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
 
-    // ... [GET Dashboard SE QUEDA IGUAL] ...
+    // ... [GET Dashboard] ...
     [HttpGet("dashboard")]
     public async Task<ActionResult<DashboardDto>> Dashboard()
     {
         var totalInvestment = await _db.Investments.SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
 
+        var deliveredOrders = await _db.Orders
+            .Include(o => o.Payments)
+            .Where(o => o.Status == Models.OrderStatus.Delivered)
+            .ToListAsync();
+
+        // Agregar payments de todas las orders entregadas
+        var allPayments = deliveredOrders.SelectMany(o => o.Payments ?? new List<OrderPayment>()).ToList();
+
         var dto = new DashboardDto(
             TotalClients: await _db.Clients.CountAsync(),
             TotalOrders: await _db.Orders.CountAsync(),
             PendingOrders: await _db.Orders.CountAsync(o => o.Status == Models.OrderStatus.Pending),
-            DeliveredOrders: await _db.Orders.CountAsync(o => o.Status == Models.OrderStatus.Delivered),
+            DeliveredOrders: deliveredOrders.Count,
             NotDeliveredOrders: await _db.Orders.CountAsync(o => o.Status == Models.OrderStatus.NotDelivered),
             ActiveRoutes: await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active),
-            TotalRevenue: await _db.Orders
-                .Where(o => o.Status == Models.OrderStatus.Delivered)
-                .SumAsync(o => o.Total),
-            TotalInvestment: totalInvestment
+            TotalRevenue: deliveredOrders.Sum(o => o.Total),
+            TotalInvestment: totalInvestment,
+            TotalCashOrders: allPayments.Count(p => p.Method == "Efectivo"),
+            TotalCashAmount: allPayments.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
+            TotalTransferOrders: allPayments.Count(p => p.Method == "Transferencia"),
+            TotalTransferAmount: allPayments.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
+            TotalDepositOrders: allPayments.Count(p => p.Method == "Deposito"),
+            TotalDepositAmount: allPayments.Where(p => p.Method == "Deposito").Sum(p => p.Amount)
         );
+        return Ok(dto);
+    }
+
+    /// <summary>GET /api/orders/reports?start=2024-01-01&end=2024-01-31</summary>
+    [HttpGet("reports")]
+    public async Task<ActionResult<ReportDto>> GetReports([FromQuery] string start, [FromQuery] string end)
+    {
+        var startDate = DateTime.SpecifyKind(DateTime.Parse(start), DateTimeKind.Utc);
+        var endDate = DateTime.SpecifyKind(DateTime.Parse(end).AddDays(1).AddTicks(-1), DateTimeKind.Utc);
+
+        // ── Pedidos del periodo ──
+        var orders = await _db.Orders
+            .Include(o => o.Items)
+            .Include(o => o.Client)
+            .Include(o => o.Payments)
+            .Where(o => o.CreatedAt >= startDate && o.CreatedAt <= endDate)
+            .ToListAsync();
+
+        var deliveredOrders = orders.Where(o => o.Status == Models.OrderStatus.Delivered).ToList();
+
+        // ── Rutas del periodo ──
+        var routes = await _db.DeliveryRoutes
+            .Where(r => r.CreatedAt >= startDate && r.CreatedAt <= endDate)
+            .ToListAsync();
+
+        var totalDeliveries = await _db.Deliveries
+            .Where(d => d.DeliveryRoute.CreatedAt >= startDate && d.DeliveryRoute.CreatedAt <= endDate)
+            .CountAsync();
+
+        var deliveredCount = await _db.Deliveries
+            .Where(d => d.DeliveryRoute.CreatedAt >= startDate && d.DeliveryRoute.CreatedAt <= endDate
+                     && d.Status == DeliveryStatus.Delivered)
+            .CountAsync();
+
+        // ── Inversiones del periodo ──
+        var totalInvestment = await _db.Investments
+            .Where(i => i.Date >= startDate && i.Date <= endDate)
+            .SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
+
+        // ── Gastos del chofer ──
+        var driverExpenses = await _db.DriverExpenses
+            .Where(e => e.Date >= startDate && e.Date <= endDate)
+            .SumAsync(e => e.Amount);
+
+        // ── Revenue
+        var revenue = deliveredOrders.Sum(o => o.Total);
+
+        // ── Top Productos ──
+        var topProducts = orders
+            .SelectMany(o => o.Items)
+            .GroupBy(i => i.ProductName)
+            .Select(g => new TopProductDto(g.Key, g.Sum(i => i.Quantity), g.Sum(i => i.LineTotal)))
+            .OrderByDescending(p => p.Revenue)
+            .Take(10)
+            .ToList();
+
+        // ── Pedidos por día ──
+        var ordersByDay = orders
+            .GroupBy(o => o.CreatedAt.ToString("yyyy-MM-dd"))
+            .Select(g => new DailyCountDto(g.Key, g.Count(), g.Sum(o => o.Total)))
+            .OrderBy(d => d.Date)
+            .ToList();
+
+        // ── Clientas ──
+        var clientsInPeriod = orders.Where(o => o.Client != null).Select(o => o.Client!).DistinctBy(c => c.Id).ToList();
+        var newClients = clientsInPeriod.Count(c => c.Type == "Nueva" || string.IsNullOrEmpty(c.Type));
+        var frequentClients = clientsInPeriod.Count(c => c.Type == "Frecuente");
+
+        var topClients = orders
+            .Where(o => o.Client != null && o.Status == Models.OrderStatus.Delivered)
+            .GroupBy(o => o.Client!.Name)
+            .Select(g => new TopClientDto(g.Key, g.Count(), g.Sum(o => o.Total)))
+            .OrderByDescending(c => c.TotalSpent)
+            .Take(10)
+            .ToList();
+
+        // ── Proveedores ──
+        var supplierSummaries = await _db.Investments
+            .Include(i => i.Supplier)
+            .Where(i => i.Date >= startDate && i.Date <= endDate)
+            .GroupBy(i => i.Supplier.Name)
+            .Select(g => new SupplierSummaryDto(
+                g.Key,
+                g.Sum(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate)),
+                g.Count()
+            ))
+            .ToListAsync();
+
+        var successRate = totalDeliveries > 0 ? Math.Round((decimal)deliveredCount / totalDeliveries * 100, 1) : 0m;
+
+        var reportPayments = deliveredOrders.SelectMany(o => o.Payments ?? new List<OrderPayment>()).ToList();
+
+        var dto = new ReportDto(
+            TotalRevenue: revenue,
+            TotalInvestment: totalInvestment,
+            TotalExpenses: driverExpenses,
+            NetProfit: revenue - totalInvestment - driverExpenses,
+            TotalOrders: orders.Count,
+            PendingOrders: orders.Count(o => o.Status == Models.OrderStatus.Pending),
+            InRouteOrders: orders.Count(o => o.Status == Models.OrderStatus.InRoute),
+            DeliveredOrders: deliveredOrders.Count,
+            NotDeliveredOrders: orders.Count(o => o.Status == Models.OrderStatus.NotDelivered),
+            CanceledOrders: orders.Count(o => o.Status == Models.OrderStatus.Canceled),
+            DeliveryOrders: orders.Count(o => o.OrderType == OrderType.Delivery),
+            PickUpOrders: orders.Count(o => o.OrderType == OrderType.PickUp),
+            AvgTicket: orders.Count > 0 ? Math.Round(orders.Average(o => o.Total), 2) : 0,
+            TopProducts: topProducts,
+            OrdersByDay: ordersByDay,
+            TotalRoutes: routes.Count,
+            CompletedRoutes: routes.Count(r => r.Status == RouteStatus.Completed),
+            SuccessRate: successRate,
+            TotalDriverExpenses: driverExpenses,
+            NewClients: newClients,
+            FrequentClients: frequentClients,
+            ActiveClients: clientsInPeriod.Count,
+            TopClients: topClients,
+            CashOrders: reportPayments.Count(p => p.Method == "Efectivo"),
+            CashAmount: reportPayments.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
+            TransferOrders: reportPayments.Count(p => p.Method == "Transferencia"),
+            TransferAmount: reportPayments.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
+            DepositOrders: reportPayments.Count(p => p.Method == "Deposito"),
+            DepositAmount: reportPayments.Where(p => p.Method == "Deposito").Sum(p => p.Amount),
+            UnassignedPaymentOrders: deliveredOrders.Count(o => !(o.Payments?.Any() ?? false)),
+            SupplierSummaries: supplierSummaries
+        );
+
         return Ok(dto);
     }
 
@@ -380,6 +555,7 @@ public class OrdersController : ControllerBase
         var order = await _db.Orders
             .Include(o => o.Items)
             .Include(o => o.Client)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null) return NotFound("Orden no encontrada");
@@ -432,7 +608,7 @@ public class OrdersController : ControllerBase
 
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
-        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
+        order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
 
@@ -476,6 +652,7 @@ public class OrdersController : ControllerBase
         var order = await _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Items)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null) return NotFound("Orden no encontrada");
@@ -512,7 +689,7 @@ public class OrdersController : ControllerBase
 
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
-        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
+        order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
 
@@ -526,6 +703,7 @@ public class OrdersController : ControllerBase
         var order = await _db.Orders
             .Include(o => o.Items)
             .Include(o => o.Client)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.Id == orderId);
 
         if (order == null) return NotFound("Orden no encontrada");
@@ -539,7 +717,7 @@ public class OrdersController : ControllerBase
         item.LineTotal = item.Quantity * item.UnitPrice;
 
         order.Subtotal = order.Items.Sum(i => i.LineTotal);
-        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
+        order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
 
@@ -553,6 +731,7 @@ public class OrdersController : ControllerBase
         var order = await _db.Orders
             .Include(o => o.Items)
             .Include(o => o.Client)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.Id == orderId);
 
         if (order == null) return NotFound("Orden no encontrada");
@@ -567,7 +746,7 @@ public class OrdersController : ControllerBase
 
         order.Items.Add(newItem);
         order.Subtotal = order.Items.Sum(i => i.LineTotal);
-        order.Total = order.Subtotal + order.ShippingCost - order.AdvancePayment;
+        order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
 
@@ -624,7 +803,7 @@ public class OrdersController : ControllerBase
 
             // Recalcular totales
             masterOrder.Subtotal = masterOrder.Items.Sum(i => i.LineTotal);
-            masterOrder.Total = masterOrder.Subtotal + masterOrder.ShippingCost - masterOrder.AdvancePayment;
+            masterOrder.Total = masterOrder.Subtotal + masterOrder.ShippingCost;
 
             // Actualizar fecha para que suba en la lista
             masterOrder.CreatedAt = DateTime.UtcNow;
@@ -634,6 +813,53 @@ public class OrdersController : ControllerBase
 
         await _db.SaveChangesAsync();
         return Ok($"¡Listo! Se fusionaron pedidos duplicados de {fixedCount} clientas por Nombre.");
+    }
+
+    // ---------------------------------------------------------
+    // PAGOS (Libro de Transacciones)
+    // ---------------------------------------------------------
+
+    /// <summary>POST /api/orders/{id}/payments - Registra un pago</summary>
+    [HttpPost("{id}/payments")]
+    public async Task<ActionResult<OrderPaymentDto>> AddPayment(int id, [FromBody] AddPaymentRequest req)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Payments)
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Orden no encontrada");
+        if (req.Amount <= 0) return BadRequest("El monto debe ser mayor a 0");
+
+        var payment = new OrderPayment
+        {
+            OrderId = id,
+            Amount = req.Amount,
+            Method = req.Method,
+            Date = DateTime.UtcNow,
+            RegisteredBy = req.RegisteredBy,
+            Notes = req.Notes
+        };
+
+        _db.OrderPayments.Add(payment);
+        await _db.SaveChangesAsync();
+
+        return Ok(new OrderPaymentDto(payment.Id, payment.OrderId, payment.Amount, payment.Method, payment.Date, payment.RegisteredBy, payment.Notes));
+    }
+
+    /// <summary>DELETE /api/orders/{orderId}/payments/{paymentId}</summary>
+    [HttpDelete("{orderId}/payments/{paymentId}")]
+    public async Task<IActionResult> DeletePayment(int orderId, int paymentId)
+    {
+        var payment = await _db.OrderPayments
+            .FirstOrDefaultAsync(p => p.Id == paymentId && p.OrderId == orderId);
+
+        if (payment == null) return NotFound("Pago no encontrado");
+
+        _db.OrderPayments.Remove(payment);
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 
     // ---------------------------------------------------------
@@ -685,6 +911,7 @@ public class OrdersController : ControllerBase
     // [Authorize(Roles = "Admin")]
     public async Task<IActionResult> WipeAllOrders()
     {
+        await _db.OrderPayments.ExecuteDeleteAsync();
         await _db.OrderItems.ExecuteDeleteAsync();
         await _db.Deliveries.ExecuteDeleteAsync();
         await _db.Orders.ExecuteDeleteAsync();

@@ -1,4 +1,5 @@
 using EntregasApi.DTOs;
+using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -44,8 +45,22 @@ public class Order
     public string? DeliveryTime { get; set; }
     public string? PickupDate { get; set; }
 
+    // ── LEGACY (mantener para migración) ──
+    [Obsolete("Usar Payments collection")]
     [Column(TypeName = "decimal(10,2)")]
     public decimal AdvancePayment { get; set; } = 0m;
+
+    [Obsolete("Usar Payments collection")]
+    public string? PaymentMethod { get; set; }
+
+    // ── NUEVO: Libro de Transacciones ──
+    public ICollection<OrderPayment> Payments { get; set; } = new List<OrderPayment>();
+
+    [NotMapped]
+    public decimal AmountPaid => Payments?.Sum(p => p.Amount) ?? 0m;
+
+    [NotMapped]
+    public decimal BalanceDue => Total - AmountPaid;
 }
 
 public class OrderItem

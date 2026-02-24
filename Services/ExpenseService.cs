@@ -50,6 +50,61 @@ namespace EntregasApi.Services
         }
 
         // ═══════════════════════════════════════════
+        //  ADMIN CRUD EXPENSES
+        // ═══════════════════════════════════════════
+
+        public async Task<DriverExpenseDto> CreateAdminExpenseAsync(CreateAdminExpenseRequest request)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(request.DeliveryRouteId);
+            if (route == null)
+                throw new InvalidOperationException("La ruta especificada no existe.");
+
+            var expense = new DriverExpense
+            {
+                DeliveryRouteId = request.DeliveryRouteId,
+                Amount = request.Amount,
+                ExpenseType = request.ExpenseType,
+                Date = request.Date, // Admin puede forzar la fecha
+                Notes = request.Notes?.Trim(),
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _db.DriverExpenses.Add(expense);
+            await _db.SaveChangesAsync();
+
+            return MapToDto(expense, route);
+        }
+
+        public async Task<DriverExpenseDto> UpdateExpenseAsync(int id, UpdateAdminExpenseRequest request)
+        {
+            var expense = await _db.DriverExpenses
+                .Include(e => e.DeliveryRoute)
+                .FirstOrDefaultAsync(e => e.Id == id);
+
+            if (expense == null)
+                throw new InvalidOperationException("Gasto no encontrado.");
+
+            expense.Amount = request.Amount;
+            expense.ExpenseType = request.ExpenseType;
+            expense.Date = request.Date;
+            expense.Notes = request.Notes?.Trim();
+
+            await _db.SaveChangesAsync();
+
+            return MapToDto(expense, expense.DeliveryRoute);
+        }
+
+        public async Task<bool> DeleteExpenseAsync(int id)
+        {
+            var expense = await _db.DriverExpenses.FindAsync(id);
+            if (expense == null) return false;
+
+            _db.DriverExpenses.Remove(expense);
+            await _db.SaveChangesAsync();
+            return true;
+        }
+
+        // ═══════════════════════════════════════════
         //  GET EXPENSES (Admin side, by quincena)
         // ═══════════════════════════════════════════
 
@@ -127,6 +182,8 @@ namespace EntregasApi.Services
 
             var expenseLines = expenses.Select(e => new ExpenseLineDto(
                 e.Id,
+                e.DeliveryRouteId,
+                e.DeliveryRoute?.Name,
                 null,
                 e.Amount,
                 e.ExpenseType,
@@ -216,7 +273,7 @@ namespace EntregasApi.Services
             return new DriverExpenseDto(
                 e.Id,
                 e.DeliveryRouteId,
-                null,
+                route?.Name,
                 e.Amount,
                 e.ExpenseType,
                 e.Date,

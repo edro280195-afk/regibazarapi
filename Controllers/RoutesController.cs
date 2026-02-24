@@ -170,6 +170,33 @@ public class RoutesController : ControllerBase
     }
 
     // ═══════════════════════════════════════════
+    //  REORDENAMIENTO MANUAL (DRAG & DROP)
+    // ═══════════════════════════════════════════
+    [HttpPut("{id}/reorder")]
+    public async Task<IActionResult> ReorderDeliveries(int id, [FromBody] List<int> deliveryIdsInOrder)
+    {
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries)
+            .FirstOrDefaultAsync(r => r.Id == id);
+
+        if (route == null) return NotFound("Ruta no encontrada");
+
+        // Actualizamos cada delivery al nuevo orden iterando la lista enviada
+        int newOrder = 1;
+        foreach (var deliveryId in deliveryIdsInOrder)
+        {
+            var delivery = route.Deliveries.FirstOrDefault(d => d.Id == deliveryId);
+            if (delivery != null)
+            {
+                delivery.SortOrder = newOrder++;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+        return Ok(new { Message = "Orden actualizado correctamente" });
+    }
+
+    // ═══════════════════════════════════════════
     //  HELPERS & DELETE
     // ═══════════════════════════════════════════
 
@@ -180,9 +207,25 @@ public class RoutesController : ControllerBase
 
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o.Client)
+            .Include(d => d.Order).ThenInclude(o => o.Payments)
             .Include(d => d.Evidences)
             .Where(d => d.DeliveryRouteId == routeId)
             .OrderBy(d => d.SortOrder)
+            .ToListAsync();
+
+        var expenses = await _db.DriverExpenses
+            .Where(e => e.DeliveryRouteId == routeId)
+            .Select(e => new DriverExpenseDto(
+                e.Id,
+                e.DeliveryRouteId,
+                null,
+                e.Amount,
+                e.ExpenseType,
+                e.Date,
+                e.Notes,
+                e.EvidencePath,
+                e.CreatedAt
+            ))
             .ToListAsync();
 
         return new RouteDto(
@@ -205,8 +248,15 @@ public class RoutesController : ControllerBase
                 DeliveredAt: d.DeliveredAt,
                 Notes: d.Notes,
                 FailureReason: d.FailureReason,
-                EvidenceUrls: d.Evidences.Select(e => e.ImagePath).ToList()
-            )).ToList()
+                EvidenceUrls: d.Evidences.Select(e => e.ImagePath).ToList(),
+                ClientPhone: d.Order.Client.Phone,
+                PaymentMethod: d.Order.PaymentMethod,
+                Payments: (d.Order.Payments ?? new List<OrderPayment>())
+                    .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+                AmountPaid: d.Order.AmountPaid,
+                BalanceDue: d.Order.BalanceDue
+            )).ToList(),
+            Expenses: expenses
         );
     }
 
@@ -267,6 +317,43 @@ public class RoutesController : ControllerBase
         await _db.SaveChangesAsync();
 
         return NoContent();
+    }
+
+    // ═══════════════════════════════════════════
+    //  LIQUIDACIÓN DE RUTA (CORTE DE CAJA)
+    // ═══════════════════════════════════════════
+    [HttpPost("{id}/liquidate")]
+    public async Task<IActionResult> LiquidateRoute(int id)
+    {
+        var route = await _db.DeliveryRoutes.FindAsync(id);
+        if (route == null) return NotFound("Ruta no encontrada");
+
+        // Cambiamos el estado de la ruta a Completed
+        route.Status = RouteStatus.Completed;
+        route.CompletedAt = DateTime.UtcNow;
+
+        // Buscamos todas las órdenes de la ruta que estén en InRoute
+        var linkedOrders = await _db.Orders
+            .Where(o => o.DeliveryRouteId == id && o.Status == Models.OrderStatus.InRoute)
+            .ToListAsync();
+
+        // Las marcamos como Delivered (o el estado final que uses)
+        foreach (var order in linkedOrders)
+        {
+            order.Status = Models.OrderStatus.Delivered;
+            
+            // También actualizamos el delivery correspondiente si existe
+            var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+            if(delivery != null && delivery.Status == DeliveryStatus.Pending)
+            {
+                delivery.Status = DeliveryStatus.Delivered;
+                delivery.DeliveredAt = DateTime.UtcNow;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { Message = "Ruta liquidada exitosamente." });
     }
 }
 

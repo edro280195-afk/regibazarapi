@@ -27,23 +27,29 @@ public record OrderSummaryDto(
     int Id,
     string ClientName,
     string Status,
-    decimal Total,         // 11. decimal
+    decimal Total,
     string Link,
     int ItemsCount,
-    string OrderType,      // 6. string
-    DateTime CreatedAt,  // Fecha de creación
+    string OrderType,
+    DateTime CreatedAt,
     string ClientType,
 
     string? ClientPhone,
     string? ClientAddress,
-    DateTime? PostponedAt, // 7. DateTime?
-    string? PostponedNote, // 8. string?
-    decimal Subtotal,      // 9. decimal
-    decimal ShippingCost,  // 10. decimal
-    string AccessToken,    // 13. string
-    DateTime ExpiresAt,    // 15. DateTime
-    List<OrderItemDto> Items, // 16. List
-    decimal AdvancePayment = 0m
+    DateTime? PostponedAt,
+    string? PostponedNote,
+    decimal Subtotal,
+    decimal ShippingCost,
+    string AccessToken,
+    DateTime ExpiresAt,
+    List<OrderItemDto> Items,
+    // Nuevo: Libro de Pagos
+    List<OrderPaymentDto> Payments = null!,
+    decimal AmountPaid = 0m,
+    decimal BalanceDue = 0m,
+    // Legacy (retrocompatibilidad)
+    decimal AdvancePayment = 0m,
+    string? PaymentMethod = null
 );
 
 public record OrderTrackingDto(
@@ -99,7 +105,8 @@ public record RouteDto(
     string Status,
     DateTime CreatedAt,
     DateTime? StartedAt,
-    List<RouteDeliveryDto> Deliveries
+    List<RouteDeliveryDto> Deliveries,
+    List<DriverExpenseDto>? Expenses = null
 );
 
 public record RouteDeliveryDto(
@@ -115,20 +122,25 @@ public record RouteDeliveryDto(
     DateTime? DeliveredAt,
     string? Notes,
     string? FailureReason,
-    List<string> EvidenceUrls
-
-
+    List<string> EvidenceUrls,
+    string? ClientPhone,
+    string? PaymentMethod,
+    List<OrderPaymentDto>? Payments = null,
+    decimal AmountPaid = 0m,
+    decimal BalanceDue = 0m
 )
 {
-    // Alias for frontend compatibility (templates use d.id)
     public int Id => DeliveryId;
-    // Alias (some templates use d.address instead of d.clientAddress)
     public string? Address => ClientAddress;
 }
 
+public record CreateAdminExpenseRequest(decimal Amount, string ExpenseType, DateTime Date, string? Notes, int? DeliveryRouteId);
+public record UpdateAdminExpenseRequest(decimal Amount, string ExpenseType, DateTime Date, string? Notes, int? DeliveryRouteId);
+
 // ── Driver ──
 public record UpdateLocationRequest(double Latitude, double Longitude);
-public record CompleteDeliveryRequest(string? Notes);
+public record CompleteDeliveryRequest(string? Notes, List<PaymentInputDto>? Payments);
+public record PaymentInputDto(decimal Amount, string Method, string? Notes);
 public record FailDeliveryRequest(string Reason, string? Notes);
 
 // ── Client View ──
@@ -151,8 +163,36 @@ public record ClientOrderView(
     DateTime? CreatedAt = null,
     string? ClientType = null,
     string? ClientAddress = null,
-    decimal AdvancePayment = 0m
+    decimal AdvancePayment = 0m,
+    List<OrderPaymentDto>? Payments = null,
+    decimal AmountPaid = 0m,
+    decimal BalanceDue = 0m
 );
+
+// ── OrderPayment ──
+public record OrderPaymentDto(
+    int Id,
+    int OrderId,
+    decimal Amount,
+    string Method,
+    DateTime Date,
+    string RegisteredBy,
+    string? Notes
+);
+
+public record AddPaymentRequest
+{
+    [Required]
+    public decimal Amount { get; init; }
+
+    [Required, MaxLength(50)]
+    public string Method { get; init; } = "Efectivo";
+
+    public string RegisteredBy { get; init; } = "Admin";
+
+    [MaxLength(500)]
+    public string? Notes { get; init; }
+};
 
 public record DriverLocationDto(
     double Latitude,
@@ -169,7 +209,67 @@ public record DashboardDto(
     int NotDeliveredOrders,
     int ActiveRoutes,
     decimal TotalRevenue,
-    decimal TotalInvestment
+    decimal TotalInvestment,
+    int TotalCashOrders,
+    decimal TotalCashAmount,
+    int TotalTransferOrders,
+    decimal TotalTransferAmount,
+    int TotalDepositOrders,
+    decimal TotalDepositAmount
+);
+
+// ── Reports ──
+public record ReportDto(
+    // Financiero
+    decimal TotalRevenue,
+    decimal TotalInvestment,
+    decimal TotalExpenses,
+    decimal NetProfit,
+    // Pedidos
+    int TotalOrders,
+    int PendingOrders,
+    int InRouteOrders,
+    int DeliveredOrders,
+    int NotDeliveredOrders,
+    int CanceledOrders,
+    int DeliveryOrders,
+    int PickUpOrders,
+    decimal AvgTicket,
+    List<TopProductDto> TopProducts,
+    List<DailyCountDto> OrdersByDay,
+    // Rutas
+    int TotalRoutes,
+    int CompletedRoutes,
+    decimal SuccessRate,
+    decimal TotalDriverExpenses,
+    // Clientas
+    int NewClients,
+    int FrequentClients,
+    int ActiveClients,
+    List<TopClientDto> TopClients,
+    // Cobros
+    int CashOrders,
+    decimal CashAmount,
+    int TransferOrders,
+    decimal TransferAmount,
+    int DepositOrders,
+    decimal DepositAmount,
+    int UnassignedPaymentOrders,
+    // Proveedores
+    List<SupplierSummaryDto> SupplierSummaries
+);
+
+public record TopProductDto(string Name, int Quantity, decimal Revenue);
+public record DailyCountDto(string Date, int Count, decimal Amount);
+public record TopClientDto(string Name, int Orders, decimal TotalSpent);
+public record SupplierSummaryDto(string Name, decimal TotalInvested, int InvestmentCount);
+
+// ── Glow Up (IG Story) ──
+public record GlowUpReportDto(
+    string MonthName,
+    int TotalDeliveries,
+    string TopProduct,
+    int NewClients
 );
 
 public record OrderStatsDto(
@@ -284,7 +384,7 @@ public record CreateInvestmentRequest
 
 public record DriverExpenseDto(
     int Id,
-    int DriverRouteId,
+    int? DriverRouteId,
     string? DriverName,
     decimal Amount,
     string ExpenseType,
@@ -343,6 +443,8 @@ public record IncomeLineDto(
 
 public record ExpenseLineDto(
     int Id,
+    int? DriverRouteId,
+    string? RouteName,
     string? DriverName,
     decimal Amount,
     string ExpenseType,

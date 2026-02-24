@@ -8,9 +8,9 @@ namespace EntregasApi.Models
         [Key]
         public int Id { get; set; }
         [Required]
-        public int DeliveryRouteId { get; set; }
+        public int? DeliveryRouteId { get; set; }
         [ForeignKey(nameof(DeliveryRouteId))]
-        public DeliveryRoute DeliveryRoute { get; set; }
+        public DeliveryRoute? DeliveryRoute { get; set; }
         [Column(TypeName = "decimal(12,2)")]
         public decimal Amount { get; set; }
 

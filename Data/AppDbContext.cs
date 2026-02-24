@@ -25,6 +25,7 @@ public class AppDbContext : DbContext
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
     public DbSet<PushSubscriptionModel> PushSubscriptions => Set<PushSubscriptionModel>();
+    public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -54,6 +55,19 @@ public class AppDbContext : DbContext
             .HasOne(o => o.Delivery)
             .WithOne(d => d.Order)
             .HasForeignKey<Delivery>(d => d.OrderId);
+
+        // Order -> Payments (1:N)
+        modelBuilder.Entity<Order>()
+            .HasMany(o => o.Payments)
+            .WithOne(p => p.Order)
+            .HasForeignKey(p => p.OrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<OrderPayment>(entity =>
+        {
+            entity.HasIndex(p => p.OrderId);
+            entity.HasIndex(p => p.Date);
+        });
 
         // Proveedores e Inversiones
         modelBuilder.Entity<Supplier>(entity =>
