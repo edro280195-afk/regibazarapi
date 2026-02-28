@@ -145,13 +145,11 @@ public class OrdersController : ControllerBase
 
         var pendingAmount = await _db.Orders
             .Where(o => o.Status == EntregasApi.Models.OrderStatus.Pending || o.Status == EntregasApi.Models.OrderStatus.InRoute)
-            .SelectMany(o => o.Items)
-            .SumAsync(i => i.Quantity * i.UnitPrice);
+            .SumAsync(o => o.Total - o.AdvancePayment - o.Payments.Sum(p => p.Amount));
 
         var collectedToday = await _db.Orders
             .Where(o => o.Status == EntregasApi.Models.OrderStatus.Delivered && o.CreatedAt >= today && o.CreatedAt <= endOfToday)
-            .SelectMany(o => o.Items)
-            .SumAsync(i => i.Quantity * i.UnitPrice);
+            .SumAsync(o => o.Total);
 
         return Ok(new OrderStatsDto(totalOrders, pendingOrders, pendingAmount, collectedToday));
     }

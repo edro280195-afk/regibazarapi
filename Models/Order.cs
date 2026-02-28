@@ -57,7 +57,7 @@ public class Order
     public ICollection<OrderPayment> Payments { get; set; } = new List<OrderPayment>();
 
     [NotMapped]
-    public decimal AmountPaid => Payments?.Sum(p => p.Amount) ?? 0m;
+    public decimal AmountPaid => (Payments?.Sum(p => p.Amount) ?? 0m) + AdvancePayment;
 
     [NotMapped]
     public decimal BalanceDue => Total - AmountPaid;
