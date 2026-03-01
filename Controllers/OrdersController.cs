@@ -136,20 +136,29 @@ public class OrdersController : ControllerBase
     [HttpGet("stats")]
     public async Task<ActionResult<OrderStatsDto>> GetOrderStats()
     {
-        // 🚀 CORRECCIÓN: Generamos las fechas y las forzamos a ser UTC para que PostgreSQL no truene
+        // Forzamos las fechas a ser UTC para que PostgreSQL no truene
         var today = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc);
         var endOfToday = today.AddDays(1).AddTicks(-1);
 
         var totalOrders = await _db.Orders.CountAsync();
+
         var pendingOrders = await _db.Orders.CountAsync(o => o.Status == EntregasApi.Models.OrderStatus.Pending);
 
-        var pendingAmount = await _db.Orders
-            .Where(o => o.Status == EntregasApi.Models.OrderStatus.Pending || o.Status == EntregasApi.Models.OrderStatus.InRoute)
-            .SumAsync(o => o.Total - o.AdvancePayment - o.Payments.Sum(p => p.Amount));
+        // 🚀 CORRECCIÓN: Por Cobrar (Todos los NO entregados/cancelados menos sus abonos)
+        var activeOrders = await _db.Orders
+            .Include(o => o.Payments) // Vital para que no sea null
+            .Where(o => o.Status != Models.OrderStatus.Delivered
+                     && o.Status != Models.OrderStatus.Canceled
+                     && o.Status != Models.OrderStatus.NotDelivered)
+            .ToListAsync(); // Lo traemos a memoria RAM para sumar seguros
 
-        var collectedToday = await _db.Orders
-            .Where(o => o.Status == EntregasApi.Models.OrderStatus.Delivered && o.CreatedAt >= today && o.CreatedAt <= endOfToday)
-            .SumAsync(o => o.Total);
+        // Hacemos la matemática exacta en C# (Total del pedido - Suma de sus pagos)
+        var pendingAmount = activeOrders.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
+
+        // Cobrado Hoy (Esto estaba bien, pero podemos mejorarlo leyendo la tabla Payments directamente)
+        var collectedToday = await _db.OrderPayments
+            .Where(p => p.Date >= today && p.Date <= endOfToday)
+            .SumAsync(p => p.Amount);
 
         return Ok(new OrderStatsDto(totalOrders, pendingOrders, pendingAmount, collectedToday));
     }
@@ -388,12 +397,29 @@ public class OrdersController : ControllerBase
         var totalInvestment = await _db.Investments.SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
 
         var deliveredOrders = await _db.Orders
-            .Include(o => o.Payments)
             .Where(o => o.Status == Models.OrderStatus.Delivered)
             .ToListAsync();
 
-        // Agregar payments de todas las orders entregadas
-        var allPayments = deliveredOrders.SelectMany(o => o.Payments ?? new List<OrderPayment>()).ToList();
+        // Se debe usar la hora actual (CST para México o basarse en UTC con una resta horaria para evitar traslapes del día siguiente)
+        var mexicoTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time (Mexico)") ?? TimeZoneInfo.FindSystemTimeZoneById("America/Mexico_City");
+        var nowMexico = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, mexicoTimeZone);
+        
+        var todayStartMexico = new DateTime(nowMexico.Year, nowMexico.Month, nowMexico.Day, 0, 0, 0);
+        var todayEndMexico = todayStartMexico.AddDays(1).AddTicks(-1);
+        
+        var startOfMonthMexico = new DateTime(nowMexico.Year, nowMexico.Month, 1, 0, 0, 0);
+
+        // Convertimos esos límites de regreso a UTC para comparar con la base de datos (que guarda las fechas en UTC)
+        var todayStartUtc = TimeZoneInfo.ConvertTimeToUtc(todayStartMexico, mexicoTimeZone);
+        var todayEndUtc = TimeZoneInfo.ConvertTimeToUtc(todayEndMexico, mexicoTimeZone);
+        var startOfMonthUtc = TimeZoneInfo.ConvertTimeToUtc(startOfMonthMexico, mexicoTimeZone);
+
+        // Get ALL payments for real cash flow
+        var allPayments = await _db.OrderPayments.ToListAsync();
+
+        var revenueToday = allPayments.Where(p => p.Date >= todayStartUtc && p.Date <= todayEndUtc).Sum(p => p.Amount);
+        var revenueMonth = allPayments.Where(p => p.Date >= startOfMonthUtc).Sum(p => p.Amount);
+        var totalRevenue = allPayments.Sum(p => p.Amount);
 
         var dto = new DashboardDto(
             TotalClients: await _db.Clients.CountAsync(),
@@ -402,7 +428,9 @@ public class OrdersController : ControllerBase
             DeliveredOrders: deliveredOrders.Count,
             NotDeliveredOrders: await _db.Orders.CountAsync(o => o.Status == Models.OrderStatus.NotDelivered),
             ActiveRoutes: await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active),
-            TotalRevenue: deliveredOrders.Sum(o => o.Total),
+            TotalRevenue: totalRevenue,
+            RevenueMonth: revenueMonth,
+            RevenueToday: revenueToday,
             TotalInvestment: totalInvestment,
             TotalCashOrders: allPayments.Count(p => p.Method == "Efectivo"),
             TotalCashAmount: allPayments.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),

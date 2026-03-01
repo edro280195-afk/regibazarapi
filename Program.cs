@@ -119,11 +119,11 @@ builder.Services.AddDirectoryBrowser();
 var app = builder.Build();
 
 // ── Migrate DB on startup ──
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.MigrateAsync();
-}
+//using (var scope = app.Services.CreateScope())
+//{
+//    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+//    await db.Database.MigrateAsync();
+//}
 
 // ── Middleware pipeline ──
 if (app.Environment.IsDevelopment())

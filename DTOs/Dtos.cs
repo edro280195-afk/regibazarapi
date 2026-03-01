@@ -209,6 +209,8 @@ public record DashboardDto(
     int NotDeliveredOrders,
     int ActiveRoutes,
     decimal TotalRevenue,
+    decimal RevenueMonth,
+    decimal RevenueToday,
     decimal TotalInvestment,
     int TotalCashOrders,
     decimal TotalCashAmount,
