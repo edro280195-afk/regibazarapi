@@ -136,10 +136,6 @@ public class OrdersController : ControllerBase
     [HttpGet("stats")]
     public async Task<ActionResult<OrderStatsDto>> GetOrderStats()
     {
-        // Forzamos las fechas a ser UTC para que PostgreSQL no truene
-        var today = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc);
-        var endOfToday = today.AddDays(1).AddTicks(-1);
-
         var totalOrders = await _db.Orders.CountAsync();
 
         var pendingOrders = await _db.Orders.CountAsync(o => o.Status == EntregasApi.Models.OrderStatus.Pending);
@@ -155,10 +151,21 @@ public class OrdersController : ControllerBase
         // Hacemos la matemática exacta en C# (Total del pedido - Suma de sus pagos)
         var pendingAmount = activeOrders.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
 
-        // Cobrado Hoy (Esto estaba bien, pero podemos mejorarlo leyendo la tabla Payments directamente)
-        var collectedToday = await _db.OrderPayments
-            .Where(p => p.Date >= today && p.Date <= endOfToday)
-            .SumAsync(p => p.Amount);
+        // 🚀 Ajustar la Zona Horaria para el Cobrado Hoy (CST México) de manera idéntica al Dashboard
+        var mexicoTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time (Mexico)") ?? TimeZoneInfo.FindSystemTimeZoneById("America/Mexico_City");
+        var nowMexico = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, mexicoTimeZone);
+        
+        var todayStartMexico = new DateTime(nowMexico.Year, nowMexico.Month, nowMexico.Day, 0, 0, 0);
+        var todayEndMexico = todayStartMexico.AddDays(1).AddTicks(-1);
+        
+        var todayStartUtc = TimeZoneInfo.ConvertTimeToUtc(todayStartMexico, mexicoTimeZone);
+        var todayEndUtc = TimeZoneInfo.ConvertTimeToUtc(todayEndMexico, mexicoTimeZone);
+
+        // EXTRAEMOS A MEMORIA RAM PARA EMULAR EXACTAMENTE EL MISMO EFECTO DE DASHBOARD()
+        var allPayments = await _db.OrderPayments.ToListAsync();
+        var collectedToday = allPayments
+            .Where(p => p.Date >= todayStartUtc && p.Date <= todayEndUtc)
+            .Sum(p => p.Amount);
 
         return Ok(new OrderStatsDto(totalOrders, pendingOrders, pendingAmount, collectedToday));
     }

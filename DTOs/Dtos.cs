@@ -139,7 +139,7 @@ public record UpdateAdminExpenseRequest(decimal Amount, string ExpenseType, Date
 
 // ── Driver ──
 public record UpdateLocationRequest(double Latitude, double Longitude);
-public record CompleteDeliveryRequest(string? Notes, List<PaymentInputDto>? Payments);
+public record CompleteDeliveryRequest(string? Notes, string? PaymentsJson);
 public record PaymentInputDto(decimal Amount, string Method, string? Notes);
 public record FailDeliveryRequest(string Reason, string? Notes);
 

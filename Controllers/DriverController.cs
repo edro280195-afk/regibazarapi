@@ -185,10 +185,24 @@ public class DriverController : ControllerBase
             delivery.Notes = req.Notes;
             delivery.Order.Status = Models.OrderStatus.Delivered;
 
-            // Registrar pagos del chofer
-            if (req.Payments != null && req.Payments.Any())
+            // Deserializar pagos desde JSON crudo en FormData
+            List<PaymentInputDto>? parsedPayments = null;
+            if (!string.IsNullOrWhiteSpace(req.PaymentsJson))
             {
-                foreach (var p in req.Payments)
+                try
+                {
+                    parsedPayments = System.Text.Json.JsonSerializer.Deserialize<List<PaymentInputDto>>(
+                        req.PaymentsJson, 
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                    );
+                }
+                catch { /* ignore json parse errors in production for safety, rely on null check */}
+            }
+
+            // Registrar pagos del chofer
+            if (parsedPayments != null && parsedPayments.Any())
+            {
+                foreach (var p in parsedPayments)
                 {
                     _db.OrderPayments.Add(new OrderPayment
                     {
