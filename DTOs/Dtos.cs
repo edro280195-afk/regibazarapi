@@ -188,7 +188,7 @@ public record AddPaymentRequest
     [Required, MaxLength(50)]
     public string Method { get; init; } = "Efectivo";
 
-    public string RegisteredBy { get; init; } = "Admin";
+    public string? RegisteredBy { get; init; }  // ✅ nullable
 
     [MaxLength(500)]
     public string? Notes { get; init; }
@@ -300,8 +300,8 @@ public enum OrderStatus
 }
 
 public record UpdateOrderStatusRequest(
-    string Status,
-    string OrderType,
+    string? Status,              // ✅ nullable
+    string? OrderType,           // ✅ nullable — Angular no lo manda aquí
     DateTime? PostponedAt,
     string? PostponedNote
 );
@@ -457,15 +457,15 @@ public record ExpenseLineDto(
 
 // DTO para actualizar la orden completa
 public record UpdateOrderDetailsRequest(
-    string Status,
-    string OrderType,
+    string? Status,
+    string? OrderType,
     DateTime? PostponedAt,
     string? PostponedNote,
-    string ClientName,
-    string ClientAddress,
-    string ClientPhone,
-    List<string>? Tags,          // ← nuevo
-    string? DeliveryTime,        // ← nuevo
+    string ClientName,            // este sí es required (siempre se manda)
+    string? ClientAddress,        // ✅ nullable
+    string? ClientPhone,          // ✅ nullable
+    List<string>? Tags,
+    string? DeliveryTime,
     string? PickupDate,
     decimal? ShippingCost = null,
     decimal? AdvancePayment = null

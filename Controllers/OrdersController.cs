@@ -864,7 +864,7 @@ public class OrdersController : ControllerBase
             Amount = req.Amount,
             Method = req.Method,
             Date = DateTime.UtcNow,
-            RegisteredBy = req.RegisteredBy,
+            RegisteredBy = req.RegisteredBy ?? "Admin",  // ✅ Default seguro
             Notes = req.Notes
         };
 
