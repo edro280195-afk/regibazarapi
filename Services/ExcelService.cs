@@ -230,7 +230,9 @@ public class ExcelService : IExcelService
             AmountPaid: order.AmountPaid,
             BalanceDue: order.BalanceDue,
             AdvancePayment: order.AdvancePayment,
-            PaymentMethod: order.PaymentMethod
+            PaymentMethod: order.PaymentMethod,
+            SalesPeriodId: order.SalesPeriodId,
+            SalesPeriodName: order.SalesPeriod?.Name
         );
     }
 }

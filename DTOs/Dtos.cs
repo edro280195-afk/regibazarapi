@@ -49,7 +49,10 @@ public record OrderSummaryDto(
     decimal BalanceDue = 0m,
     // Legacy (retrocompatibilidad)
     decimal AdvancePayment = 0m,
-    string? PaymentMethod = null
+    string? PaymentMethod = null,
+    // SalesPeriod (Corte)
+    int? SalesPeriodId = null,
+    string? SalesPeriodName = null
 );
 
 public record OrderTrackingDto(
@@ -217,8 +220,27 @@ public record DashboardDto(
     int TotalTransferOrders,
     decimal TotalTransferAmount,
     int TotalDepositOrders,
-    decimal TotalDepositAmount
+    decimal TotalDepositAmount,
+    // Chart data — eliminates N+1 calls from frontend
+    List<MonthlySalesDto> SalesByMonth,
+    int ClientsNueva,
+    int ClientsFrecuente,
+    int OrdersDelivery,
+    int OrdersPickUp,
+    ActivePeriodSummaryDto? ActivePeriod = null
 );
+
+public record ActivePeriodSummaryDto(
+    int Id,
+    string Name,
+    decimal TotalSales,
+    decimal TotalInvested,
+    decimal NetProfit,
+    decimal CollectedAmount = 0m
+);
+
+public record MonthlySalesDto(string Month, decimal Sales);
+public record CommonProductDto(string Name, int Count, decimal TypicalPrice);
 
 // ── Reports ──
 public record ReportDto(
@@ -363,10 +385,11 @@ public record InvestmentDto(
     DateTime Date,
     string? Notes,
     DateTime CreatedAt,
-
     string Currency,
     decimal ExchangeRate,
-     decimal TotalMXN
+    decimal TotalMXN,
+    int? SalesPeriodId = null,
+    string? SalesPeriodName = null
 );
 
 public record CreateInvestmentRequest
@@ -382,6 +405,8 @@ public record CreateInvestmentRequest
 
     public string Currency { get; set; } = "MXN";
     public decimal? ExchangeRate { get; set; }
+
+    public int? SalesPeriodId { get; init; }
 }
 
 public record DriverExpenseDto(
@@ -461,14 +486,15 @@ public record UpdateOrderDetailsRequest(
     string? OrderType,
     DateTime? PostponedAt,
     string? PostponedNote,
-    string ClientName,            // este sí es required (siempre se manda)
-    string? ClientAddress,        // ✅ nullable
-    string? ClientPhone,          // ✅ nullable
+    string ClientName,
+    string? ClientAddress,
+    string? ClientPhone,
     List<string>? Tags,
     string? DeliveryTime,
     string? PickupDate,
     decimal? ShippingCost = null,
-    decimal? AdvancePayment = null
+    decimal? AdvancePayment = null,
+    int? SalesPeriodId = null
 );
 
 // DTO para actualizar un producto individual
@@ -479,3 +505,47 @@ public record UpdateOrderItemRequest(
 );
 
 public record SendMessageRequest(string Text);
+
+// ── SalesPeriods (Cortes de Venta) ──
+public record SalesPeriodDto(
+    int Id,
+    string Name,
+    DateTime StartDate,
+    DateTime EndDate,
+    bool IsActive,
+    DateTime CreatedAt
+);
+
+public record CreateSalesPeriodRequest
+{
+    [Required, MaxLength(200)]
+    public string Name { get; init; } = string.Empty;
+
+    [Required]
+    public DateTime StartDate { get; init; }
+
+    [Required]
+    public DateTime EndDate { get; init; }
+}
+
+public record PeriodReportDto(
+    int PeriodId,
+    string PeriodName,
+    decimal TotalSales,
+    decimal TotalInvestments,
+    decimal NetProfit,
+    List<PeriodInvestmentBySupplierDto> InvestmentsBySupplier
+);
+
+public record PeriodInvestmentBySupplierDto(
+    string SupplierName,
+    decimal TotalInvested,
+    int InvestmentCount
+);
+
+public record SyncSalesPeriodRequest(
+    DateTime InvStartDate,
+    DateTime InvEndDate,
+    DateTime OrderStartDate,
+    DateTime OrderEndDate
+);

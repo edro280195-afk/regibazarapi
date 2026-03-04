@@ -60,6 +60,7 @@ builder.Services.AddScoped<IExcelService, ExcelService>();
 builder.Services.AddScoped<ISuppliersService, SuppliersService>();
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
 builder.Services.AddScoped<IPushNotificationService, PushNotificationService>();
+builder.Services.AddScoped<ISalesPeriodService, SalesPeriodService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();

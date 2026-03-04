@@ -26,6 +26,7 @@ public class AppDbContext : DbContext
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
     public DbSet<PushSubscriptionModel> PushSubscriptions => Set<PushSubscriptionModel>();
     public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
+    public DbSet<SalesPeriod> SalesPeriods => Set<SalesPeriod>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -79,9 +80,26 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
+        // SalesPeriods
+        modelBuilder.Entity<SalesPeriod>(entity =>
+        {
+            entity.HasIndex(p => p.IsActive);
+
+            entity.HasMany(p => p.Orders)
+                  .WithOne(o => o.SalesPeriod)
+                  .HasForeignKey(o => o.SalesPeriodId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasMany(p => p.Investments)
+                  .WithOne(i => i.SalesPeriod)
+                  .HasForeignKey(i => i.SalesPeriodId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
         modelBuilder.Entity<Investment>(entity =>
         {
             entity.HasIndex(i => i.SupplierId);
+            entity.HasIndex(i => i.SalesPeriodId);
             entity.HasIndex(i => i.Date);
         });
 

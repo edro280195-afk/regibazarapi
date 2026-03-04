@@ -89,10 +89,9 @@ namespace EntregasApi.Services
 
         public async Task<List<InvestmentDto>> GetInvestmentsAsync(int supplierId)
         {
-            // Nota: Aquí usamos una proyección manual antes del MapToInvDto si fuera necesario,
-            // pero como MapToInvDto es estático y simple, EF Core suele traducirlo bien en memoria.
             var investments = await _db.Investments
                 .Where(i => i.SupplierId == supplierId)
+                .Include(i => i.SalesPeriod)
                 .OrderByDescending(i => i.Date)
                 .ThenByDescending(i => i.CreatedAt)
                 .ToListAsync();
@@ -136,19 +135,21 @@ namespace EntregasApi.Services
             // 3. Crear entidad
             var investment = new Investment
             {
-                SupplierId = supplierId,
-                Amount = request.Amount,
-                Date = DateTime.SpecifyKind(request.Date.Date.AddHours(12), DateTimeKind.Utc),
-                Notes = request.Notes?.Trim(),
-                CreatedAt = DateTime.UtcNow,
-
-                // Nuevos campos guardados
-                Currency = finalCurrency,
-                ExchangeRate = finalRate
+                SupplierId     = supplierId,
+                Amount         = request.Amount,
+                Date           = DateTime.SpecifyKind(request.Date.Date.AddHours(12), DateTimeKind.Utc),
+                Notes          = request.Notes?.Trim(),
+                CreatedAt      = DateTime.UtcNow,
+                Currency       = finalCurrency,
+                ExchangeRate   = finalRate,
+                SalesPeriodId  = request.SalesPeriodId
             };
 
             _db.Investments.Add(investment);
             await _db.SaveChangesAsync();
+
+            // Cargar nav prop para el DTO
+            await _db.Entry(investment).Reference(i => i.SalesPeriod).LoadAsync();
 
             return MapToInvDto(investment);
         }
@@ -180,18 +181,18 @@ namespace EntregasApi.Services
             s.Investments != null ? s.Investments.Sum(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate)) : 0m
         );
 
-        // Aquí agregamos los nuevos campos al DTO de salida
         private static InvestmentDto MapToInvDto(Investment i) => new(
-            Id: i.Id,
-            SupplierId: i.SupplierId,
-            Amount: i.Amount,
-            Date: i.Date,
-            Notes: i.Notes,
-            CreatedAt: i.CreatedAt,
-            // Nuevos datos:
-            Currency: i.Currency ?? "MXN", // Protección contra nulos viejos
-            ExchangeRate: i.ExchangeRate == 0 ? 1 : i.ExchangeRate, // Protección contra ceros viejos
-            TotalMXN: i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate) // Cálculo automático
+            Id:              i.Id,
+            SupplierId:      i.SupplierId,
+            Amount:          i.Amount,
+            Date:            i.Date,
+            Notes:           i.Notes,
+            CreatedAt:       i.CreatedAt,
+            Currency:        i.Currency ?? "MXN",
+            ExchangeRate:    i.ExchangeRate == 0 ? 1 : i.ExchangeRate,
+            TotalMXN:        i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate),
+            SalesPeriodId:   i.SalesPeriodId,
+            SalesPeriodName: i.SalesPeriod?.Name
         );
     }
 }

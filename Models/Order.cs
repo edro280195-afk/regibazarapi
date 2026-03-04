@@ -19,6 +19,10 @@ public class Order
     [ForeignKey(nameof(DeliveryRouteId))]
     public DeliveryRoute? DeliveryRoute { get; set; }
 
+    public int? SalesPeriodId { get; set; }
+    [ForeignKey(nameof(SalesPeriodId))]
+    public virtual SalesPeriod? SalesPeriod { get; set; }
+
     [Column(TypeName = "decimal(10,2)")]
     public decimal Subtotal { get; set; }
 

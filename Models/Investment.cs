@@ -23,6 +23,10 @@ namespace EntregasApi.Models
         [ForeignKey(nameof(SupplierId))]
         public Supplier Supplier { get; set; } = null!;
 
+        public int? SalesPeriodId { get; set; }
+        [ForeignKey(nameof(SalesPeriodId))]
+        public virtual SalesPeriod? SalesPeriod { get; set; }
+
         // ---------------------------------------------------------
         [MaxLength(10)]
         public string Currency { get; set; } = "MXN"; // Por defecto Pesos

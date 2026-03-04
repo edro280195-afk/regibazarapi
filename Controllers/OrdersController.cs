@@ -65,11 +65,13 @@ public class OrdersController : ControllerBase
 
     [HttpGet("paged")]
     public async Task<ActionResult<PagedResult<OrderSummaryDto>>> GetPaged(
-        [FromQuery] int page = 1, 
-        [FromQuery] int pageSize = 50, 
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
         [FromQuery] string search = "",
         [FromQuery] string status = "",
-        [FromQuery] string clientType = "")
+        [FromQuery] string clientType = "",
+        [FromQuery] DateTime? dateFrom = null,
+        [FromQuery] DateTime? dateTo = null)
     {
         var query = _db.Orders
             .Include(o => o.Client)
@@ -120,8 +122,24 @@ public class OrdersController : ControllerBase
             }
         }
 
+        if (dateFrom.HasValue)
+        {
+            var from = DateTime.SpecifyKind(dateFrom.Value.Date, DateTimeKind.Utc);
+            query = query.Where(o =>
+                o.CreatedAt >= from ||
+                (o.PostponedAt != null && o.PostponedAt >= from));
+        }
+
+        if (dateTo.HasValue)
+        {
+            var to = DateTime.SpecifyKind(dateTo.Value.Date.AddDays(1), DateTimeKind.Utc);
+            query = query.Where(o =>
+                o.CreatedAt < to ||
+                (o.PostponedAt != null && o.PostponedAt < to));
+        }
+
         var total = await query.CountAsync();
-        
+
         var orders = await query
             .OrderByDescending(o => o.CreatedAt)
             .Skip((page - 1) * pageSize)
@@ -293,14 +311,15 @@ public class OrdersController : ControllerBase
             // 6. Creamos la orden con la fecha calculada
             var newOrder = new Order
             {
-                ClientId = client.Id,
-                AccessToken = accessToken,
-                ShippingCost = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
-                ExpiresAt = expirationUtc, // 🚀 ¡Magia matemática!
-                Status = Models.OrderStatus.Pending,
-                OrderType = reqOrderType,
-                Items = new List<OrderItem>(),
-                CreatedAt = DateTime.UtcNow
+                ClientId      = client.Id,
+                AccessToken   = accessToken,
+                ShippingCost  = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
+                ExpiresAt     = expirationUtc,
+                Status        = Models.OrderStatus.Pending,
+                OrderType     = reqOrderType,
+                Items         = new List<OrderItem>(),
+                CreatedAt     = DateTime.UtcNow,
+                SalesPeriodId = (await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive))?.Id
             };
 
             foreach (var item in req.Items)
@@ -421,12 +440,57 @@ public class OrdersController : ControllerBase
         var todayEndUtc = TimeZoneInfo.ConvertTimeToUtc(todayEndMexico, mexicoTimeZone);
         var startOfMonthUtc = TimeZoneInfo.ConvertTimeToUtc(startOfMonthMexico, mexicoTimeZone);
 
-        // Get ALL payments for real cash flow
-        var allPayments = await _db.OrderPayments.ToListAsync();
+        // Get active period for filtering
+        var activePeriod = await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive);
 
+        // All payments - Filter by active period if exists for the "Wallet" section
+        var queryPayments = _db.OrderPayments.AsQueryable();
+        if (activePeriod != null)
+        {
+            queryPayments = queryPayments.Where(p => p.Order.SalesPeriodId == activePeriod.Id);
+        }
+        var paymentsForWallet = await queryPayments.ToListAsync();
+        
+        // Total investment - Also filter by active period if exists
+        var investmentToDisplay = activePeriod != null 
+            ? await _db.Investments.Where(i => i.SalesPeriodId == activePeriod.Id).SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate))
+            : await _db.Investments.SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
+
+        // Period sales
+        var allPayments = await _db.OrderPayments.ToListAsync();
         var revenueToday = allPayments.Where(p => p.Date >= todayStartUtc && p.Date <= todayEndUtc).Sum(p => p.Amount);
         var revenueMonth = allPayments.Where(p => p.Date >= startOfMonthUtc).Sum(p => p.Amount);
-        var totalRevenue = allPayments.Sum(p => p.Amount);
+        var totalRevenue = paymentsForWallet.Sum(p => p.Amount); // Now represents the active period if exists
+
+        // Chart data
+        var sixMonthsAgo = startOfMonthUtc.AddMonths(-5);
+        var recentPayments = allPayments.Where(p => p.Date >= sixMonthsAgo).ToList();
+        var salesByMonth = recentPayments
+            .GroupBy(p => new { p.Date.Year, p.Date.Month })
+            .OrderBy(g => g.Key.Year).ThenBy(g => g.Key.Month)
+            .Select(g => new MonthlySalesDto(
+                Month: new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMM", System.Globalization.CultureInfo.GetCultureInfo("es-MX")),
+                Sales: g.Sum(p => p.Amount)
+            ))
+            .ToList();
+
+        // Active Period ROI (Targeting current cycle)
+        ActivePeriodSummaryDto? activePeriodSummary = null;
+        if (activePeriod != null)
+        {
+            var periodSales = await _db.Orders
+                .Where(o => o.SalesPeriodId == activePeriod.Id && o.Status == Models.OrderStatus.Delivered)
+                .SumAsync(o => o.Total);
+            
+            activePeriodSummary = new ActivePeriodSummaryDto(
+                activePeriod.Id,
+                activePeriod.Name,
+                periodSales,
+                investmentToDisplay,
+                periodSales - investmentToDisplay,
+                totalRevenue
+            );
+        }
 
         var dto = new DashboardDto(
             TotalClients: await _db.Clients.CountAsync(),
@@ -438,13 +502,19 @@ public class OrdersController : ControllerBase
             TotalRevenue: totalRevenue,
             RevenueMonth: revenueMonth,
             RevenueToday: revenueToday,
-            TotalInvestment: totalInvestment,
-            TotalCashOrders: allPayments.Count(p => p.Method == "Efectivo"),
-            TotalCashAmount: allPayments.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
-            TotalTransferOrders: allPayments.Count(p => p.Method == "Transferencia"),
-            TotalTransferAmount: allPayments.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
-            TotalDepositOrders: allPayments.Count(p => p.Method == "Deposito"),
-            TotalDepositAmount: allPayments.Where(p => p.Method == "Deposito").Sum(p => p.Amount)
+            TotalInvestment: investmentToDisplay,
+            TotalCashOrders: paymentsForWallet.Count(p => p.Method == "Efectivo"),
+            TotalCashAmount: paymentsForWallet.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
+            TotalTransferOrders: paymentsForWallet.Count(p => p.Method == "Transferencia"),
+            TotalTransferAmount: paymentsForWallet.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
+            TotalDepositOrders: paymentsForWallet.Count(p => p.Method == "Deposito"),
+            TotalDepositAmount: paymentsForWallet.Where(p => p.Method == "Deposito").Sum(p => p.Amount),
+            SalesByMonth: salesByMonth,
+            ClientsNueva: await _db.Clients.CountAsync(c => c.Type == "Nueva"),
+            ClientsFrecuente: await _db.Clients.CountAsync(c => c.Type == "Frecuente"),
+            OrdersDelivery: await _db.Orders.CountAsync(o => o.OrderType == DTOs.OrderType.Delivery),
+            OrdersPickUp: await _db.Orders.CountAsync(o => o.OrderType == DTOs.OrderType.PickUp),
+            ActivePeriod: activePeriodSummary
         );
         return Ok(dto);
     }
@@ -720,11 +790,26 @@ public class OrdersController : ControllerBase
             order.Status = newStatus;
         }
 
+        // SalesPeriod — permitir reasignar el corte desde edición
+        if (req.SalesPeriodId.HasValue)
+        {
+            var periodExists = await _db.SalesPeriods.AnyAsync(p => p.Id == req.SalesPeriodId.Value);
+            if (periodExists) order.SalesPeriodId = req.SalesPeriodId.Value;
+        }
+        else if (req.SalesPeriodId == null && order.SalesPeriodId.HasValue)
+        {
+            // Si mandan null explícitamente, desligar del corte
+            order.SalesPeriodId = null;
+        }
+
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
+
+        // Recargar nav prop para que MapToSummary incluya el nombre del corte
+        await _db.Entry(order).Reference(o => o.SalesPeriod).LoadAsync();
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
@@ -938,6 +1023,24 @@ public class OrdersController : ControllerBase
             DuplicateDetails = duplicates,
             AllPendingList = activeOrders // Aquí verás la lista completa
         });
+    }
+
+    /// <summary>GET /api/orders/common-products - Sugerencias inteligentes</summary>
+    [HttpGet("common-products")]
+    public async Task<ActionResult<List<CommonProductDto>>> GetCommonProducts()
+    {
+        var products = await _db.OrderItems
+            .GroupBy(i => i.ProductName)
+            .Select(g => new CommonProductDto(
+                g.Key,
+                g.Count(),
+                g.OrderByDescending(i => i.Id).First().UnitPrice
+            ))
+            .OrderByDescending(p => p.Count)
+            .Take(50)
+            .ToListAsync();
+
+        return Ok(products);
     }
 
     [HttpDelete("wipe")]

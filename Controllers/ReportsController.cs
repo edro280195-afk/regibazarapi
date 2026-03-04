@@ -2,8 +2,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using EntregasApi.Data;
-using EntregasApi.DTOs; // Aquí debe estar tu GlowUpReportDto
+using EntregasApi.DTOs;
 using EntregasApi.Models;
+using EntregasApi.Services;
 using System.Globalization;
 
 namespace EntregasApi.Controllers;
@@ -14,8 +15,22 @@ namespace EntregasApi.Controllers;
 public class ReportsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly ISalesPeriodService _periodService;
 
-    public ReportsController(AppDbContext db) => _db = db;
+    public ReportsController(AppDbContext db, ISalesPeriodService periodService)
+    {
+        _db = db;
+        _periodService = periodService;
+    }
+
+    /// <summary>GET /api/reports/period/{id} — Reporte exacto por Corte de Venta</summary>
+    [HttpGet("period/{id:int}")]
+    public async Task<ActionResult<PeriodReportDto>> GetPeriodReport(int id)
+    {
+        var report = await _periodService.GetPeriodReportAsync(id);
+        if (report is null) return NotFound(new { message = $"Corte con Id {id} no encontrado." });
+        return Ok(report);
+    }
 
     /// <summary>GET /api/reports/glow-up-current-month</summary>
     [HttpGet("glow-up-current-month")]
