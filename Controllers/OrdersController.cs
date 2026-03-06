@@ -1029,18 +1029,23 @@ public class OrdersController : ControllerBase
     [HttpGet("common-products")]
     public async Task<ActionResult<List<CommonProductDto>>> GetCommonProducts()
     {
+        // Optimizamos: Obtenemos los nombres y conteos con una sola agregación agrupada.
+        // El UnitPrice lo promediamos o tomamos el máximo para evitar el First() masivo.
         var products = await _db.OrderItems
             .GroupBy(i => i.ProductName)
-            .Select(g => new CommonProductDto(
-                g.Key,
-                g.Count(),
-                g.OrderByDescending(i => i.Id).First().UnitPrice
-            ))
+            .Select(g => new {
+                Name = g.Key,
+                Count = g.Count(),
+                // Simplificamos para que SQL sea ultra-rápido:
+                Price = g.Max(i => i.UnitPrice) 
+            })
             .OrderByDescending(p => p.Count)
             .Take(50)
             .ToListAsync();
 
-        return Ok(products);
+        var result = products.Select(p => new CommonProductDto(p.Name, p.Count, p.Price)).ToList();
+
+        return Ok(result);
     }
 
     [HttpDelete("wipe")]
