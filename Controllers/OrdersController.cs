@@ -100,7 +100,7 @@ public class OrdersController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(clientType))
         {
-            query = query.Where(o => o.Client.Type == clientType);
+            query = query.Where(o => o.Client != null && o.Client.Type == clientType);
         }
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -113,12 +113,12 @@ public class OrdersController : ControllerBase
             }
             else if (int.TryParse(searchStr, out int idVal2))
             {
-                query = query.Where(o => o.Id == idVal2 || o.Client.Name.ToLower().Contains(searchStr));
+                query = query.Where(o => o.Id == idVal2 || (o.Client != null && o.Client.Name.ToLower().Contains(searchStr)));
             }
             else
             {
-                query = query.Where(o => o.Client.Name.ToLower().Contains(searchStr) 
-                                      || (o.Client.Phone != null && o.Client.Phone.Contains(searchStr)));
+                query = query.Where(o => (o.Client != null && o.Client.Name.ToLower().Contains(searchStr)) 
+                                      || (o.Client != null && o.Client.Phone != null && o.Client.Phone.Contains(searchStr)));
             }
         }
 

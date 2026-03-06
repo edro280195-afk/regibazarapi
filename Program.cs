@@ -75,7 +75,7 @@ builder.Services.AddCors(options =>
             .WithOrigins(
                 "http://localhost:4200",
                 "https://regibazar.com",
-                "https://www.regibazar.com" // Corregido: 3 Ws en lugar de 4
+                "https://www.regibazar.com"
             )
             .AllowAnyMethod()
             .AllowAnyHeader()
@@ -133,11 +133,12 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// 1. Primero enrutar
-app.UseRouting();
-
-// 2. LUEGO aplicar la política de CORS
+// 1. CORS PRIMERO - Debe ir antes de Routing y Authentication
+//    para que los 401/403 también incluyan headers CORS
 app.UseCors("AllowAll");
+
+// 2. Routing
+app.UseRouting();
 
 // 3. Servir fotos de evidencia
 var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
