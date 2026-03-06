@@ -133,22 +133,27 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// 1. CORS PRIMERO - Debe ir antes de Routing y Authentication
-//    para que los 401/403 también incluyan headers CORS
-app.UseCors("AllowAll");
-
-// 2. Routing
+// 1. Primero enrutar
 app.UseRouting();
 
+// 2. LUEGO aplicar la política de CORS
+app.UseCors("AllowAll");
+
 // 3. Servir fotos de evidencia
-var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
-Directory.CreateDirectory(uploadsDir);
-app.UseStaticFiles(new StaticFileOptions
+try 
 {
-    FileProvider = new PhysicalFileProvider(
-        Path.Combine(builder.Environment.ContentRootPath, "uploads")),
-    RequestPath = "/uploads"
-});
+    var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
+    if (!Directory.Exists(uploadsDir)) Directory.CreateDirectory(uploadsDir);
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(uploadsDir),
+        RequestPath = "/uploads"
+    });
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Error initializing uploads directory: {ex.Message}");
+}
 
 // 4. Autenticación y Autorización
 app.UseAuthentication();
