@@ -79,19 +79,38 @@ public class SalesPeriodService : ISalesPeriodService
 
         if (period is null) return null;
 
-        // ── Suma de ventas entregadas (SQL SUM) ──
+        var start = DateTime.SpecifyKind(period.StartDate.Date, DateTimeKind.Utc);
+        var end = DateTime.SpecifyKind(period.EndDate.Date, DateTimeKind.Utc).AddDays(1);
+
+        // ── Suma de ventas entregadas (SQL SUM por FECHAS) ──
         var totalSales = await _db.Orders
-            .Where(o => o.SalesPeriodId == id && o.Status == EntregasApi.Models.OrderStatus.Delivered)
+            .Where(o => o.Status == EntregasApi.Models.OrderStatus.Delivered && o.CreatedAt >= start && o.CreatedAt < end)
             .SumAsync(o => (decimal?)o.Total) ?? 0m;
 
-        // ── Suma de inversiones en pesos (SQL SUM) ──
+        // ── Suma de lo REALMENTE COBRADO (OrderPayments por FECHAS) ──
+        var totalCollected = await _db.OrderPayments
+            .Where(p => p.Date >= start && p.Date < end)
+            .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+
+        // ── Suma de inversiones en pesos (SQL SUM por FECHAS) ──
         var totalInvestments = await _db.Investments
-            .Where(i => i.SalesPeriodId == id)
+            .Where(i => i.Date >= start && i.Date < end)
             .SumAsync(i => (decimal?)(i.Amount * i.ExchangeRate)) ?? 0m;
 
-        // ── Desglose por proveedor (proyección directa, sin cargar entidades) ──
+        // ── Gastos de Chofer (Gastos de rutas que tienen entregas en este rango) ──
+        var routeIds = await _db.Deliveries
+            .Where(d => d.Order.CreatedAt >= start && d.Order.CreatedAt < end)
+            .Select(d => d.DeliveryRouteId)
+            .Distinct()
+            .ToListAsync();
+
+        var totalExpenses = await _db.DriverExpenses
+            .Where(e => e.DeliveryRouteId != null && routeIds.Contains(e.DeliveryRouteId.Value))
+            .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+
+        // ── Desglose por proveedor por FECHAS ──
         var bySupplier = await _db.Investments
-            .Where(i => i.SalesPeriodId == id)
+            .Where(i => i.Date >= start && i.Date < end)
             .Include(i => i.Supplier)
             .GroupBy(i => i.Supplier.Name)
             .Select(g => new PeriodInvestmentBySupplierDto(
@@ -106,8 +125,11 @@ public class SalesPeriodService : ISalesPeriodService
             id,
             period.Name,
             totalSales,
+            totalCollected,
             totalInvestments,
-            totalSales - totalInvestments,
+            totalExpenses,
+            totalSales - totalInvestments - totalExpenses,
+            totalCollected - totalInvestments - totalExpenses,
             bySupplier
         );
     }

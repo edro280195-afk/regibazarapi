@@ -5,6 +5,7 @@ using EntregasApi.Data;
 using EntregasApi.DTOs;
 using EntregasApi.Hubs; // <--- Importante
 using EntregasApi.Models;
+using EntregasApi.Services;
 
 namespace EntregasApi.Controllers;
 
@@ -13,14 +14,16 @@ namespace EntregasApi.Controllers;
 public class DriverController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IHubContext<TrackingHub> _hub;
+    private readonly IHubContext<DeliveryHub> _hub;
     private readonly IWebHostEnvironment _env;
+    private readonly IPushNotificationService _push;
 
-    public DriverController(AppDbContext db, IHubContext<TrackingHub> hub, IWebHostEnvironment env)
+    public DriverController(AppDbContext db, IHubContext<DeliveryHub> hub, IWebHostEnvironment env, IPushNotificationService push)
     {
         _db = db;
         _hub = hub;
         _env = env;
+        _push = push;
     }
 
     /// <summary>GET /api/driver/{token} - Obtener ruta del repartidor</summary>
@@ -98,14 +101,17 @@ public class DriverController : ControllerBase
         {
             firstDelivery.Status = DeliveryStatus.InTransit;
             // Notificar clienta
-            await _hub.Clients.Group($"order_{firstDelivery.Order.AccessToken}")
+            await _hub.Clients.Group($"Order_{firstDelivery.Order.AccessToken}")
                 .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
+            
+            if (firstDelivery.Order.ClientId > 0)
+                await _push.NotifyClientDriverEnRouteAsync(firstDelivery.Order.ClientId);
         }
 
         await _db.SaveChangesAsync();
 
         // Notificar admin
-        await _hub.Clients.Group("admin").SendAsync("RouteStarted", new { RouteId = route.Id });
+        await _hub.Clients.Group("Admins").SendAsync("RouteStarted", new { RouteId = route.Id });
 
         return Ok(new { message = "Ruta iniciada.", firstDeliveryId = firstDelivery?.Id });
     }
@@ -132,14 +138,75 @@ public class DriverController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Notificaciones
-        await _hub.Clients.Group($"order_{delivery.Order.AccessToken}")
+        await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
             .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
+        
+        if (delivery.Order.ClientId > 0)
+            await _push.NotifyClientDriverEnRouteAsync(delivery.Order.ClientId);
 
         // Admin
         await _hub.Clients.Group($"Route_{driverToken}")
              .SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "InTransit" });
 
         return Ok(new { message = "Entrega marcada en tránsito." });
+    }
+
+    [HttpPut("reorder")]
+    public async Task<IActionResult> ReorderDeliveries(string driverToken, [FromBody] List<int> orderedDeliveryIds)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound("Ruta no encontrada.");
+
+        if (route.Status == RouteStatus.Completed)
+            return BadRequest("No se puede reordenar una ruta completada.");
+
+        var deliveries = await _db.Deliveries
+            .Where(d => d.DeliveryRouteId == route.Id)
+            .ToListAsync();
+
+        if (deliveries.Count != orderedDeliveryIds.Count || !deliveries.All(d => orderedDeliveryIds.Contains(d.Id)))
+        {
+            return BadRequest("La lista de IDs proporcionada no coincide con los pedidos de la ruta.");
+        }
+
+        // Aplicamos el nuevo orden a todos
+        for (int i = 0; i < orderedDeliveryIds.Count; i++)
+        {
+            var delivery = deliveries.First(d => d.Id == orderedDeliveryIds[i]);
+            delivery.SortOrder = i + 1;
+        }
+
+        // Identificamos al primero de la lista (que esté pendiente) para forzarlo a InTransit si la ruta ya está activa
+        if (route.Status == RouteStatus.Active)
+        {
+            var firstPending = deliveries.Where(d => d.Status == DeliveryStatus.Pending || d.Status == DeliveryStatus.InTransit).OrderBy(d => d.SortOrder).FirstOrDefault();
+            if (firstPending != null && firstPending.Status == DeliveryStatus.Pending)
+            {
+                // Significa que alguien arrastró a alguien nuevo a la posición 1.
+                // Reset a todos los demás En Tránsito a Pendiente
+                foreach (var d in deliveries.Where(d => d.Status == DeliveryStatus.InTransit)) d.Status = DeliveryStatus.Pending;
+                firstPending.Status = DeliveryStatus.InTransit;
+                
+                await _db.SaveChangesAsync(); // Guardar el cambio a InTransit
+                
+                // Disparar las alertas para ese nuevo usuario
+                if (firstPending.Order != null) 
+                {
+                    await _hub.Clients.Group($"Order_{firstPending.Order.AccessToken}")
+                        .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
+                    
+                    if (firstPending.Order.ClientId > 0)
+                        await _push.NotifyClientDriverEnRouteAsync(firstPending.Order.ClientId);
+                }
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        // Notificamos al Dashboard Admin que el orden en vivo cambió desde el móvil del chofer
+        await _hub.Clients.Group("Admins").SendAsync("RouteUpdated", route.Id);
+
+        return Ok(new { message = "Ruta reordenada exitosamente por el repartidor." });
     }
 
     [HttpPost("location")]
@@ -214,6 +281,16 @@ public class DriverController : ControllerBase
                         Notes = p.Notes
                     });
                 }
+                
+                var amountCollected = parsedPayments.Sum(x => x.Amount);
+                if (amountCollected > 0)
+                {
+                    await _push.SendNotificationToAdminsAsync(
+                        "💰 Pago Registrado por Repartidor",
+                        $"Se ingresaron {amountCollected:C} del pedido #{delivery.Order.Id} ({delivery.Order.Client?.Name})",
+                        tag: "payment-received"
+                    );
+                }
             }
 
             // -----------------------------------------------------------
@@ -241,8 +318,11 @@ public class DriverController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        if (delivery.Order.ClientId > 0)
+            await _push.NotifyClientDeliveredAsync(delivery.Order.ClientId);
+
         // Notificar en tiempo real
-        await _hub.Clients.Group($"order_{delivery.Order.AccessToken}").SendAsync("DeliveryUpdate", new { Status = "Delivered" });
+        await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}").SendAsync("DeliveryUpdate", new { Status = "Delivered" });
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "Delivered" });
 
         var nextId = await AutoAdvanceToNext(route.Id, delivery.SortOrder);
@@ -270,6 +350,12 @@ public class DriverController : ControllerBase
         if (photos != null) await SavePhotos(delivery, photos, EvidenceType.NonDeliveryProof);
 
         await _db.SaveChangesAsync();
+        
+        await _push.SendNotificationToAdminsAsync(
+            "⚠️ Entrega Fallida",
+            $"{delivery.Order.Client?.Name ?? "Cliente"} no recibió el pedido: {req.Reason}",
+            tag: "delivery-failed"
+        );
 
         // Notificar Admin
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "NotDelivered" });
@@ -293,8 +379,12 @@ public class DriverController : ControllerBase
         {
             nextDelivery.Status = DeliveryStatus.InTransit;
             await _db.SaveChangesAsync();
-            await _hub.Clients.Group($"order_{nextDelivery.Order.AccessToken}")
+            await _hub.Clients.Group($"Order_{nextDelivery.Order.AccessToken}")
                 .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡Tu turno! El repartidor va hacia ti." });
+                
+            if (nextDelivery.Order.ClientId > 0)
+                await _push.NotifyClientDriverEnRouteAsync(nextDelivery.Order.ClientId);
+
             return nextDelivery.Id;
         }
         return null;
@@ -460,7 +550,7 @@ public class DriverController : ControllerBase
         var msgDto = new { id = msg.Id, deliveryId = msg.DeliveryId, sender = msg.Sender, text = msg.Text, timestamp = msg.Timestamp };
 
         // 🔔 ¡Ring ring! Le avisamos a la clienta por SignalR
-        await _hub.Clients.Group($"order_{delivery.Order.AccessToken}")
+        await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
             .SendAsync("ReceiveClientChatMessage", msgDto);
 
         return Ok(msgDto);

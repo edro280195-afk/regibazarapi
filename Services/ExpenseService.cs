@@ -135,7 +135,7 @@ namespace EntregasApi.Services
             endDate = DateTime.SpecifyKind(endDate.Date, DateTimeKind.Utc);
             var endDateExclusive = endDate.AddDays(1);
 
-            // Ingresos: Ordenes entregadas en el rango
+            // 1. Incomes / Billed: Delivered orders created in the range
             var deliveredOrders = await _db.Orders
                 .Include(o => o.Client)
                 .Where(o => o.Status == Models.OrderStatus.Delivered
@@ -143,9 +143,16 @@ namespace EntregasApi.Services
                             && o.CreatedAt < endDateExclusive)
                 .ToListAsync();
 
-            var totalIncome = deliveredOrders.Sum(o => o.Total);
+            var totalBilled = deliveredOrders.Sum(o => o.Total);
 
-            // Inversiones en el rango
+            // 2. Collected (OrderPayments within the range)
+            var payments = await _db.OrderPayments
+                .Where(p => p.Date >= startDate && p.Date < endDateExclusive)
+                .ToListAsync();
+
+            var totalCollected = payments.Sum(p => p.Amount);
+
+            // 3. Investments within the range
             var investments = await _db.Investments
                 .Include(i => i.Supplier)
                 .Where(i => i.Date >= startDate && i.Date < endDateExclusive)
@@ -154,7 +161,7 @@ namespace EntregasApi.Services
 
             var totalInvestment = investments.Sum(i => i.Amount);
 
-            // Gastos del repartidor en el rango
+            // 4. Expenses (DriverExpenses within the range)
             var expenses = await _db.DriverExpenses
                 .Include(e => e.DeliveryRoute)
                 .Where(e => e.Date >= startDate && e.Date < endDateExclusive)
@@ -163,7 +170,7 @@ namespace EntregasApi.Services
 
             var totalExpenses = expenses.Sum(e => e.Amount);
 
-            // Mapear detalles
+            // Build DTOs
             var incomeLines = deliveredOrders.Select(o => new IncomeLineDto(
                 o.Id,
                 o.Client?.Name ?? "Sin cliente",
@@ -197,10 +204,13 @@ namespace EntregasApi.Services
                 Period = $"{startDate:yyyy-MM-dd} a {endDate:yyyy-MM-dd}",
                 StartDate = startDate,
                 EndDate = endDate,
-                TotalIncome = totalIncome,
+                TotalBilled = totalBilled,
+                TotalCollected = totalCollected,
+                TotalPending = totalBilled - totalCollected,
                 TotalInvestment = totalInvestment,
                 TotalExpenses = totalExpenses,
-                NetProfit = totalIncome - totalInvestment - totalExpenses,
+                NetProfit = totalBilled - totalInvestment - totalExpenses,
+                CashBalance = totalCollected - totalInvestment - totalExpenses,
                 Details = new FinancialDetailsDto
                 {
                     Incomes = incomeLines,

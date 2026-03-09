@@ -71,7 +71,10 @@ public class OrdersController : ControllerBase
         [FromQuery] string status = "",
         [FromQuery] string clientType = "",
         [FromQuery] DateTime? dateFrom = null,
-        [FromQuery] DateTime? dateTo = null)
+        [FromQuery] DateTime? dateTo = null,
+        [FromQuery] int? clientId = null,
+        [FromQuery] string sortBy = "date",
+        [FromQuery] string sortDir = "desc")
     {
         var query = _db.Orders
             .Include(o => o.Client)
@@ -79,20 +82,14 @@ public class OrdersController : ControllerBase
             .Include(o => o.Payments)
             .AsQueryable();
 
+        if (clientId.HasValue)
+        {
+            query = query.Where(o => o.ClientId == clientId.Value);
+        }
+
         if (!string.IsNullOrWhiteSpace(status))
         {
-            if (status == "Pending")
-            {
-                // Excluir Delivered, Canceled y Forzar no PickUp (según Requerimiento 1)
-                query = query.Where(o => o.Status != EntregasApi.Models.OrderStatus.Delivered 
-                                      && o.Status != EntregasApi.Models.OrderStatus.Canceled 
-                                      && o.OrderType != DTOs.OrderType.PickUp);
-            }
-            else if (status == "PaymentPending")
-            {
-                query = query.Where(o => o.Status == EntregasApi.Models.OrderStatus.Pending || o.Status == EntregasApi.Models.OrderStatus.InRoute);
-            }
-            else if (Enum.TryParse<EntregasApi.Models.OrderStatus>(status, true, out var parsedStatus))
+            if (Enum.TryParse<EntregasApi.Models.OrderStatus>(status, true, out var parsedStatus))
             {
                 query = query.Where(o => o.Status == parsedStatus);
             }
@@ -140,8 +137,17 @@ public class OrdersController : ControllerBase
 
         var total = await query.CountAsync();
 
-        var orders = await query
-            .OrderByDescending(o => o.CreatedAt)
+        IOrderedQueryable<Order> sortedQuery = (sortBy, sortDir) switch
+        {
+            ("total", "asc")    => query.OrderBy(o => o.Total),
+            ("total", _)        => query.OrderByDescending(o => o.Total),
+            ("client", "desc")  => query.OrderByDescending(o => o.Client!.Name),
+            ("client", _)       => query.OrderBy(o => o.Client!.Name),
+            ("date", "asc")     => query.OrderBy(o => o.CreatedAt),
+            _                   => query.OrderByDescending(o => o.CreatedAt)
+        };
+
+        var orders = await sortedQuery
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync();
@@ -194,6 +200,13 @@ public class OrdersController : ControllerBase
     {
         var keys = WebPush.VapidHelper.GenerateVapidKeys();
         return Ok(new { keys.PublicKey, keys.PrivateKey });
+    }
+
+    [HttpGet("export")]
+    public async Task<IActionResult> Export([FromQuery] DateTime start, [FromQuery] DateTime end)
+    {
+        var fileBytes = await _excelService.GenerateReportExcelAsync(start, end);
+        return File(fileBytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"Reporte_{start:yyyyMMdd}_{end:yyyyMMdd}.xlsx");
     }
 
     [HttpPost("upload")]
@@ -492,6 +505,51 @@ public class OrdersController : ControllerBase
             );
         }
 
+        // Por Cobrar: same logic as GetOrderStats — balance due on active (non-delivered/canceled) orders
+        var activeOrdersForPending = await _db.Orders
+            .Include(o => o.Payments)
+            .Where(o => o.Status != Models.OrderStatus.Delivered
+                     && o.Status != Models.OrderStatus.Canceled
+                     && o.Status != Models.OrderStatus.NotDelivered)
+            .ToListAsync();
+        var pendingAmount = activeOrdersForPending.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
+
+        // Recent Activity - 10 most recent orders
+        var recentOrders = await _db.Orders
+            .OrderByDescending(o => o.CreatedAt)
+            .Take(10)
+            .Select(o => new OrderSummaryDto(
+                o.Id,
+                o.Client != null ? o.Client.Name : "N/A",
+                o.Status.ToString(),
+                o.Total,
+                "", // Link not needed for dashboard preview
+                o.Items.Count,
+                o.OrderType.ToString(),
+                o.CreatedAt,
+                o.Client != null ? o.Client.Type : "Nueva",
+                o.Client != null ? o.Client.Phone : null,
+                o.Client != null ? o.Client.Address : null,
+                o.PostponedAt,
+                o.PostponedNote,
+                o.Subtotal,
+                o.ShippingCost,
+                o.AccessToken ?? "",
+                o.ExpiresAt,
+                new List<OrderItemDto>(), // Simplified for dashboard
+                new List<OrderPaymentDto>(), // Simplified for dashboard
+                o.Payments != null ? o.Payments.Sum(p => p.Amount) : 0,
+                0, // Balance due calculated on frontend if needed
+                0,
+                null,
+                o.SalesPeriodId,
+                o.SalesPeriod != null ? o.SalesPeriod.Name : null,
+                o.ClientId,
+                null,
+                o.Client != null ? o.Client.CurrentPoints : 0
+            ))
+            .ToListAsync();
+
         var dto = new DashboardDto(
             TotalClients: await _db.Clients.CountAsync(),
             TotalOrders: await _db.Orders.CountAsync(),
@@ -514,7 +572,9 @@ public class OrdersController : ControllerBase
             ClientsFrecuente: await _db.Clients.CountAsync(c => c.Type == "Frecuente"),
             OrdersDelivery: await _db.Orders.CountAsync(o => o.OrderType == DTOs.OrderType.Delivery),
             OrdersPickUp: await _db.Orders.CountAsync(o => o.OrderType == DTOs.OrderType.PickUp),
-            ActivePeriod: activePeriodSummary
+            ActivePeriod: activePeriodSummary,
+            PendingAmount: pendingAmount,
+            RecentOrders: recentOrders
         );
         return Ok(dto);
     }
@@ -523,47 +583,58 @@ public class OrdersController : ControllerBase
     [HttpGet("reports")]
     public async Task<ActionResult<ReportDto>> GetReports([FromQuery] string start, [FromQuery] string end)
     {
-        var startDate = DateTime.SpecifyKind(DateTime.Parse(start), DateTimeKind.Utc);
-        var endDate = DateTime.SpecifyKind(DateTime.Parse(end).AddDays(1).AddTicks(-1), DateTimeKind.Utc);
+        var startDate = DateTime.SpecifyKind(DateTime.Parse(start).Date, DateTimeKind.Utc);
+        var endDate = DateTime.SpecifyKind(DateTime.Parse(end).Date, DateTimeKind.Utc);
+        var endDateExclusive = endDate.AddDays(1);
 
-        // ── Pedidos del periodo ──
+        // ── 1. Pedidos involucrados (Creados, Entregados o con Pagos en el rango) ──
+        // Para que los totales sean consistentes, traemos pedidos que tengan actividad en el rango
         var orders = await _db.Orders
             .Include(o => o.Items)
             .Include(o => o.Client)
             .Include(o => o.Payments)
-            .Where(o => o.CreatedAt >= startDate && o.CreatedAt <= endDate)
+            .Where(o => (o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive)
+                     || (o.Status == Models.OrderStatus.Delivered && o.Items.Any() && _db.Deliveries.Any(d => d.OrderId == o.Id && d.Status == DeliveryStatus.Delivered && d.DeliveredAt >= startDate && d.DeliveredAt < endDateExclusive))
+                     || o.Payments.Any(p => p.Date >= startDate && p.Date < endDateExclusive))
             .ToListAsync();
 
-        var deliveredOrders = orders.Where(o => o.Status == Models.OrderStatus.Delivered).ToList();
-
-        // ── Rutas del periodo ──
-        var routes = await _db.DeliveryRoutes
-            .Where(r => r.CreatedAt >= startDate && r.CreatedAt <= endDate)
+        // ── 2. Incomes / Billed (Venta Real: Entregas ocurridas en el rango) ──
+        // NOTA: Usamos Deliveries para ser ultra-precisos sobre CUANDO se entregó
+        var deliveredInPeriodIds = await _db.Deliveries
+            .Where(d => d.Status == DeliveryStatus.Delivered && d.DeliveredAt >= startDate && d.DeliveredAt < endDateExclusive)
+            .Select(d => d.OrderId)
             .ToListAsync();
+        
+        // También incluimos orders marcadas como Delivered cuya creación sea en el rango si no tienen registro de Delivery (retro-compatibilidad)
+        var deliveredOrders = orders
+            .Where(o => o.Status == Models.OrderStatus.Delivered && (deliveredInPeriodIds.Contains(o.Id) || (o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive)))
+            .ToList();
 
-        var totalDeliveries = await _db.Deliveries
-            .Where(d => d.DeliveryRoute.CreatedAt >= startDate && d.DeliveryRoute.CreatedAt <= endDate)
-            .CountAsync();
-
-        var deliveredCount = await _db.Deliveries
-            .Where(d => d.DeliveryRoute.CreatedAt >= startDate && d.DeliveryRoute.CreatedAt <= endDate
-                     && d.Status == DeliveryStatus.Delivered)
-            .CountAsync();
-
-        // ── Inversiones del periodo ──
-        var totalInvestment = await _db.Investments
-            .Where(i => i.Date >= startDate && i.Date <= endDate)
-            .SumAsync(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
-
-        // ── Gastos del chofer ──
-        var driverExpenses = await _db.DriverExpenses
-            .Where(e => e.Date >= startDate && e.Date <= endDate)
-            .SumAsync(e => e.Amount);
-
-        // ── Revenue
         var revenue = deliveredOrders.Sum(o => o.Total);
 
-        // ── Top Productos ──
+        // ── 3. Lo Cobrado REAL (OrderPayments con fecha en el rango) ──
+        var allPaymentsInRange = await _db.OrderPayments
+            .Where(p => p.Date >= startDate && p.Date < endDateExclusive)
+            .ToListAsync();
+        
+        var totalCollected = allPaymentsInRange.Sum(p => p.Amount);
+
+        // ── 4. Inversiones y Gastos (Basados en FECHA) ──
+        var totalInvestment = await _db.Investments
+            .Where(i => i.Date >= startDate && i.Date < endDateExclusive)
+            .SumAsync(i => (decimal?)(i.Amount * i.ExchangeRate)) ?? 0m;
+
+        var driverExpenses = await _db.DriverExpenses
+            .Where(e => e.Date >= startDate && e.Date < endDateExclusive)
+            .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+
+        // ── 5. Sin asignar (Fugas potenciales: Entregado pero sin pagos totales) ──
+        var unassignedPaymentOrders = deliveredOrders
+            .Where(o => !(o.Payments?.Any() ?? false) || o.Payments.Sum(p => p.Amount) < o.Total)
+            .ToList();
+        var unassignedAmount = unassignedPaymentOrders.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
+
+        // ── 6. Métricas Operativas y Top ──
         var topProducts = orders
             .SelectMany(o => o.Items)
             .GroupBy(i => i.ProductName)
@@ -572,14 +643,12 @@ public class OrdersController : ControllerBase
             .Take(10)
             .ToList();
 
-        // ── Pedidos por día ──
         var ordersByDay = orders
             .GroupBy(o => o.CreatedAt.ToString("yyyy-MM-dd"))
             .Select(g => new DailyCountDto(g.Key, g.Count(), g.Sum(o => o.Total)))
             .OrderBy(d => d.Date)
             .ToList();
 
-        // ── Clientas ──
         var clientsInPeriod = orders.Where(o => o.Client != null).Select(o => o.Client!).DistinctBy(c => c.Id).ToList();
         var newClients = clientsInPeriod.Count(c => c.Type == "Nueva" || string.IsNullOrEmpty(c.Type));
         var frequentClients = clientsInPeriod.Count(c => c.Type == "Frecuente");
@@ -592,57 +661,101 @@ public class OrdersController : ControllerBase
             .Take(10)
             .ToList();
 
-        // ── Proveedores ──
         var supplierSummaries = await _db.Investments
             .Include(i => i.Supplier)
-            .Where(i => i.Date >= startDate && i.Date <= endDate)
+            .Where(i => i.Date >= startDate && i.Date < endDateExclusive)
             .GroupBy(i => i.Supplier.Name)
             .Select(g => new SupplierSummaryDto(
                 g.Key,
-                g.Sum(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate)),
+                g.Sum(i => i.Amount * i.ExchangeRate),
                 g.Count()
             ))
             .ToListAsync();
 
+        // ── 7. Performance ──
+        var routes = await _db.DeliveryRoutes
+            .Where(r => r.CreatedAt >= startDate && r.CreatedAt < endDateExclusive)
+            .ToListAsync();
+
+        var totalDeliveries = await _db.Deliveries
+            .Where(d => d.DeliveryRoute.CreatedAt >= startDate && d.DeliveryRoute.CreatedAt < endDateExclusive)
+            .CountAsync();
+
+        var deliveredCount = await _db.Deliveries
+            .Where(d => d.DeliveryRoute.CreatedAt >= startDate && d.DeliveryRoute.CreatedAt < endDateExclusive
+                     && d.Status == DeliveryStatus.Delivered)
+            .CountAsync();
+
         var successRate = totalDeliveries > 0 ? Math.Round((decimal)deliveredCount / totalDeliveries * 100, 1) : 0m;
 
-        var reportPayments = deliveredOrders.SelectMany(o => o.Payments ?? new List<OrderPayment>()).ToList();
+        var deliveriesWithTime = await _db.Deliveries
+            .Include(d => d.DeliveryRoute)
+            .Where(d => d.Status == DeliveryStatus.Delivered && d.DeliveredAt != null && d.DeliveryRoute.StartedAt != null 
+                     && d.DeliveredAt >= startDate && d.DeliveredAt < endDateExclusive)
+            .Select(d => new { d.DeliveredAt, d.DeliveryRoute.StartedAt })
+            .ToListAsync();
 
-        var dto = new ReportDto(
+        var avgDeliveryTime = deliveriesWithTime.Any() 
+            ? deliveriesWithTime.Average(d => (d.DeliveredAt!.Value - d.StartedAt!.Value).TotalMinutes) 
+            : 0;
+
+        var completedRoutes = routes.Where(r => r.Status == RouteStatus.Completed && r.StartedAt != null && r.CompletedAt != null).ToList();
+        var avgRouteTime = completedRoutes.Any()
+            ? completedRoutes.Average(r => (r.CompletedAt!.Value - r.StartedAt!.Value).TotalMinutes)
+            : 0;
+
+        // ── 8. Comparativa con el periodo anterior ──
+        var duration = endDateExclusive - startDate;
+        var prevStartDate = startDate - duration;
+        var prevEndDateExclusive = startDate;
+
+        var prevPeriodRevenue = await _db.Deliveries
+            .Where(d => d.Status == DeliveryStatus.Delivered && d.DeliveredAt >= prevStartDate && d.DeliveredAt < prevEndDateExclusive)
+            .SumAsync(d => (decimal?)d.Order.Total) ?? 0m;
+
+        var prevPeriodOrders = await _db.Orders
+            .CountAsync(o => o.CreatedAt >= prevStartDate && o.CreatedAt < prevEndDateExclusive);
+
+        return Ok(new ReportDto(
             TotalRevenue: revenue,
+            TotalCollected: totalCollected,
             TotalInvestment: totalInvestment,
             TotalExpenses: driverExpenses,
             NetProfit: revenue - totalInvestment - driverExpenses,
-            TotalOrders: orders.Count,
-            PendingOrders: orders.Count(o => o.Status == Models.OrderStatus.Pending),
-            InRouteOrders: orders.Count(o => o.Status == Models.OrderStatus.InRoute),
+            CashBalance: totalCollected - totalInvestment - driverExpenses, // Collected real
+            TotalOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive),
+            PendingOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.Pending),
+            InRouteOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.InRoute),
             DeliveredOrders: deliveredOrders.Count,
-            NotDeliveredOrders: orders.Count(o => o.Status == Models.OrderStatus.NotDelivered),
-            CanceledOrders: orders.Count(o => o.Status == Models.OrderStatus.Canceled),
-            DeliveryOrders: orders.Count(o => o.OrderType == OrderType.Delivery),
-            PickUpOrders: orders.Count(o => o.OrderType == OrderType.PickUp),
-            AvgTicket: orders.Count > 0 ? Math.Round(orders.Average(o => o.Total), 2) : 0,
+            NotDeliveredOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.NotDelivered),
+            CanceledOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.Canceled),
+            DeliveryOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.OrderType == OrderType.Delivery),
+            PickUpOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.OrderType == OrderType.PickUp),
+            AvgTicket: (decimal)(deliveredOrders.Count > 0 ? (double)Math.Round(deliveredOrders.Average(o => o.Total), 2) : 0),
             TopProducts: topProducts,
             OrdersByDay: ordersByDay,
             TotalRoutes: routes.Count,
-            CompletedRoutes: routes.Count(r => r.Status == RouteStatus.Completed),
-            SuccessRate: successRate,
+            CompletedRoutes: completedRoutes.Count,
+            SuccessRate: (decimal)(double)successRate,
             TotalDriverExpenses: driverExpenses,
             NewClients: newClients,
             FrequentClients: frequentClients,
             ActiveClients: clientsInPeriod.Count,
             TopClients: topClients,
-            CashOrders: reportPayments.Count(p => p.Method == "Efectivo"),
-            CashAmount: reportPayments.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
-            TransferOrders: reportPayments.Count(p => p.Method == "Transferencia"),
-            TransferAmount: reportPayments.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
-            DepositOrders: reportPayments.Count(p => p.Method == "Deposito"),
-            DepositAmount: reportPayments.Where(p => p.Method == "Deposito").Sum(p => p.Amount),
-            UnassignedPaymentOrders: deliveredOrders.Count(o => !(o.Payments?.Any() ?? false)),
-            SupplierSummaries: supplierSummaries
-        );
-
-        return Ok(dto);
+            CashOrders: allPaymentsInRange.Count(p => p.Method == "Efectivo"),
+            CashAmount: allPaymentsInRange.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
+            TransferOrders: allPaymentsInRange.Count(p => p.Method == "Transferencia"),
+            TransferAmount: allPaymentsInRange.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
+            DepositOrders: allPaymentsInRange.Count(p => p.Method == "Deposito"),
+            DepositAmount: allPaymentsInRange.Where(p => p.Method == "Deposito").Sum(p => p.Amount),
+            UnassignedPaymentOrders: unassignedPaymentOrders.Count,
+            UnassignedPaymentAmount: unassignedAmount,
+            SupplierSummaries: supplierSummaries,
+            AvgDeliveryTimeMinutes: Math.Round(avgDeliveryTime, 1),
+            AvgRouteTimeMinutes: Math.Round(avgRouteTime, 1),
+            PrevPeriodRevenue: prevPeriodRevenue,
+            PrevPeriodOrders: prevPeriodOrders
+        ));
     }
 
     // ---------------------------------------------------------
@@ -665,12 +778,33 @@ public class OrdersController : ControllerBase
 
         var settings = await _db.AppSettings.FirstAsync();
 
-        if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
+        // 1. Process OrderType and ShippingCost changes FIRST
+        if (!string.IsNullOrEmpty(req.OrderType) && Enum.TryParse<OrderType>(req.OrderType, true, out var newOrderType))
         {
+            if (order.OrderType != newOrderType)
+            {
+                order.OrderType = newOrderType;
+                if (newOrderType == OrderType.PickUp)
+                {
+                    order.ShippingCost = 0;
+                }
+                else if (newOrderType == OrderType.Delivery)
+                {
+                    // Ensure the fee is applied when switching to Delivery
+                    order.ShippingCost = settings.DefaultShippingCost; 
+                }
+            }
+        }
+
+        // 2. Process Status changes
+        Models.OrderStatus? parsedNewStatus = null;
+        if (!string.IsNullOrEmpty(req.Status) && Enum.TryParse<Models.OrderStatus>(req.Status, true, out var parsedStatus))
+        {
+            parsedNewStatus = parsedStatus;
             int puntosCalculados = (int)(order.Total / 10m);
 
             // CASO A: Lo acaban de marcar como Entregado (+ PUNTOS)
-            if (newStatus == Models.OrderStatus.Delivered && order.Status != Models.OrderStatus.Delivered)
+            if (parsedNewStatus.Value == Models.OrderStatus.Delivered && order.Status != Models.OrderStatus.Delivered)
             {
                 if (puntosCalculados > 0 && order.Client != null)
                 {
@@ -688,7 +822,7 @@ public class OrdersController : ControllerBase
                 }
             }
             // CASO B: Estaba Entregado y lo regresaron a Pendiente/Cancelado (- PUNTOS)
-            else if (order.Status == Models.OrderStatus.Delivered && newStatus != Models.OrderStatus.Delivered)
+            else if (order.Status == Models.OrderStatus.Delivered && parsedNewStatus.Value != Models.OrderStatus.Delivered)
             {
                 if (puntosCalculados > 0 && order.Client != null)
                 {
@@ -706,7 +840,7 @@ public class OrdersController : ControllerBase
             }
 
             // Aplicamos el cambio de estatus real a la orden
-            order.Status = newStatus;
+            order.Status = parsedNewStatus.Value;
         }
 
         order.PostponedAt = req.PostponedAt;
@@ -716,7 +850,7 @@ public class OrdersController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Enviar Push Notification basada en el nuevo estado
-        if (newStatus == EntregasApi.Models.OrderStatus.Shipped && order.Client != null)
+        if (parsedNewStatus.HasValue && parsedNewStatus.Value == EntregasApi.Models.OrderStatus.Shipped && order.Client != null)
         {
             await _pushService.SendNotificationToClientAsync(
                 order.Client.Id, 
@@ -724,7 +858,7 @@ public class OrdersController : ControllerBase
                 "Tu pedido está listo y empacado para entrega.", 
                 $"/o/{order.AccessToken}");
         }
-        else if (newStatus == EntregasApi.Models.OrderStatus.Delivered && order.Client != null)
+        else if (parsedNewStatus.HasValue && parsedNewStatus.Value == EntregasApi.Models.OrderStatus.Delivered && order.Client != null)
         {
             await _pushService.SendNotificationToClientAsync(
                 order.Client.Id, 
@@ -732,7 +866,7 @@ public class OrdersController : ControllerBase
                 "¡Gracias por tu compra en Regi Bazar!", 
                 $"/o/{order.AccessToken}");
         }
-        else if (newStatus == EntregasApi.Models.OrderStatus.InRoute && order.Client != null)
+        else if (parsedNewStatus.HasValue && parsedNewStatus.Value == EntregasApi.Models.OrderStatus.InRoute && order.Client != null)
         {
             await _pushService.SendNotificationToClientAsync(
                 order.Client.Id, 
@@ -766,6 +900,7 @@ public class OrdersController : ControllerBase
             order.Client.Name = req.ClientName;
             order.Client.Address = req.ClientAddress;
             order.Client.Phone = req.ClientPhone;
+            if (!string.IsNullOrEmpty(req.ClientType)) order.Client.Type = req.ClientType; // Added
         }
 
         var settings = await _db.AppSettings.FirstAsync();
@@ -804,6 +939,9 @@ public class OrdersController : ControllerBase
 
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
+        order.Tags = req.Tags != null ? System.Text.Json.JsonSerializer.Serialize(req.Tags) : null;
+        order.DeliveryTime = req.DeliveryTime;
+        order.PickupDate = req.PickupDate;
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
@@ -1050,7 +1188,7 @@ public class OrdersController : ControllerBase
     }
 
     [HttpDelete("wipe")]
-    // [Authorize(Roles = "Admin")]
+    [Authorize]
     public async Task<IActionResult> WipeAllOrders()
     {
         await _db.OrderPayments.ExecuteDeleteAsync();

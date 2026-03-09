@@ -69,6 +69,30 @@ public class ClientsController : ControllerBase
         return Ok(clients);
     }
 
+    [HttpGet("{id}")]
+    public async Task<ActionResult<ClientDto>> GetById(int id)
+    {
+        var c = await _db.Clients
+            .Select(c => new
+            {
+                c.Id,
+                c.Name,
+                c.Phone,
+                c.Address,
+                c.Tag,
+                OrdersCount = c.Orders.Count(),
+                TotalSpent = c.Orders
+                    .Where(o => o.Status != Models.OrderStatus.Canceled)
+                    .Sum(o => o.Total),
+                c.Type
+            })
+            .FirstOrDefaultAsync(c => c.Id == id);
+
+        if (c == null) return NotFound();
+
+        return Ok(new ClientDto(c.Id, c.Name, c.Phone, c.Address, c.Tag.ToString(), c.OrdersCount, c.TotalSpent, c.Type));
+    }
+
     [HttpPut("{id}")]
     public async Task<IActionResult> Update(int id, [FromBody] UpdateClientRequest req)
     {

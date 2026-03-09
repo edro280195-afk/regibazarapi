@@ -2,6 +2,7 @@ using EntregasApi.Data;
 using EntregasApi.DTOs;
 using EntregasApi.Hubs;
 using EntregasApi.Models;
+using EntregasApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -14,12 +15,14 @@ namespace EntregasApi.Controllers;
 public class ClientViewController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IHubContext<TrackingHub> _hub;
+    private readonly IHubContext<DeliveryHub> _hub;
+    private readonly IPushNotificationService _push;
 
-    public ClientViewController(AppDbContext db, IHubContext<TrackingHub> hub)
+    public ClientViewController(AppDbContext db, IHubContext<DeliveryHub> hub, IPushNotificationService push)
     {
         _db = db;
         _hub = hub;
+        _push = push;
     }
 
     /// <summary>GET /api/pedido/{token} - Vista pública del pedido</summary>
@@ -123,7 +126,8 @@ public class ClientViewController : ControllerBase
             Payments: (order.Payments ?? new List<OrderPayment>())
                 .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
             AmountPaid: order.AmountPaid,
-            BalanceDue: order.BalanceDue
+            BalanceDue: order.BalanceDue,
+            ClientPoints: order.Client?.CurrentPoints ?? 0
         ));
     }
     /// <summary>POST /api/pedido/{token}/confirm - La clienta confirma su pedido</summary>
@@ -148,6 +152,13 @@ public class ClientViewController : ControllerBase
                 ClientName = order.Client?.Name ?? "Clienta",
                 NewStatus = "Confirmed"
             });
+
+            // 🔔 Notificación Push a los Admins!
+            await _push.SendNotificationToAdminsAsync(
+                "💖 ¡Pedido Confirmado!",
+                $"{order.Client?.Name} ha confirmado su pedido #{order.Id}. ¡A darle!",
+                tag: "order-confirmed"
+            );
 
             return Ok(new { message = "¡Pedido confirmado exitosamente! 💖" });
         }

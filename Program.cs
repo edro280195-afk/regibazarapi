@@ -161,6 +161,7 @@ app.UseAuthorization();
 
 // 5. Mapear endpoints
 app.MapControllers();
+app.MapHub<DeliveryHub>("/hubs/delivery");
 app.MapHub<TrackingHub>("/hubs/tracking");
 app.MapHub<OrderHub>("/hubs/orders");
 app.MapHub<LogisticsHub>("/hubs/logistics");

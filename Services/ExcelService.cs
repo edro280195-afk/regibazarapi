@@ -9,6 +9,7 @@ namespace EntregasApi.Services;
 public interface IExcelService
 {
     Task<ExcelUploadResult> ProcessExcelAsync(Stream fileStream, string frontendBaseUrl);
+    Task<byte[]> GenerateReportExcelAsync(DateTime start, DateTime end);
 }
 
 public class ExcelService : IExcelService
@@ -162,6 +163,49 @@ public class ExcelService : IExcelService
         return new ExcelUploadResult(ordersCreated, clientsCreated, orderSummaries, warnings);
     }
 
+    public async Task<byte[]> GenerateReportExcelAsync(DateTime start, DateTime end)
+    {
+        var orders = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Where(o => o.CreatedAt >= start && o.CreatedAt <= end)
+            .OrderByDescending(o => o.CreatedAt)
+            .ToListAsync();
+
+        using var package = new ExcelPackage();
+        var ws = package.Workbook.Worksheets.Add("Reporte Pedidos");
+
+        // Headers
+        string[] headers = { "ID", "Fecha", "Cliente", "Estado", "Tipo", "Subtotal", "Envío", "Total", "Pagado", "Balance", "Método", "Artículos" };
+        for (int i = 0; i < headers.Length; i++)
+        {
+            ws.Cells[1, i + 1].Value = headers[i];
+            ws.Cells[1, i + 1].Style.Font.Bold = true;
+        }
+
+        int row = 2;
+        foreach (var o in orders)
+        {
+            ws.Cells[row, 1].Value = o.Id;
+            ws.Cells[row, 2].Value = o.CreatedAt.ToString("dd/MM/yyyy HH:mm");
+            ws.Cells[row, 3].Value = o.Client?.Name ?? "N/A";
+            ws.Cells[row, 4].Value = o.Status.ToString();
+            ws.Cells[row, 5].Value = o.OrderType.ToString();
+            ws.Cells[row, 6].Value = o.Subtotal;
+            ws.Cells[row, 7].Value = o.ShippingCost;
+            ws.Cells[row, 8].Value = o.Total;
+            ws.Cells[row, 9].Value = o.AmountPaid;
+            ws.Cells[row, 10].Value = o.BalanceDue;
+            ws.Cells[row, 11].Value = o.PaymentMethod;
+            ws.Cells[row, 12].Value = string.Join(", ", o.Items.Select(i => $"{i.Quantity}x {i.ProductName}"));
+            row++;
+        }
+
+        ws.Cells.AutoFitColumns();
+        return await package.GetAsByteArrayAsync();
+    }
+
     private Dictionary<string, int> DetectColumns(ExcelWorksheet ws)
     {
         var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -205,6 +249,13 @@ public class ExcelService : IExcelService
             .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes))
             .ToList();
 
+        List<string>? tags = null;
+        if (!string.IsNullOrEmpty(order.Tags))
+        {
+            try { tags = System.Text.Json.JsonSerializer.Deserialize<List<string>>(order.Tags); }
+            catch { tags = order.Tags.Split(',', System.StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()).ToList(); }
+        }
+
         return new OrderSummaryDto(
             order.Id,
             client?.Name ?? "Cliente Desconocido",
@@ -232,7 +283,10 @@ public class ExcelService : IExcelService
             AdvancePayment: order.AdvancePayment,
             PaymentMethod: order.PaymentMethod,
             SalesPeriodId: order.SalesPeriodId,
-            SalesPeriodName: order.SalesPeriod?.Name
+            SalesPeriodName: order.SalesPeriod?.Name,
+            ClientId: client?.Id,
+            Tags: tags,
+            ClientPoints: client?.CurrentPoints ?? 0
         );
     }
 }

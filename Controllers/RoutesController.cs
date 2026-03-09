@@ -18,14 +18,16 @@ public class RoutesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ITokenService _tokenService;
     private readonly IConfiguration _config;
-    private readonly IHubContext<TrackingHub> _hub;
+    private readonly IHubContext<DeliveryHub> _hub;
+    private readonly IPushNotificationService _push;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<TrackingHub> hub)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push)
     {
         _db = db;
         _tokenService = tokenService;
         _config = config;
         _hub = hub;
+        _push = push;
     }
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
@@ -80,6 +82,9 @@ public class RoutesController : ControllerBase
                 Status = DeliveryStatus.Pending
             };
             _db.Deliveries.Add(delivery);
+
+            // 🔔 Notificar a la clienta que su pedido ya está en ruta
+            await _push.NotifyClientDriverEnRouteAsync(order.ClientId);
         }
 
         await _db.SaveChangesAsync();
@@ -193,7 +198,76 @@ public class RoutesController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
+
+        // 🔔 Avisar al Chofer que su lista cambió
+        await _hub.Clients.Group($"Route_{route.DriverToken}")
+            .SendAsync("RouteUpdated");
+
         return Ok(new { Message = "Orden actualizado correctamente" });
+    }
+
+    // ═══════════════════════════════════════════
+    //  MUTACIÓN ATÓMICA DE RUTA 🛠️
+    // ═══════════════════════════════════════════
+
+    [HttpPost("{id}/add-order")]
+    public async Task<IActionResult> AddOrderToRoute(int id, [FromBody] int orderId)
+    {
+        var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
+        if (route == null) return NotFound("Ruta no encontrada");
+
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+        if (order == null) return NotFound("Orden no encontrada");
+
+        if (order.DeliveryRouteId != null) return BadRequest("La orden ya tiene una ruta asignada.");
+
+        order.DeliveryRouteId = id;
+        order.Status = Models.OrderStatus.InRoute;
+
+        int nextSortOrder = route.Deliveries.Any() ? route.Deliveries.Max(d => d.SortOrder) + 1 : 1;
+
+        var delivery = new Delivery
+        {
+            OrderId = orderId,
+            DeliveryRouteId = id,
+            SortOrder = nextSortOrder,
+            Status = DeliveryStatus.Pending
+        };
+        _db.Deliveries.Add(delivery);
+        await _db.SaveChangesAsync();
+
+        // 🔔 Avisar al chofer
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
+
+        // 🔔 Notificar a la clienta
+        await _push.NotifyClientDriverEnRouteAsync(order.ClientId);
+
+        return Ok(new { Message = "Orden agregada correctamente" });
+    }
+
+    [HttpDelete("{id}/remove-order/{orderId}")]
+    public async Task<IActionResult> RemoveOrderFromRoute(int id, int orderId)
+    {
+        var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
+        if (route == null) return NotFound("Ruta no encontrada");
+
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.DeliveryRouteId == id && d.OrderId == orderId);
+        if (delivery == null) return NotFound("Entrega no encontrada en esta ruta.");
+
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+        if (order != null)
+        {
+            order.DeliveryRouteId = null;
+            order.Status = Models.OrderStatus.Pending;
+        }
+
+        _db.Deliveries.Remove(delivery);
+        await _db.SaveChangesAsync();
+
+        // 🔔 Avisar al chofer
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
+
+        return Ok(new { Message = "Orden eliminada de la ruta correctamente" });
     }
 
     // ═══════════════════════════════════════════

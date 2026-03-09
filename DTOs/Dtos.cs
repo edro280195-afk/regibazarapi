@@ -52,7 +52,12 @@ public record OrderSummaryDto(
     string? PaymentMethod = null,
     // SalesPeriod (Corte)
     int? SalesPeriodId = null,
-    string? SalesPeriodName = null
+    string? SalesPeriodName = null,
+    // Cliente y Tags
+    int? ClientId = null,
+    List<string>? Tags = null,
+    // Loyalty
+    int ClientPoints = 0
 );
 
 public record OrderTrackingDto(
@@ -169,7 +174,8 @@ public record ClientOrderView(
     decimal AdvancePayment = 0m,
     List<OrderPaymentDto>? Payments = null,
     decimal AmountPaid = 0m,
-    decimal BalanceDue = 0m
+    decimal BalanceDue = 0m,
+    int ClientPoints = 0
 );
 
 // ── OrderPayment ──
@@ -227,7 +233,9 @@ public record DashboardDto(
     int ClientsFrecuente,
     int OrdersDelivery,
     int OrdersPickUp,
-    ActivePeriodSummaryDto? ActivePeriod = null
+    ActivePeriodSummaryDto? ActivePeriod = null,
+    decimal PendingAmount = 0m,
+    List<OrderSummaryDto>? RecentOrders = null
 );
 
 public record ActivePeriodSummaryDto(
@@ -245,10 +253,12 @@ public record CommonProductDto(string Name, int Count, decimal TypicalPrice);
 // ── Reports ──
 public record ReportDto(
     // Financiero
-    decimal TotalRevenue,
+    decimal TotalRevenue,      // Billed (Delivered total)
+    decimal TotalCollected,    // Actually paid (OrderPayments)
     decimal TotalInvestment,
-    decimal TotalExpenses,
-    decimal NetProfit,
+    decimal TotalExpenses,     // DriverExpenses
+    decimal NetProfit,         // TotalRevenue - TotalInvestment - TotalExpenses
+    decimal CashBalance,       // TotalCollected - TotalInvestment - TotalExpenses
     // Pedidos
     int TotalOrders,
     int PendingOrders,
@@ -279,8 +289,15 @@ public record ReportDto(
     int DepositOrders,
     decimal DepositAmount,
     int UnassignedPaymentOrders,
+    decimal UnassignedPaymentAmount,
     // Proveedores
-    List<SupplierSummaryDto> SupplierSummaries
+    List<SupplierSummaryDto> SupplierSummaries,
+    // Rendimiento
+    double AvgDeliveryTimeMinutes = 0,
+    double AvgRouteTimeMinutes = 0,
+    // Comparativa
+    decimal PrevPeriodRevenue = 0,
+    int PrevPeriodOrders = 0
 );
 
 public record TopProductDto(string Name, int Quantity, decimal Revenue);
@@ -438,10 +455,13 @@ public record FinancialReportDto
     public string Period { get; init; } = string.Empty;
     public DateTime StartDate { get; init; }
     public DateTime EndDate { get; init; }
-    public decimal TotalIncome { get; init; }
+    public decimal TotalBilled { get; init; }      // Lo que se facturó (Ordenes Entregadas)
+    public decimal TotalCollected { get; init; }   // Lo que entró realmente a caja (Pagos)
+    public decimal TotalPending { get; init; }     // Diferencia (Billed - Collected)
     public decimal TotalInvestment { get; init; }
     public decimal TotalExpenses { get; init; }
-    public decimal NetProfit { get; init; }
+    public decimal NetProfit { get; init; }        // Utilidad teórica (Billed - Inv - Exp)
+    public decimal CashBalance { get; init; }      // Dinero real en mano (Collected - Inv - Exp)
     public FinancialDetailsDto Details { get; init; } = new();
 }
 
@@ -489,6 +509,7 @@ public record UpdateOrderDetailsRequest(
     string ClientName,
     string? ClientAddress,
     string? ClientPhone,
+    string? ClientType, // Added
     List<string>? Tags,
     string? DeliveryTime,
     string? PickupDate,
@@ -531,9 +552,12 @@ public record CreateSalesPeriodRequest
 public record PeriodReportDto(
     int PeriodId,
     string PeriodName,
-    decimal TotalSales,
+    decimal TotalSales,          // Billed
+    decimal TotalCollected,      // Actually paid
     decimal TotalInvestments,
-    decimal NetProfit,
+    decimal TotalExpenses,       // Driver expenses in this period
+    decimal NetProfit,           // Billed - Inv - Exp
+    decimal CashBalance,         // Collected - Inv - Exp
     List<PeriodInvestmentBySupplierDto> InvestmentsBySupplier
 );
 
