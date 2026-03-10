@@ -1187,6 +1187,148 @@ public class OrdersController : ControllerBase
         return Ok(result);
     }
 
+    // ---------------------------------------------------------
+    // 📦 LOGÍSTICA DE BOLSAS Y ETIQUETAS (SISTEMA ANTI-PÉRDIDAS)
+    // ---------------------------------------------------------
+
+    /// <summary>GET /api/orders/{id}/packages - Lista las bolsas de un pedido</summary>
+    [HttpGet("{id}/packages")]
+    public async Task<ActionResult<List<OrderPackageDto>>> GetPackages(int id)
+    {
+        var packages = await _db.OrderPackages
+            .Where(p => p.OrderId == id)
+            .OrderBy(p => p.PackageNumber)
+            .Select(p => new OrderPackageDto(
+                p.Id,
+                p.PackageNumber,
+                p.QrCodeValue,
+                p.Status.ToString(),
+                p.CreatedAt,
+                p.LoadedAt,
+                p.DeliveredAt))
+            .ToListAsync();
+
+        return Ok(packages);
+    }
+
+    /// <summary>POST /api/orders/{id}/packages/generate - Crea bolsas nuevas e imprime QRs</summary>
+    [HttpPost("{id}/packages/generate")]
+    public async Task<IActionResult> GeneratePackages(int id, [FromBody] GeneratePackagesRequest req)
+    {
+        if (req.Count <= 0) return BadRequest("Debe generar al menos 1 bolsa.");
+
+        var order = await _db.Orders
+            .Include(o => o.Packages)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Pedido no encontrado.");
+
+        // Averiguamos en qué número de bolsa nos quedamos (por si Miel agrega más días después)
+        int startingNumber = order.Packages.Any() ? order.Packages.Max(p => p.PackageNumber) + 1 : 1;
+
+        var newPackages = new List<OrderPackage>();
+
+        for (int i = 0; i < req.Count; i++)
+        {
+            var packageId = Guid.NewGuid();
+            // Creamos el QR infalible: RB-ORD[Id]-PKG[Primeros 8 chars del Guid]
+            string qrText = $"RB-ORD{order.Id}-PKG{packageId.ToString().Substring(0, 8).ToUpper()}";
+
+            var package = new OrderPackage
+            {
+                Id = packageId,
+                OrderId = order.Id,
+                PackageNumber = startingNumber + i,
+                QrCodeValue = qrText,
+                Status = PackageTrackingStatus.Packed,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            newPackages.Add(package);
+            _db.OrderPackages.Add(package);
+        }
+
+        // Actualizamos las banderas rápidas de la orden principal
+        order.TotalPackages = order.Packages.Count + newPackages.Count;
+        order.IsFullyPacked = true;
+        // Si agregamos nuevas bolsas, automáticamente ya no está "completamente cargada"
+        order.IsFullyLoaded = false;
+
+        await _db.SaveChangesAsync();
+
+        var result = newPackages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt));
+        return Ok(result);
+    }
+
+    /// <summary>POST /api/orders/packages/scan - El motor del escáner nativo</summary>
+    [HttpPost("packages/scan")]
+    public async Task<IActionResult> ScanPackage([FromBody] ScanPackageRequest req)
+    {
+        // 1. Buscamos el QR en 1 milisegundo gracias al Índice Único
+        var package = await _db.OrderPackages
+            .Include(p => p.Order)
+            .ThenInclude(o => o.Packages) // Traemos a sus hermanas para validar si ya están todas
+            .FirstOrDefaultAsync(p => p.QrCodeValue == req.QrCodeValue);
+
+        if (package == null) return NotFound(new { message = "Código QR no reconocido. Esta bolsa no es nuestra." });
+
+        string successMessage = "";
+
+        // 2. Máquina de Estados: ¿Qué está haciendo el chofer?
+        if (req.Action.Equals("Load", StringComparison.OrdinalIgnoreCase))
+        {
+            if (package.Status >= PackageTrackingStatus.Loaded)
+                return BadRequest(new { message = $"La bolsa {package.PackageNumber} ya estaba cargada en la camioneta." });
+
+            package.Status = PackageTrackingStatus.Loaded;
+            package.LoadedAt = DateTime.UtcNow;
+            successMessage = $"Bolsa {package.PackageNumber} cargada con éxito.";
+        }
+        else if (req.Action.Equals("Deliver", StringComparison.OrdinalIgnoreCase))
+        {
+            if (package.Status == PackageTrackingStatus.Packed)
+                return BadRequest(new { message = $"¡Peligro! Intentas entregar la bolsa {package.PackageNumber} pero el sistema no registra que la hayas subido a la camioneta." });
+
+            if (package.Status == PackageTrackingStatus.Delivered)
+                return BadRequest(new { message = $"La bolsa {package.PackageNumber} ya había sido entregada." });
+
+            package.Status = PackageTrackingStatus.Delivered;
+            package.DeliveredAt = DateTime.UtcNow;
+            successMessage = $"Bolsa {package.PackageNumber} entregada a {package.Order.Client?.Name}.";
+        }
+        else
+        {
+            return BadRequest("Acción no válida. Usa 'Load' o 'Deliver'.");
+        }
+
+        // 3. Auditoría Maestra: ¿Ya terminamos con este pedido?
+        var order = package.Order;
+
+        // Revisa si TODAS las bolsas de este pedido ya están al menos 'Loaded'
+        bool allLoaded = order.Packages.All(p => p.Status >= PackageTrackingStatus.Loaded);
+        order.IsFullyLoaded = allLoaded;
+
+        // Opcional: Si se escanean todas como Deliver, pasar la orden entera a Delivered automáticamente
+        bool allDelivered = order.Packages.All(p => p.Status == PackageTrackingStatus.Delivered);
+        if (allDelivered && order.Status != Models.OrderStatus.Delivered)
+        {
+            order.Status = Models.OrderStatus.Delivered;
+            // Aquí podrías sumar puntos de lealtad llamando a tu lógica si lo deseas
+        }
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new
+        {
+            message = successMessage,
+            orderId = order.Id,
+            packageNumber = package.PackageNumber,
+            totalPackages = order.TotalPackages,
+            allPackagesLoaded = allLoaded,
+            allPackagesDelivered = allDelivered
+        });
+    }
+
     [HttpDelete("wipe")]
     [Authorize]
     public async Task<IActionResult> WipeAllOrders()

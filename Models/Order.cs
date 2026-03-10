@@ -49,7 +49,10 @@ public class Order
     public string? DeliveryTime { get; set; }
     public string? PickupDate { get; set; }
 
-    // ── LEGACY (mantener para migración) ──
+    public int? TotalPackages { get; set; }
+    public bool IsFullyPacked { get; set; }
+    public bool IsFullyLoaded { get; set; }
+
     [Obsolete("Usar Payments collection")]
     [Column(TypeName = "decimal(10,2)")]
     public decimal AdvancePayment { get; set; } = 0m;
@@ -57,8 +60,8 @@ public class Order
     [Obsolete("Usar Payments collection")]
     public string? PaymentMethod { get; set; }
 
-    // ── NUEVO: Libro de Transacciones ──
     public ICollection<OrderPayment> Payments { get; set; } = new List<OrderPayment>();
+    public ICollection<OrderPackage> Packages { get; set; } = new List<OrderPackage>();
 
     [NotMapped]
     public decimal AmountPaid => (Payments?.Sum(p => p.Amount) ?? 0m) + AdvancePayment;

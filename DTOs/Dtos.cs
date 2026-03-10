@@ -189,6 +189,7 @@ public record OrderPaymentDto(
     string? Notes
 );
 
+
 public record AddPaymentRequest
 {
     [Required]
@@ -572,4 +573,22 @@ public record SyncSalesPeriodRequest(
     DateTime InvEndDate,
     DateTime OrderStartDate,
     DateTime OrderEndDate
+);
+
+// ── Paquetes y Logística ──
+public record GeneratePackagesRequest(int Count);
+
+public record OrderPackageDto(
+    Guid Id,
+    int PackageNumber,
+    string QrCodeValue,
+    string Status,
+    DateTime CreatedAt,
+    DateTime? LoadedAt,
+    DateTime? DeliveredAt
+);
+
+public record ScanPackageRequest(
+    string QrCodeValue,
+    string Action // "Load" (Subir a camioneta) o "Deliver" (Entregar a clienta)
 );

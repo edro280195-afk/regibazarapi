@@ -27,6 +27,7 @@ public class AppDbContext : DbContext
     public DbSet<PushSubscriptionModel> PushSubscriptions => Set<PushSubscriptionModel>();
     public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
     public DbSet<SalesPeriod> SalesPeriods => Set<SalesPeriod>();
+    public DbSet<OrderPackage> OrderPackages => Set<OrderPackage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -68,6 +69,18 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(p => p.OrderId);
             entity.HasIndex(p => p.Date);
+        });
+        // Order -> Packages (1:N)
+        modelBuilder.Entity<Order>()
+            .HasMany(o => o.Packages)
+            .WithOne(p => p.Order)
+            .HasForeignKey(p => p.OrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<OrderPackage>(entity =>
+        {
+            entity.HasIndex(p => p.QrCodeValue).IsUnique();
+            entity.HasIndex(p => p.OrderId); // Útil cuando pidas "Todas las bolsas de la orden X"
         });
 
         // Proveedores e Inversiones
