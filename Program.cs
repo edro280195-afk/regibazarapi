@@ -77,6 +77,7 @@ builder.Services.AddCors(options =>
                 "https://regibazar.com",
                 "https://www.regibazar.com",
                 "http://localhost",
+                "https://localhost",
                 "capacitor://localhost"
             )
             .AllowAnyMethod()
