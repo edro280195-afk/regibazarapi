@@ -75,7 +75,9 @@ builder.Services.AddCors(options =>
             .WithOrigins(
                 "http://localhost:4200",
                 "https://regibazar.com",
-                "https://www.regibazar.com"
+                "https://www.regibazar.com",
+                "http://localhost",
+                "capacitor://localhost"
             )
             .AllowAnyMethod()
             .AllowAnyHeader()
