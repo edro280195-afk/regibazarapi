@@ -7,23 +7,13 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EntregasApi.Controllers;
 
-public record ClientDto(
-    int Id,
-    string Name,
-    string? Phone,
-    string? Address,
-    string Tag,
-    int OrdersCount,
-    decimal TotalSpent,
-    string? Type = null
-);
-
 public record UpdateClientRequest(
     string Name,
     string? Phone,
     string? Address,
     string Tag,
-    string Type
+    string Type,
+    string? DeliveryInstructions = null
 );
 
 [ApiController]
@@ -50,7 +40,8 @@ public class ClientsController : ControllerBase
                 TotalSpent = c.Orders
                     .Where(o => o.Status != Models.OrderStatus.Canceled)
                     .Sum(o => o.Total),
-                    c.Type
+                    c.Type,
+                    c.DeliveryInstructions
             })
             .OrderByDescending(x => x.TotalSpent)
             .ToListAsync();
@@ -63,7 +54,8 @@ public class ClientsController : ControllerBase
             c.Tag.ToString(),
             c.OrdersCount,
             c.TotalSpent,
-            c.Type
+            c.Type,
+            c.DeliveryInstructions
         )).ToList();
 
         return Ok(clients);
@@ -84,13 +76,14 @@ public class ClientsController : ControllerBase
                 TotalSpent = c.Orders
                     .Where(o => o.Status != Models.OrderStatus.Canceled)
                     .Sum(o => o.Total),
-                c.Type
+                c.Type,
+                c.DeliveryInstructions
             })
             .FirstOrDefaultAsync(c => c.Id == id);
 
         if (c == null) return NotFound();
 
-        return Ok(new ClientDto(c.Id, c.Name, c.Phone, c.Address, c.Tag.ToString(), c.OrdersCount, c.TotalSpent, c.Type));
+        return Ok(new ClientDto(c.Id, c.Name, c.Phone, c.Address, c.Tag.ToString(), c.OrdersCount, c.TotalSpent, c.Type, c.DeliveryInstructions));
     }
 
     [HttpPut("{id}")]
@@ -107,6 +100,7 @@ public class ClientsController : ControllerBase
         client.Phone = req.Phone;
         client.Address = req.Address;
         client.Type = req.Type;
+        client.DeliveryInstructions = req.DeliveryInstructions;
 
         if (Enum.TryParse<ClientTag>(req.Tag, true, out var newTag))
         {

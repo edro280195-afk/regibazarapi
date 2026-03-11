@@ -286,7 +286,8 @@ public class ExcelService : IExcelService
             SalesPeriodName: order.SalesPeriod?.Name,
             ClientId: client?.Id,
             Tags: tags,
-            ClientPoints: client?.CurrentPoints ?? 0
+            ClientPoints: client?.CurrentPoints ?? 0,
+            DeliveryInstructions: order.DeliveryInstructions ?? client?.DeliveryInstructions
         );
     }
 }

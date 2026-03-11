@@ -48,6 +48,7 @@ public class Order
     public string? Tags { get; set; }
     public string? DeliveryTime { get; set; }
     public string? PickupDate { get; set; }
+    public string? DeliveryInstructions { get; set; }
 
     public int? TotalPackages { get; set; }
     public bool IsFullyPacked { get; set; }

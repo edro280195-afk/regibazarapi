@@ -57,7 +57,20 @@ public record OrderSummaryDto(
     int? ClientId = null,
     List<string>? Tags = null,
     // Loyalty
-    int ClientPoints = 0
+    int ClientPoints = 0,
+    string? DeliveryInstructions = null
+);
+
+public record ClientDto(
+    int Id,
+    string Name,
+    string? Phone,
+    string? Address,
+    string Tag,
+    int OrdersCount,
+    decimal TotalSpent,
+    string ClientType,
+    string? DeliveryInstructions = null
 );
 
 public record OrderTrackingDto(
@@ -89,7 +102,8 @@ public record ManualOrderRequest(
     List<ManualOrderItem> Items,
     DateTime? PostponedAt = null,
     string? PostponedNote = null,
-    string Status = "Pending"
+    string Status = "Pending",
+    string? DeliveryInstructions = null
 );
 public record ManualOrderItem(
     string ProductName,
@@ -135,7 +149,8 @@ public record RouteDeliveryDto(
     string? PaymentMethod,
     List<OrderPaymentDto>? Payments = null,
     decimal AmountPaid = 0m,
-    decimal BalanceDue = 0m
+    decimal BalanceDue = 0m,
+    string? DeliveryInstructions = null
 )
 {
     public int Id => DeliveryId;
@@ -175,7 +190,8 @@ public record ClientOrderView(
     List<OrderPaymentDto>? Payments = null,
     decimal AmountPaid = 0m,
     decimal BalanceDue = 0m,
-    int ClientPoints = 0
+    int ClientPoints = 0,
+    string? DeliveryInstructions = null
 );
 
 // ── OrderPayment ──
@@ -363,6 +379,7 @@ public record SupplierDto(
     DateTime CreatedAt,
     decimal TotalInvested = 0m
 );
+public record UpdateClientRequest(string Name, string? Phone, string? Address, ClientTag Tag, string Type, string? DeliveryInstructions);
 
 public record CreateSupplierRequest
 {
@@ -516,7 +533,8 @@ public record UpdateOrderDetailsRequest(
     string? PickupDate,
     decimal? ShippingCost = null,
     decimal? AdvancePayment = null,
-    int? SalesPeriodId = null
+    int? SalesPeriodId = null,
+    string? DeliveryInstructions = null
 );
 
 // DTO para actualizar un producto individual

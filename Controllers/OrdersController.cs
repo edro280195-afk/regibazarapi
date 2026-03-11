@@ -332,7 +332,8 @@ public class OrdersController : ControllerBase
                 OrderType     = reqOrderType,
                 Items         = new List<OrderItem>(),
                 CreatedAt     = DateTime.UtcNow,
-                SalesPeriodId = (await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive))?.Id
+                SalesPeriodId = (await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive))?.Id,
+                DeliveryInstructions = req.DeliveryInstructions ?? client.DeliveryInstructions
             };
 
             foreach (var item in req.Items)
@@ -515,40 +516,16 @@ public class OrdersController : ControllerBase
         var pendingAmount = activeOrdersForPending.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
 
         // Recent Activity - 10 most recent orders
-        var recentOrders = await _db.Orders
+        var ordersForDashboard = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Include(o => o.SalesPeriod)
             .OrderByDescending(o => o.CreatedAt)
             .Take(10)
-            .Select(o => new OrderSummaryDto(
-                o.Id,
-                o.Client != null ? o.Client.Name : "N/A",
-                o.Status.ToString(),
-                o.Total,
-                "", // Link not needed for dashboard preview
-                o.Items.Count,
-                o.OrderType.ToString(),
-                o.CreatedAt,
-                o.Client != null ? o.Client.Type : "Nueva",
-                o.Client != null ? o.Client.Phone : null,
-                o.Client != null ? o.Client.Address : null,
-                o.PostponedAt,
-                o.PostponedNote,
-                o.Subtotal,
-                o.ShippingCost,
-                o.AccessToken ?? "",
-                o.ExpiresAt,
-                new List<OrderItemDto>(), // Simplified for dashboard
-                new List<OrderPaymentDto>(), // Simplified for dashboard
-                o.Payments != null ? o.Payments.Sum(p => p.Amount) : 0,
-                0, // Balance due calculated on frontend if needed
-                0,
-                null,
-                o.SalesPeriodId,
-                o.SalesPeriod != null ? o.SalesPeriod.Name : null,
-                o.ClientId,
-                null,
-                o.Client != null ? o.Client.CurrentPoints : 0
-            ))
             .ToListAsync();
+
+        var recentOrders = ordersForDashboard.Select(o => ExcelService.MapToSummary(o, o.Client, FrontendUrl)).ToList();
 
         var dto = new DashboardDto(
             TotalClients: await _db.Clients.CountAsync(),
@@ -942,6 +919,7 @@ public class OrdersController : ControllerBase
         order.Tags = req.Tags != null ? System.Text.Json.JsonSerializer.Serialize(req.Tags) : null;
         order.DeliveryTime = req.DeliveryTime;
         order.PickupDate = req.PickupDate;
+        order.DeliveryInstructions = req.DeliveryInstructions;
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();

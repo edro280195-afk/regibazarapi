@@ -25,6 +25,6 @@ public class Client
     public ClientTag Tag { get; set; } = ClientTag.None;
     public int CurrentPoints { get; set; } = 0;
     public int LifetimePoints { get; set; } = 0;
+    public string? DeliveryInstructions { get; set; }
     public ICollection<Order> Orders { get; set; } = new List<Order>();
-    
 }
