@@ -168,7 +168,8 @@ public record AiRouteSelectionRequest(
 
 public record AiRouteSelectionResponse(
     List<int> SelectedOrderIds,
-    string AiConfirmationMessage
+    string AiConfirmationMessage,
+    string? AudioBase64 = null
 );
 
 public record CreateAdminExpenseRequest(decimal Amount, string ExpenseType, DateTime Date, string? Notes, int? DeliveryRouteId);
@@ -366,17 +367,6 @@ public enum OrderType
     PickUp = 1    // Recoger en tienda
 }
 
-public enum OrderStatus
-{
-    Pending = 0,      // Pendiente
-    InRoute = 1,      // En Ruta (Solo para Delivery)
-    Delivered = 2,    // Entregado
-    NotDelivered = 3, // No Entregado (intento fallido)
-    Canceled = 4,     // Cancelado (Nuevo)
-    Postponed = 5,     // Pospuesto (Nuevo)
-    Confirmed = 6,  // Clienta confirmó el pedido
-    Sent = 7
-}
 
 public record UpdateOrderStatusRequest(
     string? Status,              // ✅ nullable
@@ -633,3 +623,8 @@ public record ScanPackageRequest(
     string QrCodeValue,
     string Action // "Load" (Subir a camioneta) o "Deliver" (Entregar a clienta)
 );
+
+// ── C.A.M.I. ──
+public record CamiMessageDto(string Role, string Text); // Role: "user" | "model"
+public record CamiChatRequest(List<CamiMessageDto> History, string NewMessage);
+public record CamiChatResponse(string Text, string? AudioBase64 = null);

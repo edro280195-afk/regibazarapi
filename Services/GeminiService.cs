@@ -16,7 +16,7 @@ public interface IGeminiService
 
 public class GeminiService : IGeminiService
 {
-    private readonly Client _client;
+    private readonly Google.GenAI.Client _client;
     private readonly ILogger<GeminiService> _logger;
 
     public GeminiService(IConfiguration config, ILogger<GeminiService> logger)
@@ -30,7 +30,7 @@ public class GeminiService : IGeminiService
         }
 
         // El nuevo cliente oficial de Google GenAI
-        _client = new Client(apiKey: apiKey);
+        _client = new Google.GenAI.Client(apiKey: apiKey);
     }
 
     public async Task<List<AiParsedOrder>> ParseLiveTextAsync(string text, List<AiParsedOrder>? currentState = null)
@@ -177,10 +177,13 @@ Reglas Vitales de formato:
 Tu tarea es escuchar una instrucción de voz dictada por el administrador y seleccionar exactamente qué pedidos (Órdenes) deben asignarse a una nueva ruta de reparto.
 
 REGLAS ESTRICTAS:
-1. Recibirás la instrucción de voz del administrador.
+1. Recibirás la instrucción de voz del administrador (texto tal y como lo reconoció el micrófono, puede tener errores ortográficos).
 2. Recibirás un JSON con la lista de 'Órdenes Disponibles' (pendientes de entregar). Cada orden tiene un 'id', 'clientName', 'status', 'clientAddress', etc.
 3. Debes cruzar la instrucción de voz con la lista de órdenes disponibles.
-4. Identifica las órdenes correctas basadas en el nombre del cliente (considera apodos o nombres incompletos si son muy evidentes), direcciones compartidas o cualquier otra pista dictada.
+4. Identifica las órdenes correctas basadas en el nombre del cliente. Toma en cuenta lo siguiente:
+   - APODOS o NOMBRES INCOMPLETOS: Si dice 'Mary' y existe 'Mary Carmen' o 'Maria Ramirez', selecciónalo.
+   - ERRORES FONÉTICOS (Fuzzy Matching): El micrófono suele equivocarse. Si dice 'Meleny', podría ser 'Melanie'. Si dice 'Gricy', podría ser 'Grisi' o 'Grisy'. Usa tu mejor juicio deductivo.
+   - Si detectas una similitud fonética obvia con algún cliente en la lista, asume que es ese.
 5. Tu respuesta DEBE ser EXCLUSIVAMENTE un objeto JSON válido con este formato exacto:
 {
   ""selectedOrderIds"": [12, 15, 30],

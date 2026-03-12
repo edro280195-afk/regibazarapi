@@ -21,8 +21,9 @@ public class RoutesController : ControllerBase
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IPushNotificationService _push;
     private readonly IGeminiService _geminiService;
+    private readonly IGoogleTtsService _tts;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IGoogleTtsService tts)
     {
         _db = db;
         _tokenService = tokenService;
@@ -30,6 +31,7 @@ public class RoutesController : ControllerBase
         _hub = hub;
         _push = push;
         _geminiService = geminiService;
+        _tts = tts;
     }
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
@@ -103,7 +105,19 @@ public class RoutesController : ControllerBase
         try
         {
             var response = await _geminiService.SelectOrdersForRouteAsync(request);
-            return Ok(response);
+            
+            // Sintetizamos la confirmación por voz
+            string? audioBase64 = null;
+            try
+            {
+                audioBase64 = await _tts.SynthesizeAsync(response.AiConfirmationMessage);
+            }
+            catch (Exception ttsEx)
+            {
+                // No bloqueamos la respuesta si falla el audio
+            }
+
+            return Ok(response with { AudioBase64 = audioBase64 });
         }
         catch (Exception ex)
         {
