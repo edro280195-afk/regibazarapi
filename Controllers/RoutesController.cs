@@ -20,14 +20,16 @@ public class RoutesController : ControllerBase
     private readonly IConfiguration _config;
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IPushNotificationService _push;
+    private readonly IGeminiService _geminiService;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService)
     {
         _db = db;
         _tokenService = tokenService;
         _config = config;
         _hub = hub;
         _push = push;
+        _geminiService = geminiService;
     }
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
@@ -89,6 +91,24 @@ public class RoutesController : ControllerBase
 
         await _db.SaveChangesAsync();
         return Ok(await MapRouteDto(route.Id));
+    }
+
+    /// <summary>POST /api/routes/ai-select - Gemini elige rutas por voz</summary>
+    [HttpPost("ai-select")]
+    public async Task<ActionResult<AiRouteSelectionResponse>> AiSelectRoute([FromBody] AiRouteSelectionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.VoiceCommand) || request.AvailableOrders == null)
+            return BadRequest("Faltan datos de voz o las órdenes disponibles.");
+
+        try
+        {
+            var response = await _geminiService.SelectOrdersForRouteAsync(request);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = "Error al procesar la instrucción de voz.", detail = ex.Message });
+        }
     }
 
     /// <summary>GET /api/routes - Listar rutas</summary>

@@ -18,17 +18,41 @@ public class OrdersController : ControllerBase
     private readonly ITokenService _tokenService;
     private readonly IConfiguration _config;
     private readonly IPushNotificationService _pushService;
+    private readonly IGeminiService _geminiService;
     private readonly string FrontendUrl;
 
     public OrdersController(AppDbContext db, IExcelService excelService,
-        ITokenService tokenService, IConfiguration config, IPushNotificationService pushService)
+        ITokenService tokenService, IConfiguration config, IPushNotificationService pushService,
+        IGeminiService geminiService)
     {
         _db = db;
         _excelService = excelService;
         _tokenService = tokenService;
         _config = config;
         _pushService = pushService;
+        _geminiService = geminiService;
         FrontendUrl = config["App:FrontendUrl"] ?? "https://regibazar.com";
+    }
+
+    // ---------------------------------------------------------
+    // AI LIVE PARSING
+    // ---------------------------------------------------------
+
+    [HttpPost("parse-live")]
+    public async Task<ActionResult<List<AiParsedOrder>>> ParseLiveText([FromBody] ParseLiveRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Text))
+            return BadRequest("Text is required");
+
+        try
+        {
+            var orders = await _geminiService.ParseLiveTextAsync(request.Text);
+            return Ok(orders);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = $"Error al analizar con IA: {ex.Message}" });
+        }
     }
 
     // ---------------------------------------------------------

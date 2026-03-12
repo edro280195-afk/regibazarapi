@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using EntregasApi.Services;
 
 namespace EntregasApi.DTOs;
 
@@ -117,6 +118,8 @@ public record ManualOrderItemRequest(
     decimal UnitPrice
 );
 
+public record ParseLiveRequest(string Text, List<AiParsedOrder>? CurrentState);
+
 // ── Delivery Route ──
 public record CreateRouteRequest(List<int> OrderIds);
 
@@ -156,6 +159,17 @@ public record RouteDeliveryDto(
     public int Id => DeliveryId;
     public string? Address => ClientAddress;
 }
+
+// ── AI Voice Routes ──
+public record AiRouteSelectionRequest(
+    string VoiceCommand,
+    List<OrderSummaryDto> AvailableOrders
+);
+
+public record AiRouteSelectionResponse(
+    List<int> SelectedOrderIds,
+    string AiConfirmationMessage
+);
 
 public record CreateAdminExpenseRequest(decimal Amount, string ExpenseType, DateTime Date, string? Notes, int? DeliveryRouteId);
 public record UpdateAdminExpenseRequest(decimal Amount, string ExpenseType, DateTime Date, string? Notes, int? DeliveryRouteId);
@@ -266,6 +280,15 @@ public record ActivePeriodSummaryDto(
 
 public record MonthlySalesDto(string Month, decimal Sales);
 public record CommonProductDto(string Name, int Count, decimal TypicalPrice);
+
+// ── AI Insights ──
+public record AiInsightDto(
+    string Category, // 'Finanzas', 'Ventas', 'Clientas', 'Riesgo', 'Operación'
+    string Title, 
+    string Description, 
+    string ActionableAdvice,
+    string Icon
+);
 
 // ── Reports ──
 public record ReportDto(

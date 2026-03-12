@@ -61,6 +61,7 @@ builder.Services.AddScoped<ISuppliersService, SuppliersService>();
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
 builder.Services.AddScoped<IPushNotificationService, PushNotificationService>();
 builder.Services.AddScoped<ISalesPeriodService, SalesPeriodService>();
+builder.Services.AddScoped<IGeminiService, GeminiService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();

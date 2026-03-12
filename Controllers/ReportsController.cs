@@ -16,11 +16,13 @@ public class ReportsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ISalesPeriodService _periodService;
+    private readonly IGeminiService _geminiService;
 
-    public ReportsController(AppDbContext db, ISalesPeriodService periodService)
+    public ReportsController(AppDbContext db, ISalesPeriodService periodService, IGeminiService geminiService)
     {
         _db = db;
         _periodService = periodService;
+        _geminiService = geminiService;
     }
 
     /// <summary>GET /api/reports/period/{id} — Reporte exacto por Corte de Venta</summary>
@@ -78,6 +80,21 @@ public class ReportsController : ControllerBase
             // 🚨 Si truena, que nos diga exactamente por qué en la consola, sin tirar la app entera
             Console.WriteLine($"Error en GlowUp: {ex.Message}");
             return StatusCode(500, "Hubo un error al generar la magia. Revisa la consola del servidor.");
+        }
+    }
+
+    /// <summary>POST /api/reports/ai-insights</summary>
+    [HttpPost("ai-insights")]
+    public async Task<ActionResult<List<AiInsightDto>>> GetAiInsights([FromBody] System.Text.Json.JsonElement report)
+    {
+        try
+        {
+            var insights = await _geminiService.AnalyzeReportAsync(report);
+            return Ok(insights);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = "Error generando Insights con IA.", details = ex.Message });
         }
     }
 }
