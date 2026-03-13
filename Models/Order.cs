@@ -104,3 +104,9 @@ public enum OrderStatus
     Confirmed = 6,
     Shipped = 7
 }
+
+public enum OrderType
+{
+    Delivery = 0,
+    PickUp = 1
+}

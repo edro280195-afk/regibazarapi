@@ -17,13 +17,16 @@ public class DriverController : ControllerBase
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IWebHostEnvironment _env;
     private readonly IPushNotificationService _push;
+    private readonly ICamiService _cami;
 
-    public DriverController(AppDbContext db, IHubContext<DeliveryHub> hub, IWebHostEnvironment env, IPushNotificationService push)
+    public DriverController(AppDbContext db, IHubContext<DeliveryHub> hub, IWebHostEnvironment env,
+        IPushNotificationService push, ICamiService cami)
     {
         _db = db;
         _hub = hub;
         _env = env;
         _push = push;
+        _cami = cami;
     }
 
     /// <summary>GET /api/driver/{token} - Obtener ruta del repartidor</summary>
@@ -555,4 +558,15 @@ public class DriverController : ControllerBase
 
         return Ok(msgDto);
     }
-}
+
+    [HttpPost("cami-command")]
+    public async Task<ActionResult<DriverCamiResponse>> CamiCommand(string driverToken, [FromBody] DriverCamiRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.CommandText))
+            return BadRequest("El comando no puede estar vacío.");
+
+        var responseText = await _cami.ProcessDriverCommandAsync(driverToken, req.CommandText);
+
+        return Ok(new DriverCamiResponse(responseText));
+    }
+}

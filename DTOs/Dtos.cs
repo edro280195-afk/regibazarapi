@@ -361,11 +361,6 @@ public record OrderStatsDto(
     decimal CollectedToday
 );
 
-public enum OrderType
-{
-    Delivery = 0, // Domicilio (Default)
-    PickUp = 1    // Recoger en tienda
-}
 
 
 public record UpdateOrderStatusRequest(
@@ -628,3 +623,10 @@ public record ScanPackageRequest(
 public record CamiMessageDto(string Role, string Text); // Role: "user" | "model"
 public record CamiChatRequest(List<CamiMessageDto> History, string NewMessage);
 public record CamiChatResponse(string Text, string? AudioBase64 = null);
+
+// ── C.A.M.I. DRIVER COPILOT ──
+public record DriverCamiRequest(string CommandText);
+public record DriverCamiResponse(string RespuestaCami);
+
+// ── C.A.M.I. PROACTIVE GREETING ──
+public record CamiGreetingResponse(string Message, string? AudioBase64 = null);

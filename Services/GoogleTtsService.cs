@@ -16,15 +16,24 @@ public class GoogleTtsService : IGoogleTtsService
     public GoogleTtsService(IConfiguration config)
     {
         _config = config;
-        
-        // El SDK busca automáticamente la variable de entorno GOOGLE_APPLICATION_CREDENTIALS
-        // Alternativamente, podemos construirlo con un API Key si el servicio lo soporta
-        // Para Text-To-Speech usualmente se requiere Service Account, pero probaremos con la Key de Gemini primero.
-        var apiKey = _config["Gemini:ApiKey"];
-        _client = new TextToSpeechClientBuilder
+
+        var builder = new TextToSpeechClientBuilder();
+
+        // 1. Buscamos el JSON directamente en las variables de entorno de Render
+        string credentialsJson = Environment.GetEnvironmentVariable("GOOGLE_CREDENTIALS_JSON");
+
+        if (!string.IsNullOrWhiteSpace(credentialsJson))
         {
-            ApiKey = apiKey
-        }.Build();
+            // MODO PRODUCCIÓN (RENDER): Usamos el JSON directo de la memoria
+            builder.JsonCredentials = credentialsJson;
+        }
+        else
+        {
+            // MODO DESARROLLO (LOCAL): Usamos la ruta de tu computadora
+            builder.CredentialsPath = @"C:\Codigos\cami-voz.json";
+        }
+
+        _client = builder.Build();
     }
 
     public async Task<string> SynthesizeAsync(string text)
@@ -32,13 +41,19 @@ public class GoogleTtsService : IGoogleTtsService
         if (string.IsNullOrWhiteSpace(text)) return "";
 
         var input = new SynthesisInput { Text = text };
+        // --- TRUCO PARA IMPRIMIR EL CATÁLOGO REAL ---
+        //var listResponse = await _client.ListVoicesAsync(new ListVoicesRequest { LanguageCode = "es-MX" });
+        //foreach (var v in listResponse.Voices)
+        //{
+        //    Console.WriteLine($"Voz disponible: {v.Name} - Tecnología: {v.Name.Split('-')[2]} - Género: {v.SsmlGender}");
+        //}
+        // --------------------------------------------
 
         // Configuración de la voz (Neural2/Journey/Coquette style)
         var voiceSelection = new VoiceSelectionParams
         {
-            LanguageCode = "es-MX",
-            // es-MX-Neural2-A es una voz femenina muy clara y profesional
-            Name = "es-MX-Neural2-A"
+            LanguageCode = "es-US",
+            Name = "es-US-Wavenet-A"
         };
 
         var audioConfig = new AudioConfig

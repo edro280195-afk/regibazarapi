@@ -17,12 +17,14 @@ public class ClientViewController : ControllerBase
     private readonly AppDbContext _db;
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IPushNotificationService _push;
+    private readonly ICamiService _cami;
 
-    public ClientViewController(AppDbContext db, IHubContext<DeliveryHub> hub, IPushNotificationService push)
+    public ClientViewController(AppDbContext db, IHubContext<DeliveryHub> hub, IPushNotificationService push, ICamiService cami)
     {
         _db = db;
         _hub = hub;
         _push = push;
+        _cami = cami;
     }
 
     /// <summary>GET /api/pedido/{token} - Vista pública del pedido</summary>
@@ -130,6 +132,22 @@ public class ClientViewController : ControllerBase
             ClientPoints: order.Client?.CurrentPoints ?? 0
         ));
     }
+
+    [HttpGet("cami-greeting")]
+    public async Task<ActionResult<CamiGreetingResponse>> GetCamiGreeting(string accessToken)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
+
+        if (order == null) return NotFound("Pedido no encontrado.");
+
+        var response = await _cami.GetProactiveGreetingAsync(order);
+        return Ok(response);
+    }
+
     /// <summary>POST /api/pedido/{token}/confirm - La clienta confirma su pedido</summary>
     [HttpPost("confirm")]
     [AllowAnonymous] // Cualquier clienta con el link puede hacerlo

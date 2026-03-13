@@ -571,8 +571,8 @@ public class OrdersController : ControllerBase
             SalesByMonth: salesByMonth,
             ClientsNueva: await _db.Clients.CountAsync(c => c.Type == "Nueva"),
             ClientsFrecuente: await _db.Clients.CountAsync(c => c.Type == "Frecuente"),
-            OrdersDelivery: await _db.Orders.CountAsync(o => o.OrderType == DTOs.OrderType.Delivery),
-            OrdersPickUp: await _db.Orders.CountAsync(o => o.OrderType == DTOs.OrderType.PickUp),
+            OrdersDelivery: await _db.Orders.CountAsync(o => o.OrderType == OrderType.Delivery),
+            OrdersPickUp: await _db.Orders.CountAsync(o => o.OrderType == OrderType.PickUp),
             ActivePeriod: activePeriodSummary,
             PendingAmount: pendingAmount,
             RecentOrders: recentOrders

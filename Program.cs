@@ -11,6 +11,8 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", @"C:\Codigos\cami-voz-v2.json");
+
 // EPPlus license (NonCommercial)
 ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
@@ -64,6 +66,7 @@ builder.Services.AddScoped<ISalesPeriodService, SalesPeriodService>();
 builder.Services.AddScoped<IGeminiService, GeminiService>();
 builder.Services.AddScoped<ICamiService, CamiService>();
 builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
+builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();

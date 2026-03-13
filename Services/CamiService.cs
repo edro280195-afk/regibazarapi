@@ -12,6 +12,8 @@ namespace EntregasApi.Services;
 public interface ICamiService
 {
     Task<string> ChatAsync(CamiChatRequest request);
+    Task<string> ProcessDriverCommandAsync(string routeToken, string commandText);
+    Task<CamiGreetingResponse> GetProactiveGreetingAsync(Order order);
 }
 
 public class CamiService : ICamiService
@@ -19,31 +21,42 @@ public class CamiService : ICamiService
     private readonly AppDbContext _db;
     private readonly GenAiClient _gemini;
     private readonly ILogger<CamiService> _logger;
+    private readonly IRouteOptimizerService _optimizer;
+    private readonly IGoogleTtsService _tts;
 
     private const string MODEL = "gemini-2.5-flash";
 
     private const string SYSTEM_INSTRUCTION = @"
-Eres C.A.M.I., la asistente inteligente de Regi Bazar. Tienes acceso completo al sistema ERP del negocio.
+Eres C.A.M.I., la Asistente Inteligente y Analista de Datos de Regi Bazar. Tienes acceso completo al sistema ERP del negocio.
 Puedes consultar y operar: pedidos, clientas, rutas, finanzas, proveedores y lealtad.
 
-REGLAS DE CONDUCTA:
+PERSONALIDAD Y LENGUAJE (¡CRÍTICO!):
+- CERO ROBÓTICA: Tienes estrictamente prohibido usar exactamente las mismas frases para confirmar acciones. Varía tu vocabulario constantemente. Usa sinónimos.
 - Respuestas cortas, empáticas, sin viñetas, sin markdown, directas al grano.
 - Habla en español mexicano, tono amigable y profesional, como una asistente ejecutiva muy capaz.
+
+CAPACIDAD ANALÍTICA (MODO AGENTE):
+- Eres súper inteligente. Si te piden un dato estadístico (ej. '¿quién compró más?' o '¿cuánto se vendió?'), NO digas que no tienes esa función. 
+- Usa tus herramientas, extrae la data, haz tú misma los cruces de información, suma, cuenta y ordena mentalmente, y luego dale a Miel la respuesta digerida.
+- Cuando muestres datos, sé selectiva: solo lo más relevante, no vuelques toda la data. Si no encuentras algo, dilo con naturalidad.
+
+REGLAS DE OPERACIÓN Y NEGOCIO (MEMORÍZALAS):
 - Antes de crear o modificar datos importantes, confirma brevemente lo que vas a hacer.
-- Si no encuentras algo, dilo con naturalidad y ofrece alternativas.
-- Cuando muestres datos, sé selectiva: solo lo más relevante, no vuelques toda la data.
-- Si el usuario menciona una clienta por apodo o nombre incompleto, usa buscar_pedidos o listar_clientas para encontrarla. No asumas IDs si no estás segura, mejor busca.
-- El sistema ahora cuenta con búsqueda difusa (fuzzy search), por lo que si el nombre no coincide exactamente, el sistema intentará encontrar la mejor coincidencia.
-- Estados de pedidos: Pending=Pendiente, Confirmed=Confirmado, InRoute=En Ruta, Delivered=Entregado, NotDelivered=No Entregado, Canceled=Cancelado, Postponed=Pospuesto.
+- Si el usuario menciona una clienta por apodo, usa buscar_pedidos o listar_clientas. No asumas IDs. El sistema cuenta con búsqueda difusa (fuzzy search), intentará encontrar la mejor coincidencia.
+- Estados de pedidos: Pending=Pendiente, Confirmed=Confirmada, InRoute=En Camino, Delivered=Entregada, NotDelivered=No Entregada, Canceled=Cancelada, Postponed=Pospuesta, Shipped=Enviada.
 - Tipos de pedido: Delivery=A domicilio, PickUp=Recoger en tienda.
-- Tipos de clienta: Nueva (expira próximo lunes), Frecuente (expira en 2 semanas).
-- Métodos de pago: Efectivo, Transferencia, Deposito, Tarjeta.
+- Tipos de clienta: Nueva, Frecuente, VIP.
+- Métodos de pago: Efectivo, Transferencia, OXXO, Tarjeta.
 - Para cancelar o posponer un pedido, el motivo es obligatorio.
-- Al entregar un pedido, se otorgan puntos de lealtad: Total / 10.
-- Los envíos a domicilio tienen costo de 60 MXN por defecto. PickUp es gratis.
-- El cargo por envío se puede personalizar.
-- El sistema usa hora de Ciudad de México (CST).
+- Al entregar un pedido, se otorgan puntos de lealtad: Total / 10 (redondeado hacia abajo).
+- Los envíos a domicilio tienen costo de 60 MXN por defecto. PickUp es gratis. El cargo por envío se puede personalizar.
+- El sistema usa hora de Ciudad de México / Matamoros (CST).
 ";
+
+    private const string SYSTEM_INSTRUCTION_DRIVER = @"
+Eres C.A.M.I., la copiloto de IA del chofer de Regi Bazar. Estás hablando por el altavoz de su celular mientras él maneja.
+REGLA DE ORO: Nunca repitas la misma frase de confirmación. Varía entre 'Ya quedó', 'Anotado', 'Listo, patrón', 'Guardado en el sistema', 'Actualizado', etc. 
+Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herramientas. Da respuestas súper cortas (1-2 oraciones máximo) confirmando lo que hiciste. No uses markdown.";
 
     // ── DEFINICIÓN DE HERRAMIENTAS (MODO ESTRICTO) ──────────────────────────
     private static readonly List<Tool> TOOLS = new()
@@ -68,9 +81,10 @@ REGLAS DE CONDUCTA:
                         Type = "OBJECT",
                         Properties = new Dictionary<string, Schema>
                         {
-                            { "estado", new Schema { Type = "STRING", Description = "Filtro por estado: Pending, Confirmed, InRoute, Delivered, NotDelivered, Canceled, Postponed." } },
+                            { "estado", new Schema { Type = "STRING", Description = "Filtro por estado: Pending, Confirmed, InRoute, Delivered, NotDelivered, Canceled, Postponed, Shipped." } },
+                            { "tipo", new Schema { Type = "STRING", Description = "Delivery o PickUp." } }, 
                             { "busqueda", new Schema { Type = "STRING", Description = "Texto a buscar..." } },
-                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de resultados." } }
+                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de resultados a devolver. Puedes pedir hasta 500 para hacer análisis matemáticos." } }
                         }
                     }
                 },
@@ -98,7 +112,7 @@ REGLAS DE CONDUCTA:
                         Properties = new Dictionary<string, Schema>
                         {
                             { "busqueda", new Schema { Type = "STRING", Description = "Nombre o teléfono..." } },
-                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de resultados." } }
+                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de resultados. Puedes pedir hasta 200." } }
                         }
                     }
                 },
@@ -229,7 +243,7 @@ REGLAS DE CONDUCTA:
                         Properties = new Dictionary<string, Schema>
                         {
                             { "pedido_id", new Schema { Type = "INTEGER" } },
-                            { "estado", new Schema { Type = "STRING", Description = "Pending, Confirmed, InRoute, Delivered, NotDelivered, Canceled, Postponed." } },
+                            { "estado", new Schema { Type = "STRING", Description = "Pending, Confirmed, InRoute, Delivered, NotDelivered, Canceled, Postponed, Shipped." } },
                             { "motivo", new Schema { Type = "STRING" } },
                             { "fecha_postergacion", new Schema { Type = "STRING" } }
                         },
@@ -247,7 +261,7 @@ REGLAS DE CONDUCTA:
                         {
                             { "pedido_id", new Schema { Type = "INTEGER" } },
                             { "monto", new Schema { Type = "NUMBER" } },
-                            { "metodo", new Schema { Type = "STRING", Description = "Efectivo, Transferencia, Deposito o Tarjeta." } },
+                            { "metodo", new Schema { Type = "STRING", Description = "Efectivo, Transferencia, OXXO o Tarjeta." } },
                             { "notas", new Schema { Type = "STRING" } }
                         },
                         Required = new List<string> { "pedido_id", "monto", "metodo" }
@@ -265,7 +279,7 @@ REGLAS DE CONDUCTA:
                             { "nombre", new Schema { Type = "STRING" } },
                             { "telefono", new Schema { Type = "STRING" } },
                             { "direccion", new Schema { Type = "STRING" } },
-                            { "tipo", new Schema { Type = "STRING", Description = "Nueva o Frecuente." } }
+                            { "tipo", new Schema { Type = "STRING", Description = "Nueva, Frecuente o VIP." } }
                         },
                         Required = new List<string> { "nombre" }
                     }
@@ -307,14 +321,110 @@ REGLAS DE CONDUCTA:
         }
     };
 
-    public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger)
+    public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger, IRouteOptimizerService optimizer, IGoogleTtsService tts)
     {
         _db = db;
         _logger = logger;
+        _optimizer = optimizer;
+        _tts = tts;
         var apiKey = config["Gemini:ApiKey"];
         if (string.IsNullOrEmpty(apiKey))
             throw new InvalidOperationException("Falta Gemini:ApiKey en appsettings.json");
         _gemini = new GenAiClient(apiKey: apiKey);
+    }
+
+    public async Task<string> ProcessDriverCommandAsync(string routeToken, string commandText)
+    {
+        if (string.IsNullOrWhiteSpace(commandText))
+            return "No te escuché bien. ¿Me repites?";
+
+        // 1. Validar la ruta y obtener contexto
+        var route = await _db.DeliveryRoutes
+            .FirstOrDefaultAsync(r => r.DriverToken == routeToken);
+
+        if (route == null)
+            return "No encontré tu ruta activa. Por favor, verifica tu conexión.";
+
+        // 2. Obtener IDs de pedidos asignados a esta ruta para inyectar contexto
+        var orderIds = await _db.Deliveries
+            .Where(d => d.DeliveryRouteId == route.Id)
+            .Select(d => d.OrderId)
+            .ToListAsync();
+
+        var contextMessage = $"Solo puedes modificar o consultar los pedidos con IDs: {string.Join(", ", orderIds)}.";
+
+        // 3. Preparar configuración de Gemini
+        var config = new GenerateContentConfig
+        {
+            SystemInstruction = new Content
+            {
+                Role = "system",
+                Parts = new List<Part> { new Part { Text = SYSTEM_INSTRUCTION_DRIVER + "\n\nCONTEXTO DE RUTA ACTUAL:\n" + contextMessage } }
+            },
+            Tools = TOOLS,
+            Temperature = 0.65f,
+            TopP = 0.95f
+        };
+
+        // 4. Bucle de Function Calling (reutilizando la lógica de ChatAsync pero adaptada)
+        var allContents = new List<Content>
+        {
+            new Content
+            {
+                Role = "user",
+                Parts = new List<Part> { new Part { Text = commandText } }
+            }
+        };
+
+        for (int round = 0; round < 6; round++) // Menos rondas para ser más ágil en voz
+        {
+            var response = await _gemini.Models.GenerateContentAsync(MODEL, allContents, config);
+            var candidate = response.Candidates?[0];
+            var modelContent = candidate?.Content;
+
+            if (modelContent == null) break;
+
+            var functionCallParts = modelContent.Parts?
+                .Where(p => p.FunctionCall != null)
+                .ToList() ?? new List<Part>();
+
+            if (functionCallParts.Count == 0)
+                return response.Text?.Trim() ?? "Listo.";
+
+            allContents.Add(modelContent);
+
+            var resultParts = new List<Part>();
+            foreach (var fcPart in functionCallParts)
+            {
+                var fc = fcPart.FunctionCall!;
+                _logger.LogInformation("Driver Copilot ejecutando: {FnName}", fc.Name);
+
+                JsonElement functionResult;
+                try
+                {
+                    var argsElement = fc.Args != null ? ToJson(fc.Args) : (JsonElement?)null;
+                    functionResult = await ExecuteFunctionAsync(fc.Name!, argsElement);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error en Copilot: {FnName}", fc.Name);
+                    functionResult = ToJson(new { error = ex.Message });
+                }
+
+                resultParts.Add(new Part
+                {
+                    FunctionResponse = new FunctionResponse
+                    {
+                        Name = fc.Name!,
+                        Response = JsonSerializer.Deserialize<Dictionary<string, object>>(functionResult.GetRawText())!
+                    }
+                });
+            }
+
+            allContents.Add(new Content { Role = "user", Parts = resultParts });
+        }
+
+        return "Comando procesado.";
     }
 
     // ── BUCLE PRINCIPAL DE CONVERSACIÓN ─────────────────────────────────────
@@ -323,15 +433,20 @@ REGLAS DE CONDUCTA:
         if (string.IsNullOrWhiteSpace(request.NewMessage))
             return "No te escuché bien. ¿Me repites?";
 
+        var mxZone = BackendExtensions.GetMexicoZone();
+        var nowMx = BackendExtensions.GetMexicoNow();
+        var contextoTemporal = $"\n\nCONTEXTO TEMPORAL CRÍTICO:\nHoy es {nowMx:dddd, dd 'de' MMMM 'de' yyyy}. La hora actual es {nowMx:HH:mm}.";
+
         var config = new GenerateContentConfig
         {
             SystemInstruction = new Content
             {
                 Role = "system",
-                Parts = new List<Part> { new Part { Text = SYSTEM_INSTRUCTION } }
+                Parts = new List<Part> { new Part { Text = SYSTEM_INSTRUCTION + contextoTemporal } }
             },
             Tools = TOOLS,
-            Temperature = 0.7f
+            Temperature = 0.85f,
+            TopP = 0.95f
         };
 
         // Construir historial completo
@@ -351,7 +466,7 @@ REGLAS DE CONDUCTA:
         });
 
         // Loop de function calling (máx. 5 rondas para evitar loops infinitos)
-        for (int round = 0; round < 5; round++)
+        for (int round = 0; round < 15; round++)
         {
             var response = await _gemini.Models.GenerateContentAsync(MODEL, allContents, config);
             var candidate = response.Candidates?[0];
@@ -444,8 +559,8 @@ REGLAS DE CONDUCTA:
 
     private async Task<JsonElement> ConsultarResumenNegocioAsync()
     {
-        var mexicoZone = GetMexicoZone();
-        var nowMx = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, mexicoZone);
+        var mexicoZone = BackendExtensions.GetMexicoZone();
+        var nowMx = BackendExtensions.GetMexicoNow();
         var todayStart = TimeZoneInfo.ConvertTimeToUtc(nowMx.Date, mexicoZone);
         var monthStart = TimeZoneInfo.ConvertTimeToUtc(new DateTime(nowMx.Year, nowMx.Month, 1), mexicoZone);
 
@@ -462,7 +577,7 @@ REGLAS DE CONDUCTA:
         var cobradoHoy = orders
             .SelectMany(o => o.Payments)
             .Where(p => p.Date >= todayStart)
-            .Sum(p => p.Amount);
+            .Sum(p => p.Amount) + orders.Where(o => o.CreatedAt >= todayStart).Sum(o => o.AdvancePayment);
 
         var pendientes = orders.Count(o => o.Status == OrderStatus.Pending);
         var enRuta     = orders.Count(o => o.Status == OrderStatus.InRoute);
@@ -490,9 +605,10 @@ REGLAS DE CONDUCTA:
 
     private async Task<JsonElement> BuscarPedidosAsync(JsonElement? args)
     {
-        var estado  = GetStr(args, "estado");
+        var estado = GetStr(args, "estado");
+        var tipo = GetStr(args, "tipo");
         var busqueda = GetStr(args, "busqueda");
-        var limite  = GetInt(args, "limite", 10);
+        var limite = GetInt(args, "limite", 50); // Subimos el default a 50
 
         var query = _db.Orders
             .Include(o => o.Client)
@@ -502,6 +618,9 @@ REGLAS DE CONDUCTA:
 
         if (!string.IsNullOrEmpty(estado) && Enum.TryParse<OrderStatus>(estado, out var statusEnum))
             query = query.Where(o => o.Status == statusEnum);
+
+        if (!string.IsNullOrEmpty(tipo) && Enum.TryParse<OrderType>(tipo, out var tipoEnum))
+            query = query.Where(o => o.OrderType == tipoEnum);
 
         if (!string.IsNullOrEmpty(busqueda))
         {
@@ -513,60 +632,90 @@ REGLAS DE CONDUCTA:
                                          (o.Client.Phone != null && o.Client.Phone.Contains(busqueda)));
         }
 
+        // ── LA BALA DE PLATA: ESTADÍSTICAS GLOBALES PRE-CALCULADAS ──
+        // Hacemos que la BD haga la suma matemática de TODO el universo filtrado ANTES de paginar
+        var totalReal = await query.CountAsync();
+        var sumaSubtotalReal = await query.SumAsync(o => (decimal?)o.Subtotal) ?? 0;
+        var sumaTotalReal = await query.SumAsync(o => (decimal?)o.Total) ?? 0;
+        var sumaEnviosReal = await query.SumAsync(o => (decimal?)o.ShippingCost) ?? 0;
+        var sumaPagadoReal = await query.SumAsync(o => (decimal?)(o.Payments.Sum(p => p.Amount) + o.AdvancePayment)) ?? 0;
+        var sumaSaldosPendientesReal = sumaTotalReal - sumaPagadoReal;
+
+        // Ahora sí, paginamos para no ahogar la red (Le damos hasta 500 si los pide)
         var results = await query
             .OrderByDescending(o => o.CreatedAt)
-            .Take(Math.Clamp(limite * 2, 1, 100)) // Tomamos un poco más para el fuzzy rank
+            .Take(Math.Clamp(limite, 1, 500))
             .Select(o => new
             {
-                id       = o.Id,
-                clienta  = o.Client.Name,
+                id = o.Id,
+                clienta = o.Client.Name,
                 telefono = o.Client.Phone,
-                estado   = o.Status.ToString(),
-                tipo     = o.OrderType.ToString(),
-                total    = o.Total,
-                pagado   = o.Payments.Sum(p => p.Amount) + o.AdvancePayment,
-                saldo    = o.Total - (o.Payments.Sum(p => p.Amount) + o.AdvancePayment),
-                items    = o.Items.Count,
-                creado   = o.CreatedAt.ToString("dd/MM/yyyy")
+                estado = o.Status.ToSpanishString(),
+                tipo = o.OrderType.ToSpanishString(),
+                subtotal = o.Subtotal,
+                envio = o.ShippingCost,
+                total = o.Total,
+                pagado = o.AmountPaid,
+                saldo = o.BalanceDue,
+                items = o.Items.Count,
+                creado = o.CreatedAt.ToString("dd/MM/yyyy")
             })
             .ToListAsync();
 
-        // Aplicar ranking difuso si hay términos de búsqueda y pocos resultados exactos
+        // ── ARMAMOS EL JSON NIVEL DIOS ──
+        var respuestaFinal = new
+        {
+            pedidos = results,
+            total_en_pantalla = results.Count,
+            total_real_bd = totalReal,
+            // C.A.M.I. leerá este bloque y tendrá las respuestas financieras exactas sin tener que sumar ella
+            estadisticas_globales = new
+            {
+                suma_pura_mercancia = sumaSubtotalReal,
+                suma_costo_envios = sumaEnviosReal,
+                suma_total_general = sumaTotalReal,
+                suma_dinero_pagado = sumaPagadoReal,
+                suma_saldos_por_cobrar = sumaSaldosPendientesReal
+            }
+        };
+
+        // Lógica de fallback para Fuzzy Search (Se queda igual pero le inyectamos la advertencia)
         if (!string.IsNullOrEmpty(busqueda) && results.Count == 0)
         {
             var allOrders = await _db.Orders
                 .Include(o => o.Client)
                 .Where(o => o.Status != OrderStatus.Canceled)
                 .OrderByDescending(o => o.CreatedAt)
-                .Take(100)
+                .Take(200) // Le damos más margen al fuzzy
                 .ToListAsync();
 
             var fuzzyResults = allOrders
-                .Select(o => new { Order = o, Score = CalculateSimilarity(o.Client.Name.ToLower(), busqueda.ToLower()) })
-                .Where(x => x.Score > 0.45) // Umbral razonable
+                .Select(o => new { Order = o, Score = BackendExtensions.CalculateSimilarity(o.Client.Name.ToLower(), busqueda.ToLower()) })
+                .Where(x => x.Score > 0.45)
                 .OrderByDescending(x => x.Score)
                 .Take(limite)
                 .Select(x => new
                 {
-                    id       = x.Order.Id,
-                    clienta  = x.Order.Client.Name,
+                    id = x.Order.Id,
+                    clienta = x.Order.Client.Name,
                     telefono = x.Order.Client.Phone,
-                    estado   = x.Order.Status.ToString(),
-                    tipo     = x.Order.OrderType.ToString(),
-                    total    = x.Order.Total,
-                    pagado   = x.Order.AmountPaid,
-                    saldo    = x.Order.BalanceDue,
-                    items    = x.Order.Items?.Count ?? 0,
-                    creado   = x.Order.CreatedAt.ToString("dd/MM/yyyy")
+                    estado = x.Order.Status.ToSpanishString(),
+                    tipo = x.Order.OrderType.ToSpanishString(),
+                    subtotal = x.Order.Subtotal,
+                    envio = x.Order.ShippingCost,
+                    total = x.Order.Total,
+                    pagado = x.Order.AmountPaid,
+                    saldo = x.Order.BalanceDue,
+                    items = x.Order.Items?.Count ?? 0,
+                    creado = x.Order.CreatedAt.ToString("dd/MM/yyyy")
                 })
                 .ToList();
 
             if (fuzzyResults.Any())
-                return ToJson(new { pedidos = fuzzyResults, total = fuzzyResults.Count, advertencia = "Coincidencias aproximadas encontradas." });
+                return ToJson(new { pedidos = fuzzyResults, total_en_pantalla = fuzzyResults.Count, advertencia = "Coincidencias aproximadas (Fuzzy Search)." });
         }
 
-        var pedidos = results.Take(limite).ToList();
-        return ToJson(new { pedidos, total = pedidos.Count });
+        return ToJson(respuestaFinal);
     }
 
     private async Task<JsonElement> ObtenerPedidoAsync(JsonElement? args)
@@ -587,8 +736,8 @@ REGLAS DE CONDUCTA:
             clienta  = order.Client.Name,
             telefono = order.Client.Phone,
             direccion = order.Client.Address,
-            estado   = order.Status.ToString(),
-            tipo     = order.OrderType.ToString(),
+            estado   = order.Status.ToSpanishString(),
+            tipo     = order.OrderType.ToSpanishString(),
             subtotal = order.Subtotal,
             envio    = order.ShippingCost,
             total    = order.Total,
@@ -643,7 +792,7 @@ REGLAS DE CONDUCTA:
                 .ToListAsync();
 
             var fuzzyClients = allClients
-                .Select(c => new { Client = c, Score = CalculateSimilarity(c.Name.ToLower(), busqueda.ToLower()) })
+                .Select(c => new { Client = c, Score = BackendExtensions.CalculateSimilarity(c.Name.ToLower(), busqueda.ToLower()) })
                 .Where(x => x.Score > 0.5)
                 .OrderByDescending(x => x.Score)
                 .Take(limite)
@@ -689,7 +838,7 @@ REGLAS DE CONDUCTA:
             .Select(o => new
             {
                 id     = o.Id,
-                estado = o.Status.ToString(),
+                estado = o.Status.ToSpanishString(),
                 total  = o.Total,
                 saldo  = o.BalanceDue,
                 fecha  = o.CreatedAt.ToString("dd/MM/yyyy")
@@ -730,7 +879,7 @@ REGLAS DE CONDUCTA:
                 {
                     orderId  = d.OrderId,
                     clienta  = d.Order.Client.Name,
-                    estadoEntrega = d.Status.ToString()
+                    estadoEntrega = d.Order.Status.ToSpanishString()
                 })
             })
             .ToListAsync();
@@ -740,37 +889,60 @@ REGLAS DE CONDUCTA:
 
     private async Task<JsonElement> ConsultarFinanzasAsync(JsonElement? args)
     {
-        if (!DateTime.TryParse(GetStr(args, "fecha_inicio"), out var start))
-            start = DateTime.UtcNow.AddMonths(-1);
-        if (!DateTime.TryParse(GetStr(args, "fecha_fin"), out var end))
-            end = DateTime.UtcNow;
+        var mxZone = BackendExtensions.GetMexicoZone();
+        DateTime startUtc;
+        DateTime endUtc;
 
-        end = end.AddDays(1).AddTicks(-1); // fin de día
+        // 1. Parsear Fecha de Inicio
+        if (DateTime.TryParse(GetStr(args, "fecha_inicio"), out var startParsed))
+        {
+            // Tomamos la fecha (ej. 00:00 AM), le decimos que no tiene zona, y la forzamos a UTC según México
+            startUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(startParsed, DateTimeKind.Unspecified), mxZone);
+        }
+        else
+        {
+            startUtc = DateTime.UtcNow.AddMonths(-1);
+        }
 
+        // 2. Parsear Fecha de Fin
+        if (DateTime.TryParse(GetStr(args, "fecha_fin"), out var endParsed))
+        {
+            // Agarramos el final del día (23:59:59) en México, y lo pasamos a UTC
+            var endOfDay = DateTime.SpecifyKind(endParsed, DateTimeKind.Unspecified).AddDays(1).AddTicks(-1);
+            endUtc = TimeZoneInfo.ConvertTimeToUtc(endOfDay, mxZone);
+        }
+        else
+        {
+            endUtc = DateTime.UtcNow;
+        }
+
+        // 3. Consultas a la BD (Ahora EF Core y Postgres serán felices porque todo es estrictamente UTC)
         var totalFacturado = await _db.Orders
-            .Where(o => o.CreatedAt >= start && o.CreatedAt <= end && o.Status != OrderStatus.Canceled)
+            .Where(o => o.CreatedAt >= startUtc && o.CreatedAt <= endUtc && o.Status != OrderStatus.Canceled)
             .SumAsync(o => (decimal?)o.Total) ?? 0;
 
-        var totalCobrado = await _db.OrderPayments
-            .Where(p => p.Date >= start && p.Date <= end)
-            .SumAsync(p => (decimal?)p.Amount) ?? 0;
+        var totalCobrado = (await _db.OrderPayments
+            .Where(p => p.Date >= startUtc && p.Date <= endUtc)
+            .SumAsync(p => (decimal?)p.Amount) ?? 0) + (await _db.Orders
+            .Where(o => o.CreatedAt >= startUtc && o.CreatedAt <= endUtc && o.Status != OrderStatus.Canceled)
+            .SumAsync(o => (decimal?)o.AdvancePayment) ?? 0);
 
         var totalInvertido = await _db.Investments
-            .Where(i => i.Date >= start && i.Date <= end)
+            .Where(i => i.Date >= startUtc && i.Date <= endUtc)
             .SumAsync(i => (decimal?)i.Amount) ?? 0;
 
         var totalGastos = await _db.DriverExpenses
-            .Where(e => e.Date >= start && e.Date <= end)
+            .Where(e => e.Date >= startUtc && e.Date <= endUtc)
             .SumAsync(e => (decimal?)e.Amount) ?? 0;
 
         return ToJson(new
         {
-            periodo      = $"{start:dd/MM/yyyy} - {end:dd/MM/yyyy}",
-            facturado    = totalFacturado,
-            cobrado      = totalCobrado,
-            porCobrar    = totalFacturado - totalCobrado,
-            inversiones  = totalInvertido,
-            gastos       = totalGastos,
+            periodo = $"{TimeZoneInfo.ConvertTimeFromUtc(startUtc, mxZone):dd/MM/yyyy} al {TimeZoneInfo.ConvertTimeFromUtc(endUtc, mxZone):dd/MM/yyyy}",
+            facturado = totalFacturado,
+            cobrado = totalCobrado,
+            porCobrar = totalFacturado - totalCobrado,
+            inversiones = totalInvertido,
+            gastos = totalGastos,
             utilidadNeta = totalCobrado - totalInvertido - totalGastos,
             flujoEfectivo = totalCobrado - totalInvertido - totalGastos
         });
@@ -907,8 +1079,8 @@ REGLAS DE CONDUCTA:
         }
 
         // NUEVO PEDIDO
-        var mexicoZone = GetMexicoZone();
-        var mexicoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, mexicoZone);
+        var mexicoZone = BackendExtensions.GetMexicoZone();
+        var mexicoTime = BackendExtensions.GetMexicoNow();
         int daysUntilMonday = (8 - (int)mexicoTime.DayOfWeek) % 7;
         if (daysUntilMonday == 0) daysUntilMonday = 7;
         var localExpiration = mexicoTime.Date.AddDays(daysUntilMonday);
@@ -997,7 +1169,7 @@ REGLAS DE CONDUCTA:
         var fechaStr  = GetStr(args, "fecha_postergacion");
 
         if (!Enum.TryParse<OrderStatus>(estadoStr, out var nuevoEstado))
-            return ToJson(new { error = $"Estado inválido: '{estadoStr}'. Usa: Pending, Confirmed, InRoute, Delivered, NotDelivered, Canceled, Postponed." });
+            return ToJson(new { error = $"Estado inválido: '{estadoStr}'. Usa: {string.Join(", ", Enum.GetNames<OrderStatus>())}" });
 
         if (nuevoEstado == OrderStatus.Canceled && string.IsNullOrEmpty(motivo))
             return ToJson(new { error = "Para cancelar un pedido, el motivo es obligatorio." });
@@ -1024,16 +1196,17 @@ REGLAS DE CONDUCTA:
             order.PostponedAt = fechaPostergacion;
 
         // Lógica de lealtad
-        var puntosCalculados = (int)(order.Total / 10);
+        var puntosCalculados = order.Total.CalculateLoyaltyPoints();
         if (nuevoEstado == OrderStatus.Delivered && estadoAnterior != OrderStatus.Delivered)
         {
             order.Client.CurrentPoints += puntosCalculados;
+            order.Client.LifetimePoints += puntosCalculados;
             order.Client.LifetimePoints += puntosCalculados;
             _db.LoyaltyTransactions.Add(new LoyaltyTransaction
             {
                 ClientId = order.ClientId,
                 Points   = puntosCalculados,
-                Reason   = $"Pedido #{order.Id} entregado",
+                Reason   = $"Pedido #{order.Id} entregada",
                 Date     = DateTime.UtcNow
             });
         }
@@ -1059,6 +1232,8 @@ REGLAS DE CONDUCTA:
         var pedidoId = GetInt(args, "pedido_id");
         var monto    = GetDecimal(args, "monto", 0);
         var metodo   = GetStr(args, "metodo") ?? "Efectivo";
+        if (!BackendExtensions.ValidPaymentMethods.Contains(metodo))
+            return ToJson(new { error = $"Método de pago inválido. Usa: {string.Join(", ", BackendExtensions.ValidPaymentMethods)}" });
         var notas    = GetStr(args, "notas");
 
         if (monto <= 0)
@@ -1150,8 +1325,12 @@ REGLAS DE CONDUCTA:
         _db.DeliveryRoutes.Add(route);
         await _db.SaveChangesAsync();
 
+        // --- OPTIMIZACIÓN GEOGRÁFICA ---
+        // Usamos una ubicación de inicio base (puedes ajustarla a la del negocio si existe en AppSettings)
+        var optimizedOrders = _optimizer.OptimizeRoute(orders, 25.8694, -97.5027); // Matamoros Centro aprox
+
         int sort = 0;
-        foreach (var order in orders)
+        foreach (var order in optimizedOrders)
         {
             order.Status = OrderStatus.InRoute;
             order.DeliveryRouteId = route.Id;
@@ -1198,7 +1377,7 @@ REGLAS DE CONDUCTA:
                 entregados++;
 
                 // Puntos de lealtad
-                var puntos = (int)(delivery.Order.Total / 10);
+                var puntos = delivery.Order.Total.CalculateLoyaltyPoints();
                 delivery.Order.Client.CurrentPoints  += puntos;
                 delivery.Order.Client.LifetimePoints += puntos;
                 if (puntos > 0)
@@ -1207,7 +1386,7 @@ REGLAS DE CONDUCTA:
                     {
                         ClientId = delivery.Order.ClientId,
                         Points   = puntos,
-                        Reason   = $"Pedido #{delivery.OrderId} entregado (ruta #{rutaId})",
+                        Reason   = $"Pedido #{delivery.OrderId} entregada (ruta #{rutaId})",
                         Date     = DateTime.UtcNow
                     });
                 }
@@ -1222,6 +1401,54 @@ REGLAS DE CONDUCTA:
             rutaId    = rutaId,
             entregados = entregados
         });
+    }
+
+    public async Task<CamiGreetingResponse> GetProactiveGreetingAsync(Order order)
+    {
+        var itemsList = string.Join(", ", order.Items.Select(i => $"{i.Quantity}x {i.ProductName}"));
+        var balanceInfo = order.BalanceDue > 0 
+            ? $"Su saldo pendiente es de {order.BalanceDue:F0} pesos." 
+            : "Su pedido está totalmente pagado.";
+
+        var prompt = $@"
+        Genera un saludo proactivo para la clienta {order.Client.Name}.
+        Nivel de clienta: {order.Client.Type}.
+        Items comprados: {itemsList}.
+        {balanceInfo}
+        Método de pago: {order.PaymentMethod ?? "No especificado"}.
+        Status actual: {order.Status.ToSpanishString()}.
+
+        REGLAS:
+        - Eres C.A.M.I., la asistente virtual coquette de Regi Bazar.
+        - Saludo muy cálido y amigable.
+        - Menciona qué compró y su saldo (si aplica).
+        - SIEMPRE di la palabra 'pesos' en lugar de usar el símbolo '$'.
+        - Menciona su nivel de clienta con orgullo.
+        - Máximo 3 oraciones cortas.
+        - NO uses markdown.";
+
+        try
+        {
+            var response = await _gemini.Models.GenerateContentAsync(MODEL, prompt);
+            var message = response.Text?.Trim() ?? "¡Hola! Tu pedido de Regi Bazar está en proceso. ✨";
+
+            string? audioBase64 = null;
+            try
+            {
+                audioBase64 = await _tts.SynthesizeAsync(message);
+            }
+            catch (Exception ttsEx)
+            {
+                _logger.LogWarning(ttsEx, "Error sintetizando saludo proactivo");
+            }
+
+            return new CamiGreetingResponse(message, audioBase64);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generando saludo proactivo con Gemini");
+            return new CamiGreetingResponse("¡Hola! Estamos preparando tu pedido con mucho cariño. ✨");
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1265,33 +1492,4 @@ REGLAS DE CONDUCTA:
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
 
-    private static double CalculateSimilarity(string source, string target)
-    {
-        if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(target)) return 0;
-        if (source == target) return 1.0;
-
-        int n = source.Length;
-        int m = target.Length;
-        int[,] d = new int[n + 1, m + 1];
-
-        for (int i = 0; i <= n; i++) d[i, 0] = i;
-        for (int j = 0; j <= m; j++) d[0, j] = j;
-
-        for (int i = 1; i <= n; i++)
-        {
-            for (int j = 1; j <= m; j++)
-            {
-                int cost = (target[j - 1] == source[i - 1]) ? 0 : 1;
-                d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
-            }
-        }
-
-        return 1.0 - (double)d[n, m] / Math.Max(source.Length, target.Length);
-    }
-
-    private static TimeZoneInfo GetMexicoZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("America/Monterrey"); }
-        catch { return TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time"); }
-    }
 }

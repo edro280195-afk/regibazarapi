@@ -197,10 +197,10 @@ REGLAS ESTRICTAS:
             {
                 SystemInstruction = new Content { Role = "system", Parts = new List<Part> { new Part { Text = systemInstruction } } },
                 ResponseMimeType = "application/json",
-                Temperature = 0.2f // Baja temperatura para precisión en la coincidencia
+                Temperature = 0.2f
             };
 
-            // Creamos un subconjunto ligero de datos para no saturar los tokens de Gemini
+            // Creamos un subconjunto ligero de datos
             var lightweightOrders = request.AvailableOrders.Select(o => new
             {
                 id = o.Id,
@@ -213,7 +213,8 @@ REGLAS ESTRICTAS:
             
             var finalPrompt = $"INSTRUCCIÓN POR VOZ:\n\"{request.VoiceCommand}\"\n\nÓRDENES DISPONIBLES:\n{ordersJson}";
 
-            var response = await _client.Models.GenerateContentAsync("gemini-1.5-pro", finalPrompt, config);
+            // Usamos 1.5-flash (referido como 2.5 por el usuario) por velocidad extrema
+            var response = await _client.Models.GenerateContentAsync("gemini-1.5-flash", finalPrompt, config);
 
             var resultText = response?.Text ?? "{}";
             var cleanJson = resultText.Replace("```json", "").Replace("```", "").Trim();
