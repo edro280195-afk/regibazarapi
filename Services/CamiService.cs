@@ -23,6 +23,7 @@ public class CamiService : ICamiService
     private readonly ILogger<CamiService> _logger;
     private readonly IRouteOptimizerService _optimizer;
     private readonly IGoogleTtsService _tts;
+    private readonly IConfiguration _config;
 
     private const string MODEL = "gemini-2.5-flash";
 
@@ -32,25 +33,28 @@ Puedes consultar y operar: pedidos, clientas, rutas, finanzas, proveedores y lea
 
 PERSONALIDAD Y LENGUAJE (¡CRÍTICO!):
 - CERO ROBÓTICA: Tienes estrictamente prohibido usar exactamente las mismas frases para confirmar acciones. Varía tu vocabulario constantemente. Usa sinónimos.
-- Respuestas cortas, empáticas, sin viñetas, sin markdown, directas al grano.
-- Habla en español mexicano, tono amigable y profesional, como una asistente ejecutiva muy capaz.
+- Responde siempre en formato de texto plano continuo. Escribe tus reportes como párrafos de texto separados por puntos, prohibido usar el símbolo de asterisco o negritas.
+- Habla en español mexicano, tono amigable y profesional, como una asistente ejecutiva muy capaz. Dirígete a tu jefa como Miel.
 
 CAPACIDAD ANALÍTICA (MODO AGENTE):
-- Eres súper inteligente. Si te piden un dato estadístico (ej. '¿quién compró más?' o '¿cuánto se vendió?'), NO digas que no tienes esa función. 
+- Eres súper inteligente. Si te piden un dato estadístico, NO digas que no tienes esa función. 
 - Usa tus herramientas, extrae la data, haz tú misma los cruces de información, suma, cuenta y ordena mentalmente, y luego dale a Miel la respuesta digerida.
-- Cuando muestres datos, sé selectiva: solo lo más relevante, no vuelques toda la data. Si no encuentras algo, dilo con naturalidad.
+- REGLA DE ORO: NUNCA des respuestas parciales ni digas ""estoy revisando"", ""dame un momento"" o ""ahora sigo con..."". Haz todas tus consultas de herramientas EN SILENCIO y responde al usuario ÚNICAMENTE cuando ya tengas la respuesta final, calculada y completa.
+- VOLUMEN DE DATOS: Si una lista tiene más de 4 elementos, menciona OBLIGATORIAMENTE solo los 3 más importantes y resume el resto diciendo ""y X pedidos/clientas más"", a menos que Miel te exija explícitamente escuchar el listado completo.
 
 REGLAS DE OPERACIÓN Y NEGOCIO (MEMORÍZALAS):
 - Antes de crear o modificar datos importantes, confirma brevemente lo que vas a hacer.
-- Si el usuario menciona una clienta por apodo, usa buscar_pedidos o listar_clientas. No asumas IDs. El sistema cuenta con búsqueda difusa (fuzzy search), intentará encontrar la mejor coincidencia.
+- Si el usuario menciona una clienta por apodo, usa buscar_pedidos o listar_clientas. No asumas IDs. El sistema cuenta con búsqueda difusa, intentará encontrar la mejor coincidencia.
 - Estados de pedidos: Pending=Pendiente, Confirmed=Confirmada, InRoute=En Camino, Delivered=Entregada, NotDelivered=No Entregada, Canceled=Cancelada, Postponed=Pospuesta, Shipped=Enviada.
 - Tipos de pedido: Delivery=A domicilio, PickUp=Recoger en tienda.
 - Tipos de clienta: Nueva, Frecuente, VIP.
 - Métodos de pago: Efectivo, Transferencia, OXXO, Tarjeta.
-- Para cancelar o posponer un pedido, el motivo es obligatorio.
+- Para dar totales financieros o conteos masivos, NUNCA sumes los arreglos individuales; es OBLIGATORIO que extraigas las cifras directamente del objeto 'estadisticas_globales'.
+- En el reporte de finanzas: el rubro de 'inversiones' corresponde exclusivamente a lo pagado a proveedores, mientras que 'gastos' son temas operativos y de choferes. No los confundas.
 - Al entregar un pedido, se otorgan puntos de lealtad: Total / 10 (redondeado hacia abajo).
 - Los envíos a domicilio tienen costo de 60 MXN por defecto. PickUp es gratis. El cargo por envío se puede personalizar.
-- El sistema usa hora de Ciudad de México / Matamoros (CST).
+- Para hablar de dinero que nos deben en la calle, SIEMPRE usa el 'saldo_pendiente_global_historico' (o saldoPorCobrar), nunca uses el balance del periodo.
+- El sistema usa la zona horaria de Nuevo Laredo / Matamoros (CST con horario fronterizo).
 ";
 
     private const string SYSTEM_INSTRUCTION_DRIVER = @"
@@ -316,6 +320,51 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                         },
                         Required = new List<string> { "ruta_id" }
                     }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "actualizar_precio_pedido",
+                    Description = "Actualiza el total de un pedido (aplica descuento, ajuste de precio o corrección). Requiere el ID del pedido y el nuevo total.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Required = new List<string> { "pedido_id", "nuevo_total" },
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "pedido_id", new Schema { Type = "INTEGER", Description = "ID del pedido a actualizar." } },
+                            { "nuevo_total", new Schema { Type = "NUMBER", Description = "Nuevo total del pedido en pesos MXN." } },
+                            { "motivo", new Schema { Type = "STRING", Description = "Motivo del ajuste (descuento, error, etc.)." } }
+                        }
+                    }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "agregar_gasto",
+                    Description = "Registra un gasto operativo del negocio (gasolina, empaques, servicios, etc.). NO usar para pagos a proveedores.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Required = new List<string> { "descripcion", "monto" },
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "descripcion", new Schema { Type = "STRING", Description = "Descripción del gasto." } },
+                            { "monto", new Schema { Type = "NUMBER", Description = "Monto del gasto en pesos MXN." } },
+                            { "categoria", new Schema { Type = "STRING", Description = "Categoría: Gasolina, Empaques, Servicios, Chofer, Otro." } }
+                        }
+                    }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "generar_resumen_semana",
+                    Description = "Genera un resumen financiero y operativo de la semana actual (lunes a hoy) o de la semana pasada.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "semana_pasada", new Schema { Type = "BOOLEAN", Description = "Si es true, devuelve la semana pasada en lugar de la actual." } }
+                        }
+                    }
                 }
             }
         }
@@ -324,6 +373,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger, IRouteOptimizerService optimizer, IGoogleTtsService tts)
     {
         _db = db;
+        _config = config;
         _logger = logger;
         _optimizer = optimizer;
         _tts = tts;
@@ -449,9 +499,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             TopP = 0.95f
         };
 
-        // Construir historial completo
+        // Construir historial completo (máx. 20 mensajes para no superar el contexto)
         var allContents = new List<Content>();
-        foreach (var msg in request.History)
+        foreach (var msg in request.History.TakeLast(20))
         {
             allContents.Add(new Content
             {
@@ -549,6 +599,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             "crear_clienta"             => await CrearClientaAsync(args),
             "crear_ruta"                => await CrearRutaAsync(args),
             "liquidar_ruta"             => await LiquidarRutaAsync(args),
+            "actualizar_precio_pedido"  => await ActualizarPrecioPedidoAsync(args),
+            "agregar_gasto"             => await AgregarGastoAsync(args),
+            "generar_resumen_semana"    => await GenerarResumenSemanaAsync(args),
             _                           => ToJson(new { error = $"Función desconocida: {name}" })
         };
     }
@@ -753,10 +806,11 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     private async Task<JsonElement> ListarClientasAsync(JsonElement? args)
     {
         var busqueda = GetStr(args, "busqueda");
-        var limite   = GetInt(args, "limite", 20);
+        var limite = GetInt(args, "limite", 20);
 
         var query = _db.Clients
             .Include(c => c.Orders)
+                .ThenInclude(o => o.Payments) // INCLUIMOS PAGOS PARA EL CALCULO
             .AsQueryable();
 
         if (!string.IsNullOrEmpty(busqueda))
@@ -766,27 +820,31 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                                      (c.Phone != null && c.Phone.Contains(busqueda)));
         }
 
-        var results = await query
+        // 1. TRAEMOS A MEMORIA PRIMERO (Esto evita el crash de Entity Framework)
+        var dbClients = await query
             .OrderByDescending(c => c.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => (decimal?)o.Total) ?? 0)
             .Take(Math.Clamp(limite * 2, 1, 100))
-            .Select(c => new
-            {
-                id        = c.Id,
-                nombre    = c.Name,
-                telefono  = c.Phone,
-                tipo      = c.Type,
-                tag       = c.Tag.ToString(),
-                puntos    = c.CurrentPoints,
-                pedidos   = c.Orders.Count(o => o.Status != OrderStatus.Canceled),
-                gastado   = c.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => (decimal?)o.Total) ?? 0
-            })
             .ToListAsync();
 
-        // Fuzzy fallback for listing clients
+        // 2. MAPEAMOS EN C# DE FORMA SEGURA
+        var results = dbClients.Select(c => new
+        {
+            id = c.Id,
+            nombre = c.Name,
+            telefono = c.Phone,
+            tipo = c.Type,
+            tag = c.Tag.ToString(),
+            puntos = c.CurrentPoints,
+            pedidos = c.Orders.Count(o => o.Status != OrderStatus.Canceled),
+            gastado = c.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => o.Total),
+            saldo_pendiente = c.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => o.BalanceDue)
+        }).ToList();
+
+        // Lógica para Fuzzy Search
         if (!string.IsNullOrEmpty(busqueda) && results.Count < 3)
         {
             var allClients = await _db.Clients
-                .Include(c => c.Orders)
+                .Include(c => c.Orders).ThenInclude(o => o.Payments)
                 .OrderByDescending(c => c.Orders.Count)
                 .Take(200)
                 .ToListAsync();
@@ -796,20 +854,20 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                 .Where(x => x.Score > 0.5)
                 .OrderByDescending(x => x.Score)
                 .Take(limite)
-                .Select(c => new
+                .Select(x => new
                 {
-                    id        = c.Client.Id,
-                    nombre    = c.Client.Name,
-                    telefono  = c.Client.Phone,
-                    tipo      = c.Client.Type,
-                    tag       = c.Client.Tag.ToString(),
-                    puntos    = c.Client.CurrentPoints,
-                    pedidos   = c.Client.Orders.Count(o => o.Status != OrderStatus.Canceled),
-                    gastado   = c.Client.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => (decimal?)o.Total) ?? 0
+                    id = x.Client.Id,
+                    nombre = x.Client.Name,
+                    telefono = x.Client.Phone,
+                    tipo = x.Client.Type,
+                    tag = x.Client.Tag.ToString(),
+                    puntos = x.Client.CurrentPoints,
+                    pedidos = x.Client.Orders.Count(o => o.Status != OrderStatus.Canceled),
+                    gastado = x.Client.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => o.Total),
+                    saldo_pendiente = x.Client.Orders.Where(o => o.Status != OrderStatus.Canceled).Sum(o => o.BalanceDue)
                 })
                 .ToList();
 
-            // Merge fuzzy results if not already present
             foreach (var f in fuzzyClients)
             {
                 if (!results.Any(r => r.id == f.id)) results.Add(f);
@@ -916,7 +974,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             endUtc = DateTime.UtcNow;
         }
 
-        // 3. Consultas a la BD (Ahora EF Core y Postgres serán felices porque todo es estrictamente UTC)
+        // 3. Consultas a la BD
         var totalFacturado = await _db.Orders
             .Where(o => o.CreatedAt >= startUtc && o.CreatedAt <= endUtc && o.Status != OrderStatus.Canceled)
             .SumAsync(o => (decimal?)o.Total) ?? 0;
@@ -935,16 +993,25 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             .Where(e => e.Date >= startUtc && e.Date <= endUtc)
             .SumAsync(e => (decimal?)e.Amount) ?? 0;
 
+        // --- MAGIA: CALCULAMOS LA DEUDA HISTÓRICA REAL SIEMPRE ---
+        var ordenesActivas = await _db.Orders
+            .Include(o => o.Payments)
+            .Where(o => o.Status == OrderStatus.Pending || o.Status == OrderStatus.Confirmed || o.Status == OrderStatus.InRoute)
+            .ToListAsync();
+        var deudaGlobalReal = ordenesActivas.Sum(o => o.BalanceDue);
+
         return ToJson(new
         {
             periodo = $"{TimeZoneInfo.ConvertTimeFromUtc(startUtc, mxZone):dd/MM/yyyy} al {TimeZoneInfo.ConvertTimeFromUtc(endUtc, mxZone):dd/MM/yyyy}",
-            facturado = totalFacturado,
-            cobrado = totalCobrado,
-            porCobrar = totalFacturado - totalCobrado,
-            inversiones = totalInvertido,
-            gastos = totalGastos,
-            utilidadNeta = totalCobrado - totalInvertido - totalGastos,
-            flujoEfectivo = totalCobrado - totalInvertido - totalGastos
+            facturado_del_periodo = totalFacturado,
+            cobrado_del_periodo = totalCobrado,
+            balance_del_periodo = totalFacturado - totalCobrado,
+            inversiones_proveedores = totalInvertido,
+            gastos_operativos = totalGastos,
+            utilidad_neta_periodo = totalCobrado - totalInvertido - totalGastos,
+
+            // C.A.M.I. leerá esto cuando le pregunten por la deuda en la calle
+            saldo_pendiente_global_historico = deudaGlobalReal
         });
     }
 
@@ -1201,7 +1268,6 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         {
             order.Client.CurrentPoints += puntosCalculados;
             order.Client.LifetimePoints += puntosCalculados;
-            order.Client.LifetimePoints += puntosCalculados;
             _db.LoyaltyTransactions.Add(new LoyaltyTransaction
             {
                 ClientId = order.ClientId,
@@ -1327,7 +1393,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
 
         // --- OPTIMIZACIÓN GEOGRÁFICA ---
         // Usamos una ubicación de inicio base (puedes ajustarla a la del negocio si existe en AppSettings)
-        var optimizedOrders = _optimizer.OptimizeRoute(orders, 25.8694, -97.5027); // Matamoros Centro aprox
+        var lat = _config.GetValue<double>("Cami:RouteCenterLat", 25.8694);
+        var lng = _config.GetValue<double>("Cami:RouteCenterLng", -97.5027);
+        var optimizedOrders = _optimizer.OptimizeRoute(orders, lat, lng);
 
         int sort = 0;
         foreach (var order in optimizedOrders)
@@ -1449,6 +1517,121 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             _logger.LogError(ex, "Error generando saludo proactivo con Gemini");
             return new CamiGreetingResponse("¡Hola! Estamos preparando tu pedido con mucho cariño. ✨");
         }
+    }
+
+    private async Task<JsonElement> ActualizarPrecioPedidoAsync(JsonElement? args)
+    {
+        var pedidoId = GetInt(args, "pedido_id");
+        var nuevoTotal = GetDecimal(args, "nuevo_total", -1);
+        var motivo = GetStr(args, "motivo") ?? "Ajuste manual vía C.A.M.I.";
+
+        if (nuevoTotal < 0)
+            return ToJson(new { error = "El nuevo_total es obligatorio y debe ser mayor o igual a cero." });
+
+        var order = await _db.Orders.Include(o => o.Payments).FirstOrDefaultAsync(o => o.Id == pedidoId);
+        if (order == null)
+            return ToJson(new { error = $"No encontré el pedido #{pedidoId}." });
+
+        var totalAnterior = order.Total;
+        var diferencia = nuevoTotal - order.Total;
+        order.Subtotal += diferencia;
+        await _db.SaveChangesAsync();
+
+        return ToJson(new
+        {
+            mensaje = $"Pedido #{pedidoId} actualizado. Total anterior: {totalAnterior:F2}, nuevo total: {nuevoTotal:F2}. Motivo: {motivo}",
+            pedidoId,
+            totalAnterior,
+            nuevoTotal,
+            diferencia
+        });
+    }
+
+    private async Task<JsonElement> AgregarGastoAsync(JsonElement? args)
+    {
+        var descripcion = GetStr(args, "descripcion") ?? "Sin descripción";
+        var monto = GetDecimal(args, "monto", 0);
+        var categoria = GetStr(args, "categoria") ?? "Gasolina";
+
+        if (monto <= 0)
+            return ToJson(new { error = "El monto debe ser mayor a cero." });
+
+        // Buscar la ruta más reciente activa o completada para asociar el gasto
+        var rutaReciente = await _db.DeliveryRoutes
+            .Where(r => r.Status == RouteStatus.Active || r.Status == RouteStatus.Completed)
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync();
+
+        var gasto = new DriverExpense
+        {
+            DeliveryRouteId = rutaReciente?.Id, // null si no hay ruta
+            Amount = monto,
+            ExpenseType = categoria,
+            Notes = descripcion,
+            Date = DateTime.Now,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _db.DriverExpenses.Add(gasto);
+        await _db.SaveChangesAsync();
+
+        return ToJson(new
+        {
+            id = gasto.Id,
+            mensaje = rutaReciente != null
+                ? $"Gasto registrado: {descripcion} por ${monto:F2} pesos en categoría {categoria}, asociado a la Ruta #{rutaReciente.Id}."
+                : $"Gasto registrado: {descripcion} por ${monto:F2} pesos en categoría {categoria} (sin ruta asociada).",
+            rutaId = rutaReciente?.Id
+        });
+    }
+
+    private async Task<JsonElement> GenerarResumenSemanaAsync(JsonElement? args)
+    {
+        var semanaPasada = args.HasValue && args.Value.TryGetProperty("semana_pasada", out var sp) && sp.GetBoolean();
+        var nowMx = BackendExtensions.GetMexicoNow();
+        var mexicoZone = BackendExtensions.GetMexicoZone();
+
+        var hoy = nowMx.Date;
+        var diasDesdelunes = ((int)hoy.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+        var inicioSemana = hoy.AddDays(-diasDesdelunes);
+        if (semanaPasada) inicioSemana = inicioSemana.AddDays(-7);
+        var finSemana = inicioSemana.AddDays(7);
+
+        var inicioUtc = TimeZoneInfo.ConvertTimeToUtc(inicioSemana, mexicoZone);
+        var finUtc = TimeZoneInfo.ConvertTimeToUtc(finSemana, mexicoZone);
+
+        var orders = await _db.Orders
+            .Include(o => o.Payments)
+            .Include(o => o.Client)
+            .Where(o => o.CreatedAt >= inicioUtc && o.CreatedAt < finUtc && o.Status != OrderStatus.Canceled)
+            .ToListAsync();
+
+        var facturado = orders.Sum(o => o.Total);
+        var cobrado = orders.SelectMany(o => o.Payments).Sum(p => p.Amount)
+                    + orders.Sum(o => o.AdvancePayment);
+        var pendiente = orders.Where(o => o.Status != OrderStatus.Delivered).Sum(o => o.BalanceDue);
+        var entregados = orders.Count(o => o.Status == OrderStatus.Delivered);
+        var cancelados = await _db.Orders.CountAsync(o => o.CreatedAt >= inicioUtc && o.CreatedAt < finUtc && o.Status == OrderStatus.Canceled);
+
+        var topClientes = orders
+            .GroupBy(o => o.Client.Name)
+            .Select(g => new { clienta = g.Key, total = g.Sum(o => o.Total), pedidos = g.Count() })
+            .OrderByDescending(x => x.total)
+            .Take(3)
+            .ToList();
+
+        return ToJson(new
+        {
+            periodo = $"{inicioSemana:dd/MM} - {finSemana.AddDays(-1):dd/MM/yyyy}",
+            semana = semanaPasada ? "Semana pasada" : "Semana actual",
+            totalPedidos = orders.Count,
+            entregados,
+            cancelados,
+            facturado,
+            cobrado,
+            pendientePorCobrar = pendiente,
+            topClientes
+        });
     }
 
     // ══════════════════════════════════════════════════════════════════════════

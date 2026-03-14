@@ -1,5 +1,6 @@
 using Google.Cloud.TextToSpeech.V1;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace EntregasApi.Services;
 
@@ -12,10 +13,12 @@ public class GoogleTtsService : IGoogleTtsService
 {
     private readonly TextToSpeechClient _client;
     private readonly IConfiguration _config;
+    private readonly ILogger<GoogleTtsService> _logger;
 
-    public GoogleTtsService(IConfiguration config)
+    public GoogleTtsService(IConfiguration config, ILogger<GoogleTtsService> logger)
     {
         _config = config;
+        _logger = logger;
 
         var builder = new TextToSpeechClientBuilder();
 
@@ -40,32 +43,41 @@ public class GoogleTtsService : IGoogleTtsService
     {
         if (string.IsNullOrWhiteSpace(text)) return "";
 
-        var input = new SynthesisInput { Text = text };
-        // --- TRUCO PARA IMPRIMIR EL CATÁLOGO REAL ---
-        //var listResponse = await _client.ListVoicesAsync(new ListVoicesRequest { LanguageCode = "es-MX" });
-        //foreach (var v in listResponse.Voices)
-        //{
-        //    Console.WriteLine($"Voz disponible: {v.Name} - Tecnología: {v.Name.Split('-')[2]} - Género: {v.SsmlGender}");
-        //}
-        // --------------------------------------------
+        // Limpiar markdown residual antes de sintetizar
+        var cleanText = text
+            .Replace("**", "").Replace("*", "").Replace("_", "")
+            .Replace("#", "").Replace("`", "");
 
-        // Configuración de la voz (Neural2/Journey/Coquette style)
+        var input = new SynthesisInput { Text = cleanText };
+
+        var voiceName = _config["Cami:TtsVoice"] ?? "es-US-Chirp3-HD-Kore";
+        var langCode = voiceName.Length >= 5 ? voiceName[..5] : "es-US";
+
         var voiceSelection = new VoiceSelectionParams
         {
-            LanguageCode = "es-US",
-            Name = "es-US-Wavenet-A"
+            LanguageCode = langCode,
+            Name = voiceName
         };
 
         var audioConfig = new AudioConfig
         {
             AudioEncoding = AudioEncoding.Mp3,
-            Pitch = 0,
-            SpeakingRate = 1.0
+            Pitch = _config.GetValue<double>("Cami:TtsPitch", 0),
+            SpeakingRate = _config.GetValue<double>("Cami:TtsSpeed", 1.0)
         };
 
-        var response = await _client.SynthesizeSpeechAsync(input, voiceSelection, audioConfig);
-
-        // Devolvemos el audio convertido a Base64 para que el frontend lo pueda reproducir fácilmente
-        return response.AudioContent.ToBase64();
+        try
+        {
+            var response = await _client.SynthesizeSpeechAsync(input, voiceSelection, audioConfig);
+            return response.AudioContent.ToBase64();
+        }
+        catch (Exception ex) when (voiceName.Contains("Chirp3"))
+        {
+            // Fallback a WaveNet si Chirp3-HD no está disponible en el plan
+            _logger.LogWarning(ex, "Chirp3-HD no disponible, usando fallback WaveNet");
+            voiceSelection.Name = "es-US-Wavenet-A";
+            var response = await _client.SynthesizeSpeechAsync(input, voiceSelection, audioConfig);
+            return response.AudioContent.ToBase64();
+        }
     }
 }

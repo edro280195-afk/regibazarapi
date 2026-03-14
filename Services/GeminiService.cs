@@ -12,6 +12,9 @@ public interface IGeminiService
     Task<List<AiParsedOrder>> ParseLiveTextAsync(string text, List<AiParsedOrder>? currentState = null);
     Task<List<AiInsightDto>> AnalyzeReportAsync(JsonElement report);
     Task<AiRouteSelectionResponse> SelectOrdersForRouteAsync(AiRouteSelectionRequest request);
+    Task<string> GetDashboardInsightAsync(object dashboardData);
+    Task<string> GetClientInsightAsync(object clientData);
+    Task<string> GetRouteBriefingAsync(object routeData);
 }
 
 public class GeminiService : IGeminiService
@@ -236,5 +239,43 @@ REGLAS ESTRICTAS:
             _logger.LogError("Error general en Gemini Routes: {Error}", ex.Message);
             throw;
         }
+    }
+
+    public async Task<string> GetDashboardInsightAsync(object dashboardData)
+    {
+        var json = JsonSerializer.Serialize(dashboardData, new JsonSerializerOptions { WriteIndented = false });
+        var prompt = $@"Eres el analista de negocio de Regi Bazar. Con base en estos datos del dashboard, genera EXACTAMENTE 2 oraciones: una observación positiva y una alerta o recomendación accionable.
+Tono: empático, emprendedor, en español mexicano. Sin markdown, sin asteriscos, sin emojis. Solo texto plano continuo.
+Datos: {json}";
+
+        var config = new GenerateContentConfig { Temperature = 0.6f };
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+        return response.Text?.Trim() ?? "El negocio marcha bien. Revisa los pedidos pendientes para mantener el flujo.";
+    }
+
+    public async Task<string> GetClientInsightAsync(object clientData)
+    {
+        var json = JsonSerializer.Serialize(clientData);
+        var prompt = $@"Eres la analista de clientes de Regi Bazar. Con base en estos datos, genera un análisis de comportamiento de compra en 3 oraciones máximo.
+Incluye: patrón de compra, riesgo de fuga (si aplica), y una recomendación de acción.
+Tono: empático y profesional, en español mexicano. Sin markdown, sin asteriscos.
+Datos: {json}";
+
+        var config = new GenerateContentConfig { Temperature = 0.5f };
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+        return response.Text?.Trim() ?? "Sin datos suficientes para el análisis.";
+    }
+
+    public async Task<string> GetRouteBriefingAsync(object routeData)
+    {
+        var json = JsonSerializer.Serialize(routeData);
+        var prompt = $@"Eres la copiloto de C.A.M.I. generando un briefing de ruta para el repartidor.
+Genera UN párrafo corto (máx. 4 oraciones) que resuma: cuántas paradas, cuánto debe cobrar en total, y las 2-3 paradas más importantes (mayor saldo o instrucciones especiales).
+Tono: directo, cordial, como si hablaras al oído del chofer. Sin markdown, sin asteriscos. En español mexicano.
+Datos de ruta: {json}";
+
+        var config = new GenerateContentConfig { Temperature = 0.4f };
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+        return response.Text?.Trim() ?? "Ruta lista. Revisa las paradas en tu pantalla.";
     }
 }

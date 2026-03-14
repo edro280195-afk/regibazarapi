@@ -630,3 +630,8 @@ public record DriverCamiResponse(string RespuestaCami);
 
 // ── C.A.M.I. PROACTIVE GREETING ──
 public record CamiGreetingResponse(string Message, string? AudioBase64 = null);
+
+// ── CAMI Insights ──
+public record CamiAlert(string Type, string Message, string Icon, int? RelatedId = null);
+public record RouteBriefingResponse(string Text, string? AudioBase64 = null);
+public record DashboardInsightRequest(decimal RevenueToday, decimal RevenueMonth, int PendingOrders, int DeliveredOrders, int ActiveRoutes, decimal PendingAmount, int TotalClients);
