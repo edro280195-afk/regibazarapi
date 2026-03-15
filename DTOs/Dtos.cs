@@ -153,6 +153,7 @@ public record RouteDeliveryDto(
     string? ClientPhone,
     string? PaymentMethod,
     List<OrderPaymentDto>? Payments = null,
+    List<OrderItemDto>? Items = null,
     decimal AmountPaid = 0m,
     decimal BalanceDue = 0m,
     string? DeliveryInstructions = null

@@ -41,6 +41,7 @@ public class DriverController : ControllerBase
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o.Client)
             .Include(d => d.Order).ThenInclude(o => o.Payments)
+            .Include(d => d.Order).ThenInclude(o => o.Items)
             .Include(d => d.Evidences)
             .Where(d => d.DeliveryRouteId == route.Id)
             .OrderBy(d => d.SortOrder)
@@ -49,7 +50,7 @@ public class DriverController : ControllerBase
         return Ok(new
         {
             route.Id,
-            route.Name, // Agregamos nombre
+            route.Name,
             Status = route.Status.ToString(),
             route.StartedAt,
             Deliveries = deliveries.Select(d => new RouteDeliveryDto(
@@ -66,10 +67,12 @@ public class DriverController : ControllerBase
                 Notes: d.Notes,
                 FailureReason: d.FailureReason,
                 EvidenceUrls: d.Evidences.Select(e => $"/uploads/{e.ImagePath}").ToList(),
-                ClientPhone: "",
-                PaymentMethod: "",
+                ClientPhone: d.Order.Client.Phone,
+                PaymentMethod: d.Order.PaymentMethod,
                 Payments: (d.Order.Payments ?? new List<OrderPayment>())
                     .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+                Items: (d.Order.Items ?? new List<OrderItem>())
+                    .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
                 AmountPaid: d.Order.AmountPaid,
                 BalanceDue: d.Order.BalanceDue
             )).ToList()

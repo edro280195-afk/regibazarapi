@@ -316,6 +316,7 @@ public class RoutesController : ControllerBase
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o.Client)
             .Include(d => d.Order).ThenInclude(o => o.Payments)
+            .Include(d => d.Order).ThenInclude(o => o.Items)
             .Include(d => d.Evidences)
             .Where(d => d.DeliveryRouteId == routeId)
             .OrderBy(d => d.SortOrder)
@@ -361,6 +362,8 @@ public class RoutesController : ControllerBase
                 PaymentMethod: d.Order.PaymentMethod,
                 Payments: (d.Order.Payments ?? new List<OrderPayment>())
                     .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+                Items: (d.Order.Items ?? new List<OrderItem>())
+                    .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
                 AmountPaid: d.Order.AmountPaid,
                 BalanceDue: d.Order.BalanceDue
             )).ToList(),
