@@ -36,15 +36,25 @@ PERSONALIDAD Y LENGUAJE (¡CRÍTICO!):
 - Responde siempre en formato de texto plano continuo. Escribe tus reportes como párrafos de texto separados por puntos, prohibido usar el símbolo de asterisco o negritas.
 - Habla en español mexicano, tono amigable y profesional, como una asistente ejecutiva muy capaz. Dirígete a tu jefa como Miel.
 
+HONESTIDAD ABSOLUTA (REGLA MÁXIMA — NUNCA VIOLAR):
+- PROHIBIDO inventar, suponer o completar datos que no provienen directamente de tus herramientas. Si no lo trajiste del sistema, no lo digas.
+- Si buscaste en el sistema y no encontraste nada, dilo con claridad: ""No encontré ningún pedido de esa clienta"", ""No tengo ese dato en el sistema"", ""No manejamos ese producto"". No adornes, no rellenes, no intentes quedar bien.
+- NUNCA menciones productos, precios, nombres o cifras que no hayan aparecido en la respuesta de una herramienta. Aunque te parezcan lógicos o probables, si no los tienes en la data = no existen para ti.
+- Si una pregunta está fuera de tus capacidades o del alcance del negocio, dilo directamente. Es mejor decir ""no sé"" que inventar.
+- Tu trabajo es ser útil con información REAL, no con información plausible.
+
 CAPACIDAD ANALÍTICA (MODO AGENTE):
-- Eres súper inteligente. Si te piden un dato estadístico, NO digas que no tienes esa función. 
-- Usa tus herramientas, extrae la data, haz tú misma los cruces de información, suma, cuenta y ordena mentalmente, y luego dale a Miel la respuesta digerida.
+- Si te piden un dato estadístico, NO digas que no tienes esa función: usa tus herramientas, extrae la data real, haz los cruces tú misma y dale a Miel la respuesta digerida.
 - REGLA DE ORO: NUNCA des respuestas parciales ni digas ""estoy revisando"", ""dame un momento"" o ""ahora sigo con..."". Haz todas tus consultas de herramientas EN SILENCIO y responde al usuario ÚNICAMENTE cuando ya tengas la respuesta final, calculada y completa.
 - VOLUMEN DE DATOS: Si una lista tiene más de 4 elementos, menciona OBLIGATORIAMENTE solo los 3 más importantes y resume el resto diciendo ""y X pedidos/clientas más"", a menos que Miel te exija explícitamente escuchar el listado completo.
 
 REGLAS DE OPERACIÓN Y NEGOCIO (MEMORÍZALAS):
 - Antes de crear o modificar datos importantes, confirma brevemente lo que vas a hacer.
-- Si el usuario menciona una clienta por apodo, usa buscar_pedidos o listar_clientas. No asumas IDs. El sistema cuenta con búsqueda difusa, intentará encontrar la mejor coincidencia.
+- Si el usuario menciona una clienta por apodo, usa buscar_pedidos o listar_clientas para encontrar su ID. No asumas IDs. El sistema cuenta con búsqueda difusa.
+- Para corregir datos de una clienta (teléfono, dirección, tipo, etiqueta, instrucciones) usa actualizar_clienta con su ID.
+- Para editar o quitar un producto de un pedido, primero obtén el pedido con obtener_pedido para ver los IDs de los ítems, luego usa editar_item_pedido o eliminar_item_pedido.
+- Para registrar una compra a proveedor usa registrar_inversion. Si la compra es en dólares, pide siempre el tipo de cambio antes de registrar.
+- buscar_pedidos acepta fecha_inicio y fecha_fin (formato YYYY-MM-DD) para filtrar por rango de fechas.
 - Estados de pedidos: Pending=Pendiente, Confirmed=Confirmada, InRoute=En Camino, Delivered=Entregada, NotDelivered=No Entregada, Canceled=Cancelada, Postponed=Pospuesta, Shipped=Enviada.
 - Tipos de pedido: Delivery=A domicilio, PickUp=Recoger en tienda.
 - Tipos de clienta: Nueva, Frecuente, VIP.
@@ -86,9 +96,11 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                         Properties = new Dictionary<string, Schema>
                         {
                             { "estado", new Schema { Type = "STRING", Description = "Filtro por estado: Pending, Confirmed, InRoute, Delivered, NotDelivered, Canceled, Postponed, Shipped." } },
-                            { "tipo", new Schema { Type = "STRING", Description = "Delivery o PickUp." } }, 
+                            { "tipo", new Schema { Type = "STRING", Description = "Delivery o PickUp." } },
                             { "busqueda", new Schema { Type = "STRING", Description = "Texto a buscar..." } },
-                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de resultados a devolver. Puedes pedir hasta 500 para hacer análisis matemáticos." } }
+                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de resultados a devolver. Puedes pedir hasta 500 para hacer análisis matemáticos." } },
+                            { "fecha_inicio", new Schema { Type = "STRING", Description = "Filtrar pedidos creados desde esta fecha. Formato YYYY-MM-DD. Ejemplo: '2026-03-01'." } },
+                            { "fecha_fin", new Schema { Type = "STRING", Description = "Filtrar pedidos creados hasta esta fecha (inclusive). Formato YYYY-MM-DD." } }
                         }
                     }
                 },
@@ -365,6 +377,75 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                             { "semana_pasada", new Schema { Type = "BOOLEAN", Description = "Si es true, devuelve la semana pasada en lugar de la actual." } }
                         }
                     }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "editar_item_pedido",
+                    Description = "Edita un producto existente en un pedido: cambia nombre, cantidad o precio. Usa esto cuando Miel quiera corregir un ítem ya registrado.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Required = new List<string> { "item_id" },
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "item_id", new Schema { Type = "INTEGER", Description = "ID del ítem a editar (viene en la lista de items al obtener el pedido)." } },
+                            { "producto", new Schema { Type = "STRING", Description = "Nuevo nombre del producto. Omitir para no cambiar." } },
+                            { "cantidad", new Schema { Type = "INTEGER", Description = "Nueva cantidad. Omitir para no cambiar." } },
+                            { "precio", new Schema { Type = "NUMBER", Description = "Nuevo precio unitario en MXN. Omitir para no cambiar." } }
+                        }
+                    }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "eliminar_item_pedido",
+                    Description = "Elimina un producto de un pedido. Úsalo cuando Miel quiera quitar un ítem que no corresponde o fue un error.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Required = new List<string> { "item_id" },
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "item_id", new Schema { Type = "INTEGER", Description = "ID del ítem a eliminar." } }
+                        }
+                    }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "actualizar_clienta",
+                    Description = "Actualiza los datos de una clienta existente: teléfono, dirección, tipo (Nueva/Frecuente/VIP), etiqueta o instrucciones de entrega.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Required = new List<string> { "clienta_id" },
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "clienta_id", new Schema { Type = "INTEGER", Description = "ID de la clienta a actualizar." } },
+                            { "telefono", new Schema { Type = "STRING", Description = "Nuevo teléfono." } },
+                            { "direccion", new Schema { Type = "STRING", Description = "Nueva dirección." } },
+                            { "tipo", new Schema { Type = "STRING", Description = "Nuevo tipo: Nueva, Frecuente o VIP." } },
+                            { "tag", new Schema { Type = "STRING", Description = "Nueva etiqueta: None (sin etiqueta), RisingStar (en ascenso), Vip (consentida), Blacklist (lista negra)." } },
+                            { "instrucciones_entrega", new Schema { Type = "STRING", Description = "Instrucciones especiales para la entrega en su domicilio." } }
+                        }
+                    }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "registrar_inversion",
+                    Description = "Registra una compra o inversión hecha a un proveedor. Usar cuando se compra mercancía o se paga a un proveedor.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Required = new List<string> { "proveedor_id", "monto" },
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "proveedor_id", new Schema { Type = "INTEGER", Description = "ID del proveedor al que se le compró." } },
+                            { "monto", new Schema { Type = "NUMBER", Description = "Monto de la compra." } },
+                            { "moneda", new Schema { Type = "STRING", Description = "Moneda: MXN (pesos, por defecto) o USD (dólares)." } },
+                            { "tipo_cambio", new Schema { Type = "NUMBER", Description = "Tipo de cambio si la moneda es USD. Ejemplo: 17.5 significa 1 USD = 17.50 MXN." } },
+                            { "notas", new Schema { Type = "STRING", Description = "Descripción de qué se compró." } },
+                            { "fecha", new Schema { Type = "STRING", Description = "Fecha de la compra en formato YYYY-MM-DD. Si se omite, se usa hoy." } }
+                        }
+                    }
                 }
             }
         }
@@ -515,8 +596,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             Parts = new List<Part> { new Part { Text = request.NewMessage } }
         });
 
-        // Loop de function calling (máx. 5 rondas para evitar loops infinitos)
-        for (int round = 0; round < 15; round++)
+        // Loop de function calling (máx. 8 rondas + detección de ciclos)
+        var lastFunctionCallKey = string.Empty;
+        for (int round = 0; round < 8; round++)
         {
             var response = await _gemini.Models.GenerateContentAsync(MODEL, allContents, config);
             var candidate = response.Candidates?[0];
@@ -532,6 +614,16 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             // Sin function calls → respuesta final de texto
             if (functionCallParts.Count == 0)
                 return response.Text?.Trim() ?? "Listo.";
+
+            // Detección de ciclo: si Gemini llama exactamente las mismas funciones con los mismos args, rompemos
+            var currentCallKey = string.Join("|", functionCallParts.Select(p =>
+                $"{p.FunctionCall!.Name}:{(p.FunctionCall.Args != null ? ToJson(p.FunctionCall.Args).GetRawText() : "")}"));
+            if (currentCallKey == lastFunctionCallKey)
+            {
+                _logger.LogWarning("CAMI: Ciclo detectado en ronda {Round}, forzando salida. Clave: {Key}", round, currentCallKey);
+                break;
+            }
+            lastFunctionCallKey = currentCallKey;
 
             // Añadir la respuesta del modelo (con function calls) al historial
             allContents.Add(modelContent);
@@ -602,6 +694,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             "actualizar_precio_pedido"  => await ActualizarPrecioPedidoAsync(args),
             "agregar_gasto"             => await AgregarGastoAsync(args),
             "generar_resumen_semana"    => await GenerarResumenSemanaAsync(args),
+            "editar_item_pedido"        => await EditarItemPedidoAsync(args),
+            "eliminar_item_pedido"      => await EliminarItemPedidoAsync(args),
+            "actualizar_clienta"        => await ActualizarClientaAsync(args),
+            "registrar_inversion"       => await RegistrarInversionAsync(args),
             _                           => ToJson(new { error = $"Función desconocida: {name}" })
         };
     }
@@ -617,51 +713,52 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         var todayStart = TimeZoneInfo.ConvertTimeToUtc(nowMx.Date, mexicoZone);
         var monthStart = TimeZoneInfo.ConvertTimeToUtc(new DateTime(nowMx.Year, nowMx.Month, 1), mexicoZone);
 
-        var orders = await _db.Orders
-            .Include(o => o.Payments)
-            .Include(o => o.Client)
-            .Where(o => o.Status != OrderStatus.Canceled)
-            .ToListAsync();
+        // Queries secuenciales directo en la BD — sin cargar registros a memoria
+        // (DbContext no es thread-safe, no se puede Task.WhenAll con la misma instancia)
+        var pendientes       = await _db.Orders.CountAsync(o => o.Status == OrderStatus.Pending);
+        var enRuta           = await _db.Orders.CountAsync(o => o.Status == OrderStatus.InRoute);
+        var entregadosMes    = await _db.Orders.CountAsync(o => o.Status == OrderStatus.Delivered && o.CreatedAt >= monthStart);
+        var facturadoHoy     = await _db.Orders
+                                    .Where(o => o.CreatedAt >= todayStart && o.Status != OrderStatus.Canceled)
+                                    .SumAsync(o => (decimal?)o.Total) ?? 0;
+        var cobradoHoyPagos  = await _db.OrderPayments
+                                    .Where(p => p.Date >= todayStart)
+                                    .SumAsync(p => (decimal?)p.Amount) ?? 0;
+        var cobradoHoyAnticipo = await _db.Orders
+                                    .Where(o => o.CreatedAt >= todayStart && o.Status != OrderStatus.Canceled)
+                                    .SumAsync(o => (decimal?)o.AdvancePayment) ?? 0;
+        var totalClientes    = await _db.Clients.CountAsync();
+        var rutasActivas     = await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active || r.Status == RouteStatus.Pending);
 
-        var totalHoy = orders
-            .Where(o => o.CreatedAt >= todayStart)
-            .Sum(o => o.Total);
-
-        var cobradoHoy = orders
-            .SelectMany(o => o.Payments)
-            .Where(p => p.Date >= todayStart)
-            .Sum(p => p.Amount) + orders.Where(o => o.CreatedAt >= todayStart).Sum(o => o.AdvancePayment);
-
-        var pendientes = orders.Count(o => o.Status == OrderStatus.Pending);
-        var enRuta     = orders.Count(o => o.Status == OrderStatus.InRoute);
-        var entregadosMes = orders.Count(o => o.Status == OrderStatus.Delivered && o.CreatedAt >= monthStart);
-        var porCobrar  = orders
-            .Where(o => o.Status is OrderStatus.Pending or OrderStatus.Confirmed or OrderStatus.InRoute)
-            .Sum(o => o.BalanceDue);
-
-        var totalClientes = await _db.Clients.CountAsync();
-        var rutasActivas  = await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active || r.Status == RouteStatus.Pending);
+        // saldoPorCobrar: proyectamos directo en SQL — EF Core lo traduce a subquery
+        var porCobrar = await _db.Orders
+            .Where(o => o.Status == OrderStatus.Pending || o.Status == OrderStatus.Confirmed || o.Status == OrderStatus.InRoute)
+            .SumAsync(o => (decimal?)(o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment)) ?? 0;
 
         return ToJson(new
         {
-            fecha         = nowMx.ToString("dd/MM/yyyy HH:mm"),
+            fecha             = nowMx.ToString("dd/MM/yyyy HH:mm"),
             pedidosPendientes = pendientes,
-            pedidosEnRuta = enRuta,
+            pedidosEnRuta     = enRuta,
             entregadosEsteMes = entregadosMes,
-            facturadoHoy  = totalHoy,
-            cobradoHoy    = cobradoHoy,
-            saldoPorCobrar = porCobrar,
-            totalClientas = totalClientes,
-            rutasActivas  = rutasActivas
+            facturadoHoy,
+            cobradoHoy        = cobradoHoyPagos + cobradoHoyAnticipo,
+            saldoPorCobrar    = porCobrar,
+            totalClientas     = totalClientes,
+            rutasActivas
         });
     }
 
     private async Task<JsonElement> BuscarPedidosAsync(JsonElement? args)
     {
-        var estado = GetStr(args, "estado");
-        var tipo = GetStr(args, "tipo");
-        var busqueda = GetStr(args, "busqueda");
-        var limite = GetInt(args, "limite", 50); // Subimos el default a 50
+        var estado    = GetStr(args, "estado");
+        var tipo      = GetStr(args, "tipo");
+        var busqueda  = GetStr(args, "busqueda");
+        var limite    = GetInt(args, "limite", 50);
+        var fechaIniStr = GetStr(args, "fecha_inicio");
+        var fechaFinStr = GetStr(args, "fecha_fin");
+
+        var mxZone = BackendExtensions.GetMexicoZone();
 
         var query = _db.Orders
             .Include(o => o.Client)
@@ -683,6 +780,18 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             else
                 query = query.Where(o => o.Client.Name.ToLower().Contains(busqLower) ||
                                          (o.Client.Phone != null && o.Client.Phone.Contains(busqueda)));
+        }
+
+        if (DateTime.TryParse(fechaIniStr, out var fechaIniLocal))
+        {
+            var fechaIniUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(fechaIniLocal.Date, DateTimeKind.Unspecified), mxZone);
+            query = query.Where(o => o.CreatedAt >= fechaIniUtc);
+        }
+
+        if (DateTime.TryParse(fechaFinStr, out var fechaFinLocal))
+        {
+            var fechaFinUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(fechaFinLocal.Date.AddDays(1), DateTimeKind.Unspecified), mxZone);
+            query = query.Where(o => o.CreatedAt < fechaFinUtc);
         }
 
         // ── LA BALA DE PLATA: ESTADÍSTICAS GLOBALES PRE-CALCULADAS ──
@@ -708,6 +817,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                 subtotal = o.Subtotal,
                 envio = o.ShippingCost,
                 total = o.Total,
+                descuento = o.DiscountAmount,
                 pagado = o.AmountPaid,
                 saldo = o.BalanceDue,
                 items = o.Items.Count,
@@ -757,6 +867,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                     subtotal = x.Order.Subtotal,
                     envio = x.Order.ShippingCost,
                     total = x.Order.Total,
+                    descuento = x.Order.DiscountAmount,
                     pagado = x.Order.AmountPaid,
                     saldo = x.Order.BalanceDue,
                     items = x.Order.Items?.Count ?? 0,
@@ -798,8 +909,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             saldo    = order.BalanceDue,
             creado   = order.CreatedAt.ToString("dd/MM/yyyy HH:mm"),
             expira   = order.ExpiresAt.ToString("dd/MM/yyyy"),
-            items    = order.Items.Select(i => new { i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal }),
-            pagos    = order.Payments.Select(p => new { p.Amount, p.Method, fecha = p.Date.ToString("dd/MM/yyyy"), p.Notes })
+            items    = order.Items?.Select(i => new { i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal }),
+            pagos    = order.Payments?.Select(p => new { p.Amount, p.Method, p.Date, p.Notes }),
+            descuento = order.DiscountAmount
         });
     }
 
@@ -993,12 +1105,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             .Where(e => e.Date >= startUtc && e.Date <= endUtc)
             .SumAsync(e => (decimal?)e.Amount) ?? 0;
 
-        // --- MAGIA: CALCULAMOS LA DEUDA HISTÓRICA REAL SIEMPRE ---
-        var ordenesActivas = await _db.Orders
-            .Include(o => o.Payments)
+        // --- CALCULAMOS LA DEUDA HISTÓRICA REAL DIRECTO EN SQL ---
+        var deudaGlobalReal = await _db.Orders
             .Where(o => o.Status == OrderStatus.Pending || o.Status == OrderStatus.Confirmed || o.Status == OrderStatus.InRoute)
-            .ToListAsync();
-        var deudaGlobalReal = ordenesActivas.Sum(o => o.BalanceDue);
+            .SumAsync(o => (decimal?)(o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment)) ?? 0;
 
         return ToJson(new
         {
@@ -1533,8 +1643,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             return ToJson(new { error = $"No encontré el pedido #{pedidoId}." });
 
         var totalAnterior = order.Total;
-        var diferencia = nuevoTotal - order.Total;
-        order.Subtotal += diferencia;
+        var diferencia = nuevoTotal - totalAnterior;
+        // Recalculamos Subtotal conservando el costo de envío intacto; Total se fija al valor solicitado
+        order.Total    = nuevoTotal;
+        order.Subtotal = Math.Max(0, nuevoTotal - order.ShippingCost);
         await _db.SaveChangesAsync();
 
         return ToJson(new
@@ -1631,6 +1743,203 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             cobrado,
             pendientePorCobrar = pendiente,
             topClientes
+        });
+    }
+
+    private async Task<JsonElement> EditarItemPedidoAsync(JsonElement? args)
+    {
+        var itemId   = GetInt(args, "item_id");
+        var producto = GetStr(args, "producto");
+        var cantidad = args.HasValue && args.Value.TryGetProperty("cantidad", out var cEl) && cEl.TryGetInt32(out int c) ? (int?)c : null;
+        var precio   = args.HasValue && args.Value.TryGetProperty("precio",   out var pEl) && pEl.TryGetDecimal(out decimal p) ? (decimal?)p : null;
+
+        if (itemId == 0)
+            return ToJson(new { error = "item_id es obligatorio." });
+        if (producto == null && cantidad == null && precio == null)
+            return ToJson(new { error = "Debes indicar al menos un campo a cambiar: producto, cantidad o precio." });
+
+        var item = await _db.OrderItems
+            .Include(i => i.Order)
+            .FirstOrDefaultAsync(i => i.Id == itemId);
+
+        if (item == null)
+            return ToJson(new { error = $"No encontré el ítem con ID {itemId}." });
+
+        if (producto != null) item.ProductName = producto;
+        if (cantidad != null) item.Quantity    = cantidad.Value;
+        if (precio   != null) item.UnitPrice   = precio.Value;
+        item.LineTotal = item.UnitPrice * item.Quantity;
+
+        // Guardamos el ítem y luego recalculamos el total del pedido desde la BD
+        await _db.SaveChangesAsync();
+
+        var order = item.Order;
+        var sumaItems = await _db.OrderItems.Where(i => i.OrderId == order.Id).SumAsync(i => (decimal?)i.LineTotal) ?? 0;
+        order.Subtotal = sumaItems;
+        order.Total    = order.Subtotal + order.ShippingCost;
+        await _db.SaveChangesAsync();
+
+        return ToJson(new
+        {
+            mensaje    = $"Ítem #{itemId} actualizado en pedido #{order.Id}.",
+            nuevoTotal = order.Total,
+            lineTotal  = item.LineTotal
+        });
+    }
+
+    private async Task<JsonElement> EliminarItemPedidoAsync(JsonElement? args)
+    {
+        var itemId = GetInt(args, "item_id");
+        if (itemId == 0)
+            return ToJson(new { error = "item_id es obligatorio." });
+
+        var item = await _db.OrderItems
+            .Include(i => i.Order)
+            .FirstOrDefaultAsync(i => i.Id == itemId);
+
+        if (item == null)
+            return ToJson(new { error = $"No encontré el ítem con ID {itemId}." });
+
+        var order = item.Order;
+        var pedidoId = order.Id;
+        var nombreProducto = item.ProductName;
+
+        _db.OrderItems.Remove(item);
+        await _db.SaveChangesAsync();
+
+        // Recalcular totales después de eliminar
+        var itemsRestantes = await _db.OrderItems.Where(i => i.OrderId == pedidoId).ToListAsync();
+        if (itemsRestantes.Count == 0)
+            return ToJson(new { advertencia = $"Se eliminó '{nombreProducto}' y el pedido #{pedidoId} quedó sin ítems. Considera cancelarlo." });
+
+        order.Subtotal = itemsRestantes.Sum(i => i.LineTotal);
+        order.Total    = order.Subtotal + order.ShippingCost;
+        await _db.SaveChangesAsync();
+
+        return ToJson(new
+        {
+            mensaje    = $"Producto '{nombreProducto}' eliminado del pedido #{pedidoId}.",
+            nuevoTotal = order.Total,
+            itemsRestantes = itemsRestantes.Count
+        });
+    }
+
+    private async Task<JsonElement> ActualizarClientaAsync(JsonElement? args)
+    {
+        var clientaId = GetInt(args, "clienta_id");
+        if (clientaId == 0)
+            return ToJson(new { error = "clienta_id es obligatorio." });
+
+        var client = await _db.Clients.FindAsync(clientaId);
+        if (client == null)
+            return ToJson(new { error = $"No encontré la clienta con ID {clientaId}." });
+
+        var cambios = new List<string>();
+
+        var telefono = GetStr(args, "telefono");
+        if (telefono != null) { client.Phone = telefono; cambios.Add("teléfono"); }
+
+        var direccion = GetStr(args, "direccion");
+        if (direccion != null) { client.Address = direccion; cambios.Add("dirección"); }
+
+        var tipo = GetStr(args, "tipo");
+        if (tipo != null && new[] { "Nueva", "Frecuente", "VIP" }.Contains(tipo, StringComparer.OrdinalIgnoreCase))
+        {
+            client.Type = tipo;
+            cambios.Add("tipo de clienta");
+        }
+        else if (tipo != null)
+            return ToJson(new { error = $"Tipo inválido '{tipo}'. Usa: Nueva, Frecuente o VIP." });
+
+        var tagStr = GetStr(args, "tag");
+        if (tagStr != null)
+        {
+            if (Enum.TryParse<ClientTag>(tagStr, ignoreCase: true, out var tag))
+            {
+                client.Tag = tag;
+                cambios.Add("etiqueta");
+            }
+            else
+                return ToJson(new { error = $"Etiqueta inválida '{tagStr}'. Usa: None, RisingStar, Vip o Blacklist." });
+        }
+
+        var instrucciones = GetStr(args, "instrucciones_entrega");
+        if (instrucciones != null) { client.DeliveryInstructions = instrucciones; cambios.Add("instrucciones de entrega"); }
+
+        if (cambios.Count == 0)
+            return ToJson(new { error = "No se proporcionó ningún campo a actualizar." });
+
+        await _db.SaveChangesAsync();
+        return ToJson(new
+        {
+            mensaje   = $"Clienta '{client.Name}' actualizada: {string.Join(", ", cambios)}.",
+            clientaId = client.Id,
+            nombre    = client.Name,
+            telefono  = client.Phone,
+            direccion = client.Address,
+            tipo      = client.Type,
+            tag       = client.Tag.ToString()
+        });
+    }
+
+    private async Task<JsonElement> RegistrarInversionAsync(JsonElement? args)
+    {
+        var proveedorId = GetInt(args, "proveedor_id");
+        var monto       = GetDecimal(args, "monto", 0);
+        var moneda      = GetStr(args, "moneda") ?? "MXN";
+        var tipoCambio  = GetDecimal(args, "tipo_cambio", 1);
+        var notas       = GetStr(args, "notas");
+        var fechaStr    = GetStr(args, "fecha");
+
+        if (proveedorId == 0)
+            return ToJson(new { error = "proveedor_id es obligatorio." });
+        if (monto <= 0)
+            return ToJson(new { error = "El monto debe ser mayor a cero." });
+
+        var proveedor = await _db.Suppliers.FindAsync(proveedorId);
+        if (proveedor == null)
+            return ToJson(new { error = $"No encontré el proveedor con ID {proveedorId}." });
+
+        // Si es USD y no dieron tipo de cambio, rechazamos para no guardar dato incorrecto
+        if (moneda.Equals("USD", StringComparison.OrdinalIgnoreCase) && tipoCambio <= 1)
+            return ToJson(new { error = "Para inversiones en USD debes indicar el tipo_cambio actual. Ejemplo: 17.5 (1 USD = 17.50 MXN)." });
+
+        var mxZone = BackendExtensions.GetMexicoZone();
+        DateTime fecha;
+        if (DateTime.TryParse(fechaStr, out var fechaLocal))
+            fecha = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(fechaLocal.Date, DateTimeKind.Unspecified), mxZone);
+        else
+            fecha = DateTime.UtcNow;
+
+        var activePeriodId = (await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive))?.Id;
+
+        var inversion = new Investment
+        {
+            SupplierId    = proveedorId,
+            Amount        = monto,
+            Currency      = moneda.ToUpper(),
+            ExchangeRate  = moneda.Equals("USD", StringComparison.OrdinalIgnoreCase) ? tipoCambio : 1m,
+            Notes         = notas,
+            Date          = fecha,
+            CreatedAt     = DateTime.UtcNow,
+            SalesPeriodId = activePeriodId
+        };
+
+        _db.Investments.Add(inversion);
+        await _db.SaveChangesAsync();
+
+        var montoMxn = moneda.Equals("USD", StringComparison.OrdinalIgnoreCase) ? monto * tipoCambio : monto;
+
+        return ToJson(new
+        {
+            mensaje      = $"Inversión registrada: ${monto:F2} {moneda.ToUpper()} a {proveedor.Name}." +
+                           (moneda.Equals("USD", StringComparison.OrdinalIgnoreCase) ? $" Equivale a ${montoMxn:F2} MXN." : ""),
+            inversionId  = inversion.Id,
+            proveedor    = proveedor.Name,
+            monto,
+            moneda       = moneda.ToUpper(),
+            montoMxn,
+            periodoId    = activePeriodId
         });
     }
 

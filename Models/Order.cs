@@ -32,6 +32,9 @@ public class Order
     [Column(TypeName = "decimal(10,2)")]
     public decimal Total { get; set; }
 
+    [Column(TypeName = "decimal(10,2)")]
+    public decimal DiscountAmount { get; set; } = 0m;
+
     [Required, MaxLength(64)]
     public string AccessToken { get; set; } = string.Empty;
 

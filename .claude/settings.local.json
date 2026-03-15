@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(dotnet build:*)",
+      "Bash(powershell -Command \"Set-Location 'C:\\\\Codigos\\\\api\\\\EntregasApi'; dotnet build 2>&1 | Out-String\")",
+      "Bash(cmd /c \"dotnet build 2>&1\")",
+      "Bash(find:*)",
+      "Bash(dir:*)"
+    ]
+  }
+}

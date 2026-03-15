@@ -151,7 +151,7 @@ public class ExcelService : IExcelService
 
             decimal subtotal = orderToProcess.Items.Sum(i => i.LineTotal);
             orderToProcess.Subtotal = subtotal;
-            orderToProcess.Total = subtotal + orderToProcess.ShippingCost;
+            orderToProcess.Total = Math.Max(0, subtotal + orderToProcess.ShippingCost - orderToProcess.DiscountAmount);
 
             await _db.SaveChangesAsync();
 
@@ -287,7 +287,8 @@ public class ExcelService : IExcelService
             ClientId: client?.Id,
             Tags: tags,
             ClientPoints: client?.CurrentPoints ?? 0,
-            DeliveryInstructions: order.DeliveryInstructions ?? client?.DeliveryInstructions
+            DeliveryInstructions: order.DeliveryInstructions ?? client?.DeliveryInstructions,
+            DiscountAmount: order.DiscountAmount
         );
     }
 }

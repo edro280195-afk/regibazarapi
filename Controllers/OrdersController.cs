@@ -34,6 +34,25 @@ public class OrdersController : ControllerBase
         FrontendUrl = config["App:FrontendUrl"] ?? "https://regibazar.com";
     }
 
+    [HttpPost("{id}/apply-birthday-discount")]
+    public async Task<ActionResult<OrderSummaryDto>> ApplyBirthdayDiscount(int id)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Pedido no encontrado 😿");
+
+        order.DiscountAmount = 200m;
+        order.Total = Math.Max(0, order.Subtotal + order.ShippingCost - order.DiscountAmount);
+
+        await _db.SaveChangesAsync();
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
     // ---------------------------------------------------------
     // AI LIVE PARSING
     // ---------------------------------------------------------
@@ -309,7 +328,7 @@ public class OrdersController : ControllerBase
 
             // Recalculamos totales sumando lo viejo + lo nuevo
             existingOrder.Subtotal = existingOrder.Items.Sum(i => i.LineTotal);
-            existingOrder.Total = existingOrder.Subtotal + existingOrder.ShippingCost;
+            existingOrder.Total = Math.Max(0, existingOrder.Subtotal + existingOrder.ShippingCost - existingOrder.DiscountAmount);
 
             // Actualizamos fecha para que suba en la lista (opcional, para que se vea reciente)
             existingOrder.CreatedAt = DateTime.UtcNow;
@@ -373,7 +392,7 @@ public class OrdersController : ControllerBase
             }
 
             newOrder.Subtotal = newOrder.Items.Sum(i => i.LineTotal);
-            newOrder.Total = newOrder.Subtotal + newOrder.ShippingCost;
+            newOrder.Total = Math.Max(0, newOrder.Subtotal + newOrder.ShippingCost - newOrder.DiscountAmount);
 
             _db.Orders.Add(newOrder);
             existingOrder = newOrder; // Referencia para el return
@@ -441,7 +460,7 @@ public class OrdersController : ControllerBase
         if (order.Items.Any())
         {
             order.Subtotal = order.Items.Sum(i => i.LineTotal);
-            order.Total = order.Subtotal + order.ShippingCost;
+            order.Total = Math.Max(0, order.Subtotal + order.ShippingCost - order.DiscountAmount);
         }
         else
         {
@@ -794,6 +813,7 @@ public class OrdersController : ControllerBase
                     // Ensure the fee is applied when switching to Delivery
                     order.ShippingCost = settings.DefaultShippingCost; 
                 }
+                order.Total = Math.Max(0, order.Subtotal + order.ShippingCost - order.DiscountAmount);
             }
         }
 

@@ -59,8 +59,10 @@ public record OrderSummaryDto(
     List<string>? Tags = null,
     // Loyalty
     int ClientPoints = 0,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    decimal DiscountAmount = 0m
 );
+
 
 public record ClientDto(
     int Id,
