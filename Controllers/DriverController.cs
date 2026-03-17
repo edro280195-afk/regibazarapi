@@ -226,9 +226,12 @@ public class DriverController : ControllerBase
         route.LastLocationUpdate = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
-        // Notificar al Admin en tiempo real
-        await _hub.Clients.Group($"Route_{driverToken}")
-             .SendAsync("ReceiveLocation", route.Id, req.Latitude, req.Longitude);
+        // Notificar al Admin y a las Clientas de esta ruta en tiempo real (solo a los de esta ruta)
+        await _hub.Clients.Group("Admins")
+             .SendAsync("ReceiveLocation", driverToken, req.Latitude, req.Longitude);
+        
+        await _hub.Clients.Group($"Tracking_{driverToken}")
+             .SendAsync("LocationUpdate", new { latitude = req.Latitude, longitude = req.Longitude });
 
         return Ok();
     }

@@ -125,19 +125,72 @@ public class RoutesController : ControllerBase
         }
     }
 
-    /// <summary>GET /api/routes - Listar rutas</summary>
+    /// <summary>GET /api/routes - Listar rutas optimizado</summary>
     [HttpGet]
     public async Task<ActionResult<List<RouteDto>>> GetAll()
     {
-        var routeIds = await _db.DeliveryRoutes
+        // 1. Traer las últimas 50 rutas con sus relaciones principales en una sola consulta
+        var routes = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Payments)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Items)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Evidences)
             .OrderByDescending(r => r.CreatedAt)
-            .Take(50) // Limitamos a 50 para optimizar
-            .Select(r => r.Id)
+            .Take(50)
             .ToListAsync();
 
-        var result = new List<RouteDto>();
-        foreach (var id in routeIds)
-            result.Add(await MapRouteDto(id));
+        // 2. Traer todos los gastos de estas rutas de golpe
+        var routeIds = routes.Select(r => r.Id).ToList();
+        var allExpenses = await _db.DriverExpenses
+            .Where(e => routeIds.Contains(e.DeliveryRouteId))
+            .ToListAsync();
+
+        // 3. Mapear a DTOs en memoria sin más llamadas a DB
+        var result = routes.Select(route => new RouteDto(
+            Id: route.Id,
+            DriverToken: route.DriverToken,
+            DriverLink: $"{FrontendUrl}/repartidor/{route.DriverToken}",
+            Status: route.Status.ToString(),
+            CreatedAt: route.CreatedAt,
+            StartedAt: route.StartedAt,
+            Deliveries: route.Deliveries.OrderBy(d => d.SortOrder).Select(d => new RouteDeliveryDto(
+                DeliveryId: d.Id,
+                OrderId: d.OrderId,
+                SortOrder: d.SortOrder,
+                ClientName: d.Order.Client.Name,
+                ClientAddress: d.Order.Client.Address,
+                Latitude: d.Order.Client.Latitude,
+                Longitude: d.Order.Client.Longitude,
+                Status: d.Status.ToString(),
+                Total: d.Order.Total,
+                DeliveredAt: d.DeliveredAt,
+                Notes: d.Notes,
+                FailureReason: d.FailureReason,
+                EvidenceUrls: d.Evidences.Select(e => e.ImagePath).ToList(),
+                ClientPhone: d.Order.Client.Phone,
+                PaymentMethod: d.Order.PaymentMethod,
+                Payments: (d.Order.Payments ?? new List<OrderPayment>())
+                    .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+                Items: (d.Order.Items ?? new List<OrderItem>())
+                    .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
+                AmountPaid: d.Order.AmountPaid,
+                BalanceDue: d.Order.BalanceDue,
+                DeliveryInstructions: d.Order.Client.DeliveryInstructions
+            )).ToList(),
+            Expenses: allExpenses
+                .Where(e => e.DeliveryRouteId == route.Id)
+                .Select(e => new DriverExpenseDto(
+                    e.Id,
+                    e.DeliveryRouteId,
+                    null,
+                    e.Amount,
+                    e.ExpenseType,
+                    e.Date,
+                    e.Notes,
+                    e.EvidencePath,
+                    e.CreatedAt
+                )).ToList()
+        )).ToList();
 
         return Ok(result);
     }
