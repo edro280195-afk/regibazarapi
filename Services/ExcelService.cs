@@ -16,11 +16,13 @@ public class ExcelService : IExcelService
 {
     private readonly AppDbContext _db;
     private readonly ITokenService _tokenService;
+    private readonly IOrderService _orderService;
 
-    public ExcelService(AppDbContext db, ITokenService tokenService)
+    public ExcelService(AppDbContext db, ITokenService tokenService, IOrderService orderService)
     {
         _db = db;
         _tokenService = tokenService;
+        _orderService = orderService;
     }
 
     public async Task<ExcelUploadResult> ProcessExcelAsync(Stream fileStream, string frontendBaseUrl)
@@ -105,7 +107,12 @@ public class ExcelService : IExcelService
             }
             else if (!string.IsNullOrEmpty(clientType))
             {
-                client.Type = clientType;
+                if (client.Type != clientType)
+                {
+                    client.Type = clientType;
+                    // Sincronizar pedidos pendientes si el tipo cambió
+                    await _orderService.SyncOrderExpirationsAsync(client.Id);
+                }
             }
 
             var orderToProcess = await _db.Orders
@@ -121,7 +128,7 @@ public class ExcelService : IExcelService
                     ClientId = client.Id,
                     AccessToken = accessToken,
                     ShippingCost = (orderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
-                    ExpiresAt = DateTime.UtcNow.AddHours(settings.LinkExpirationHours),
+                    ExpiresAt = _orderService.CalculateExpiration(client.Type, DateTime.UtcNow),
                     Status = Models.OrderStatus.Pending,
                     OrderType = orderType,
                     Items = new List<OrderItem>()

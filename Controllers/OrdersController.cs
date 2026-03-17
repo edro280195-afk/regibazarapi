@@ -19,11 +19,12 @@ public class OrdersController : ControllerBase
     private readonly IConfiguration _config;
     private readonly IPushNotificationService _pushService;
     private readonly IGeminiService _geminiService;
+    private readonly IOrderService _orderService;
     private readonly string FrontendUrl;
 
     public OrdersController(AppDbContext db, IExcelService excelService,
         ITokenService tokenService, IConfiguration config, IPushNotificationService pushService,
-        IGeminiService geminiService)
+        IGeminiService geminiService, IOrderService orderService)
     {
         _db = db;
         _excelService = excelService;
@@ -31,6 +32,7 @@ public class OrdersController : ControllerBase
         _config = config;
         _pushService = pushService;
         _geminiService = geminiService;
+        _orderService = orderService;
         FrontendUrl = config["App:FrontendUrl"] ?? "https://regibazar.com";
     }
 
@@ -112,7 +114,7 @@ public class OrdersController : ControllerBase
         [FromQuery] int pageSize = 50,
         [FromQuery] string search = "",
         [FromQuery] string status = "",
-        [FromQuery] string clientType = "",
+        [FromQuery] string type = "",
         [FromQuery] DateTime? dateFrom = null,
         [FromQuery] DateTime? dateTo = null,
         [FromQuery] int? clientId = null,
@@ -138,9 +140,9 @@ public class OrdersController : ControllerBase
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(clientType))
+        if (!string.IsNullOrWhiteSpace(type))
         {
-            query = query.Where(o => o.Client != null && o.Client.Type == clientType);
+            query = query.Where(o => o.Client != null && o.Client.Type == type);
         }
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -281,7 +283,7 @@ public class OrdersController : ControllerBase
                 Name = req.ClientName.Trim(),
                 Phone = req.ClientPhone,
                 Address = req.ClientAddress,
-                Type = req.ClientType ?? "Nueva",
+                Type = req.Type ?? "Nueva",
                 CreatedAt = DateTime.UtcNow
             };
             _db.Clients.Add(client);
@@ -289,10 +291,19 @@ public class OrdersController : ControllerBase
         }
         else
         {
+            // Detectamos si cambió el tipo ANTES de actualizar
+            bool typeChanged = !string.IsNullOrEmpty(req.Type) && client.Type != req.Type;
+
             // Actualizamos datos de contacto si vienen nuevos
             if (!string.IsNullOrEmpty(req.ClientPhone)) client.Phone = req.ClientPhone;
             if (!string.IsNullOrEmpty(req.ClientAddress)) client.Address = req.ClientAddress;
-            if (!string.IsNullOrEmpty(req.ClientType)) client.Type = req.ClientType;
+            if (!string.IsNullOrEmpty(req.Type)) client.Type = req.Type;
+
+            // Si el tipo cambió, sincronizamos las caducidades
+            if (typeChanged)
+            {
+                await _orderService.SyncOrderExpirationsAsync(client.Id);
+            }
         }
 
         // 2. BUSCAMOS SI YA TIENE UN PEDIDO ABIERTO (PENDIENTE) 🕵️‍♂️
@@ -332,6 +343,7 @@ public class OrdersController : ControllerBase
 
             // Actualizamos fecha para que suba en la lista (opcional, para que se vea reciente)
             existingOrder.CreatedAt = DateTime.UtcNow;
+            existingOrder.ExpiresAt = _orderService.CalculateExpiration(client.Type, existingOrder.CreatedAt);
         }
         else
         {
@@ -339,30 +351,7 @@ public class OrdersController : ControllerBase
             // No tiene pendientes, creamos uno nuevo.
 
             var accessToken = _tokenService.GenerateAccessToken();
-            // 1. Obtenemos la hora real en Nuevo Laredo (Monterrey)
-            var mexicoZone = TimeZoneInfo.FindSystemTimeZoneById("America/Monterrey");
-            var mexicoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, mexicoZone);
-
-            // 2. Calculamos los días que faltan para el próximo Lunes a las 00:00:00
-            // En C#, DayOfWeek: Domingo=0, Lunes=1... Sabado=6
-            int daysUntilMonday = (8 - (int)mexicoTime.DayOfWeek) % 7;
-            if (daysUntilMonday == 0)
-            {
-                // Si el pedido se está haciendo en Lunes, la caducidad es el LUNES QUE SIGUE (en 7 días)
-                daysUntilMonday = 7;
-            }
-
-            // 3. Establecemos la fecha base (Próximo lunes a la medianoche exacta 00:00:00)
-            DateTime localExpiration = mexicoTime.Date.AddDays(daysUntilMonday);
-
-            // 4. Regla de negocio: Si es frecuente, le regalamos otra semana entera (hasta el 2do domingo)
-            if (client.Type == "Frecuente")
-            {
-                localExpiration = localExpiration.AddDays(7);
-            }
-
-            // 5. Regresamos la fecha a UTC para que PostgreSQL sea feliz
-            DateTime expirationUtc = TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone);
+            var expirationUtc = _orderService.CalculateExpiration(client.Type, DateTime.UtcNow);
 
             // 6. Creamos la orden con la fecha calculada
             var newOrder = new Order
@@ -839,7 +828,13 @@ public class OrdersController : ControllerBase
 
                     order.Client.CurrentPoints += puntosCalculados;
                     order.Client.LifetimePoints += puntosCalculados;
-                    order.Client.Type = "Frecuente";
+
+                    // Si la clienta era Nueva, la promovemos a Frecuente y sincronizamos caducidades
+                    if (order.Client.Type != "Frecuente")
+                    {
+                        order.Client.Type = "Frecuente";
+                        await _orderService.SyncOrderExpirationsAsync(order.Client.Id);
+                    }
                 }
             }
             // CASO B: Estaba Entregado y lo regresaron a Pendiente/Cancelado (- PUNTOS)
@@ -918,10 +913,18 @@ public class OrdersController : ControllerBase
         // Actualizamos datos del Cliente
         if (order.Client != null)
         {
+            bool typeChanged = !string.IsNullOrEmpty(req.Type) && order.Client.Type != req.Type;
+
             order.Client.Name = req.ClientName;
             order.Client.Address = req.ClientAddress;
             order.Client.Phone = req.ClientPhone;
-            if (!string.IsNullOrEmpty(req.ClientType)) order.Client.Type = req.ClientType; // Added
+            if (!string.IsNullOrEmpty(req.Type)) order.Client.Type = req.Type;
+
+            // Si el tipo cambió, sincronizamos las caducidades de todos sus pedidos pendientes
+            if (typeChanged)
+            {
+                await _orderService.SyncOrderExpirationsAsync(order.Client.Id);
+            }
         }
 
         var settings = await _db.AppSettings.FirstAsync();

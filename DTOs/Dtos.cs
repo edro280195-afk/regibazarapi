@@ -33,7 +33,7 @@ public record OrderSummaryDto(
     int ItemsCount,
     string OrderType,
     DateTime CreatedAt,
-    string ClientType,
+    string Type,
 
     string? ClientPhone,
     string? ClientAddress,
@@ -72,7 +72,7 @@ public record ClientDto(
     string Tag,
     int OrdersCount,
     decimal TotalSpent,
-    string ClientType,
+    string Type,
     string? DeliveryInstructions = null
 );
 
@@ -85,7 +85,7 @@ public record OrderTrackingDto(
     string OrderType,
     List<OrderItemDto> Items,
     DateTime CreatedAt,
-    string ClientType
+    string Type
 );
 
 public record OrderItemDto(
@@ -100,7 +100,7 @@ public record ManualOrderRequest(
     string ClientName,
     string? ClientPhone,
     string? ClientAddress,
-    string? ClientType,
+    string? Type,
     string OrderType,
     List<ManualOrderItem> Items,
     DateTime? PostponedAt = null,
@@ -202,14 +202,16 @@ public record ClientOrderView(
     double? ClientLatitude = null,
     double? ClientLongitude = null,   
     DateTime? CreatedAt = null,
-    string? ClientType = null,
+    string? Type = null,
     string? ClientAddress = null,
     decimal AdvancePayment = 0m,
     List<OrderPaymentDto>? Payments = null,
     decimal AmountPaid = 0m,
     decimal BalanceDue = 0m,
     int ClientPoints = 0,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    DateTime? ExpiresAt = null,
+    DateTime? ScheduledDeliveryDate = null
 );
 
 // ── OrderPayment ──
@@ -538,7 +540,7 @@ public record UpdateOrderDetailsRequest(
     string ClientName,
     string? ClientAddress,
     string? ClientPhone,
-    string? ClientType, // Added
+    string? Type, // Added
     List<string>? Tags,
     string? DeliveryTime,
     string? PickupDate,

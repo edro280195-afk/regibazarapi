@@ -24,6 +24,7 @@ public class CamiService : ICamiService
     private readonly IRouteOptimizerService _optimizer;
     private readonly IGoogleTtsService _tts;
     private readonly IConfiguration _config;
+    private readonly IOrderService _orderService;
 
     private const string MODEL = "gemini-2.5-flash";
 
@@ -451,13 +452,14 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         }
     };
 
-    public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger, IRouteOptimizerService optimizer, IGoogleTtsService tts)
+    public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger, IRouteOptimizerService optimizer, IGoogleTtsService tts, IOrderService orderService)
     {
         _db = db;
         _config = config;
         _logger = logger;
         _optimizer = optimizer;
         _tts = tts;
+        _orderService = orderService;
         var apiKey = config["Gemini:ApiKey"];
         if (string.IsNullOrEmpty(apiKey))
             throw new InvalidOperationException("Falta Gemini:ApiKey en appsettings.json");
@@ -1245,6 +1247,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             existing.Subtotal  = existing.Items.Sum(i => i.LineTotal);
             existing.Total     = existing.Subtotal + existing.ShippingCost;
             existing.CreatedAt = DateTime.UtcNow;
+
+            // Al fusionar y actualizar CreatedAt, recalculamos la caducidad según el tipo actual
+            await _orderService.SyncOrderExpirationsAsync(client.Id);
+
             await _db.SaveChangesAsync();
             return ToJson(new
             {
@@ -1256,13 +1262,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         }
 
         // NUEVO PEDIDO
-        var mexicoZone = BackendExtensions.GetMexicoZone();
-        var mexicoTime = BackendExtensions.GetMexicoNow();
-        int daysUntilMonday = (8 - (int)mexicoTime.DayOfWeek) % 7;
-        if (daysUntilMonday == 0) daysUntilMonday = 7;
-        var localExpiration = mexicoTime.Date.AddDays(daysUntilMonday);
-        if (client.Type == "Frecuente") localExpiration = localExpiration.AddDays(7);
-        var expirationUtc = TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone);
+        var expirationUtc = _orderService.CalculateExpiration(client.Type, DateTime.UtcNow);
 
         var shippingCost = costoEnvioRaw >= 0 ? costoEnvioRaw
             : (orderType == OrderType.PickUp ? 0m : settings.DefaultShippingCost);
@@ -1381,10 +1381,16 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             _db.LoyaltyTransactions.Add(new LoyaltyTransaction
             {
                 ClientId = order.ClientId,
-                Points   = puntosCalculados,
                 Reason   = $"Pedido #{order.Id} entregada",
                 Date     = DateTime.UtcNow
             });
+
+            // Promoción automática a Frecuente (consistente con OrdersController)
+            if (order.Client != null && order.Client.Type != "Frecuente")
+            {
+                order.Client.Type = "Frecuente";
+                await _orderService.SyncOrderExpirationsAsync(order.Client.Id);
+            }
         }
         else if (estadoAnterior == OrderStatus.Delivered && nuevoEstado != OrderStatus.Delivered)
         {
@@ -1845,8 +1851,12 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         var tipo = GetStr(args, "tipo");
         if (tipo != null && new[] { "Nueva", "Frecuente", "VIP" }.Contains(tipo, StringComparer.OrdinalIgnoreCase))
         {
-            client.Type = tipo;
-            cambios.Add("tipo de clienta");
+            if (client.Type != tipo)
+            {
+                client.Type = tipo;
+                cambios.Add("tipo de clienta");
+                await _orderService.SyncOrderExpirationsAsync(client.Id);
+            }
         }
         else if (tipo != null)
             return ToJson(new { error = $"Tipo inválido '{tipo}'. Usa: Nueva, Frecuente o VIP." });

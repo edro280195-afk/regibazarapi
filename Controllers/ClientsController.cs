@@ -1,6 +1,7 @@
 using EntregasApi.Data;
 using EntregasApi.DTOs;
 using EntregasApi.Models;
+using EntregasApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,8 +23,13 @@ public record UpdateClientRequest(
 public class ClientsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IOrderService _orderService;
 
-    public ClientsController(AppDbContext db) => _db = db;
+    public ClientsController(AppDbContext db, IOrderService orderService)
+    {
+        _db = db;
+        _orderService = orderService;
+    }
 
     [HttpGet]
     public async Task<ActionResult<List<ClientDto>>> GetAll()
@@ -110,40 +116,11 @@ public class ClientsController : ControllerBase
         // 3. 🚀 MAGIA: Si el tipo cambió, recalculamos las caducidades pendientes
         if (typeChanged)
         {
-            var pendingOrders = await _db.Orders
-                .Where(o => o.ClientId == id && o.Status == Models.OrderStatus.Pending)
-                .ToListAsync();
-
-            if (pendingOrders.Any())
-            {
-                var mexicoZone = TimeZoneInfo.FindSystemTimeZoneById("America/Monterrey");
-
-                foreach (var order in pendingOrders)
-                {
-                    // Convertimos la fecha en la que SE CREÓ el pedido a hora de Nuevo Laredo
-                    var orderCreationMexicoTime = TimeZoneInfo.ConvertTimeFromUtc(order.CreatedAt, mexicoZone);
-
-                    // Calculamos cuántos días faltaban para su primer lunes
-                    int daysUntilMonday = (8 - (int)orderCreationMexicoTime.DayOfWeek) % 7;
-                    if (daysUntilMonday == 0) daysUntilMonday = 7;
-
-                    // Fecha base: El primer Lunes a las 00:00:00 desde que se creó el pedido
-                    DateTime localExpiration = orderCreationMexicoTime.Date.AddDays(daysUntilMonday);
-
-                    // Si la ascendieron a Frecuente, le sumamos 7 días a esa base
-                    if (req.Type == "Frecuente")
-                    {
-                        localExpiration = localExpiration.AddDays(7);
-                    }
-
-                    // Guardamos la nueva caducidad en la base de datos (en formato UTC)
-                    order.ExpiresAt = TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone);
-                }
-            }
+            await _orderService.SyncOrderExpirationsAsync(id);
         }
 
         await _db.SaveChangesAsync();
-        return Ok(client);
+        return NoContent();
     }
 
     [HttpDelete("{id}")]

@@ -233,6 +233,28 @@ public class DriverController : ControllerBase
         return Ok();
     }
 
+    [HttpPost("delivery/{deliveryId}/coordinates")]
+    public async Task<IActionResult> SetDeliveryCoordinates(string driverToken, int deliveryId, [FromBody] UpdateLocationRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound("Ruta no encontrada.");
+
+        var delivery = await _db.Deliveries
+            .Include(d => d.Order)
+                .ThenInclude(o => o.Client)
+            .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
+
+        if (delivery == null || delivery.Order.Client == null)
+            return NotFound("Entrega o cliente no encontrado.");
+
+        delivery.Order.Client.Latitude = req.Latitude;
+        delivery.Order.Client.Longitude = req.Longitude;
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "Coordenadas actualizadas correctamente." });
+    }
+
     [HttpPost("deliver/{deliveryId}")]
     public async Task<IActionResult> MarkDelivered(string driverToken, int deliveryId,
         [FromForm] CompleteDeliveryRequest req, [FromForm] List<IFormFile>? photos)

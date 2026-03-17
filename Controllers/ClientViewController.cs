@@ -123,13 +123,16 @@ public class ClientViewController : ControllerBase
             ClientLongitude: order.Client?.Longitude,
             ClientAddress: order.Client?.Address,
             CreatedAt: order.CreatedAt,
-            ClientType: finalType,
+            Type: finalType,
             AdvancePayment: order.AdvancePayment,
             Payments: (order.Payments ?? new List<OrderPayment>())
                 .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
             AmountPaid: order.AmountPaid,
             BalanceDue: order.BalanceDue,
-            ClientPoints: order.Client?.CurrentPoints ?? 0
+            ClientPoints: order.Client?.CurrentPoints ?? 0,
+            DeliveryInstructions: order.DeliveryInstructions,
+            ExpiresAt: order.ExpiresAt,
+            ScheduledDeliveryDate: order.ExpiresAt.AddDays(-1)
         ));
     }
 
