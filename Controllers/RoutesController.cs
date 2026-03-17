@@ -142,7 +142,7 @@ public class RoutesController : ControllerBase
         // 2. Traer todos los gastos de estas rutas de golpe
         var routeIds = routes.Select(r => r.Id).ToList();
         var allExpenses = await _db.DriverExpenses
-            .Where(e => routeIds.Contains(e.DeliveryRouteId))
+            .Where(e => routeIds.Contains((int)e.DeliveryRouteId))
             .ToListAsync();
 
         // 3. Mapear a DTOs en memoria sin más llamadas a DB
