@@ -725,6 +725,17 @@ public class OrdersController : ControllerBase
             ? completedRoutes.Average(r => (r.CompletedAt!.Value - r.StartedAt!.Value).TotalMinutes)
             : 0;
 
+        // Door time (ArrivedAt → DeliveredAt)
+        var deliveriesWithDoorTime = await _db.Deliveries
+            .Where(d => d.Status == DeliveryStatus.Delivered && d.ArrivedAt != null && d.DeliveredAt != null
+                     && d.DeliveredAt >= startDate && d.DeliveredAt < endDateExclusive)
+            .Select(d => new { d.ArrivedAt, d.DeliveredAt })
+            .ToListAsync();
+
+        var avgDoorTime = deliveriesWithDoorTime.Any()
+            ? deliveriesWithDoorTime.Average(d => (d.DeliveredAt!.Value - d.ArrivedAt!.Value).TotalMinutes)
+            : 0;
+
         // ── 8. Comparativa con el periodo anterior ──
         var duration = endDateExclusive - startDate;
         var prevStartDate = startDate - duration;
@@ -774,6 +785,7 @@ public class OrdersController : ControllerBase
             SupplierSummaries: supplierSummaries,
             AvgDeliveryTimeMinutes: Math.Round(avgDeliveryTime, 1),
             AvgRouteTimeMinutes: Math.Round(avgRouteTime, 1),
+            AvgDoorTimeMinutes: Math.Round(avgDoorTime, 1),
             PrevPeriodRevenue: prevPeriodRevenue,
             PrevPeriodOrders: prevPeriodOrders
         ));

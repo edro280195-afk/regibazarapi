@@ -342,6 +342,7 @@ public record ReportDto(
     // Rendimiento
     double AvgDeliveryTimeMinutes = 0,
     double AvgRouteTimeMinutes = 0,
+    double AvgDoorTimeMinutes = 0,
     // Comparativa
     decimal PrevPeriodRevenue = 0,
     int PrevPeriodOrders = 0

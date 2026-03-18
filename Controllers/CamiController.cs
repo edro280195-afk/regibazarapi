@@ -51,28 +51,30 @@ public class CamiController : ControllerBase
 
     /// <summary>Dashboard AI insight — recibe los datos del dashboard y devuelve 2 oraciones.</summary>
     [HttpPost("dashboard-insight")]
-    public async Task<ActionResult<string>> DashboardInsight([FromBody] DashboardInsightRequest data)
+    public async Task<ActionResult<CamiChatResponse>> DashboardInsight([FromBody] DashboardInsightRequest data)
     {
         try
         {
             var insight = await _gemini.GetDashboardInsightAsync(data);
-            return Ok(insight);
+            return Ok(new CamiChatResponse(insight));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error en /cami/dashboard-insight");
-            return Ok("El negocio marcha. Revisa los pedidos pendientes para mantener el flujo.");
+            // DIAGNÓSTICO TEMPORAL: Devolvemos el error real para identificar la falla
+            return Ok(new CamiChatResponse($"Error Dashboard: {ex.Message} (Check model/key)"));
         }
     }
 
     /// <summary>Client profile AI insight — genera narrativa de comportamiento de compra.</summary>
     [HttpGet("client-insight/{clientId}")]
-    public async Task<ActionResult<string>> ClientInsight(int clientId)
+    public async Task<ActionResult<CamiChatResponse>> ClientInsight(int clientId)
     {
         try
         {
             var client = await _db.Clients
                 .Include(c => c.Orders).ThenInclude(o => o.Items)
+                .Include(c => c.Orders).ThenInclude(o => o.Payments) // ✅ Incluimos pagos para saldo exacto
                 .FirstOrDefaultAsync(c => c.Id == clientId);
 
             if (client == null) return NotFound("Cliente no encontrado.");
@@ -118,12 +120,13 @@ public class CamiController : ControllerBase
             };
 
             var insight = await _gemini.GetClientInsightAsync(data);
-            return Ok(insight);
+            return Ok(new CamiChatResponse(insight));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error en /cami/client-insight/{ClientId}", clientId);
-            return Ok("No pude generar el análisis en este momento.");
+            // DIAGNÓSTICO TEMPORAL: Devolvemos el error real para identificar la falla
+            return Ok(new CamiChatResponse($"Error Insight Cli: {ex.Message}. SDK/Auth issue?"));
         }
     }
 

@@ -217,7 +217,7 @@ REGLAS ESTRICTAS:
             var finalPrompt = $"INSTRUCCIÓN POR VOZ:\n\"{request.VoiceCommand}\"\n\nÓRDENES DISPONIBLES:\n{ordersJson}";
 
             // Usamos 1.5-flash (referido como 2.5 por el usuario) por velocidad extrema
-            var response = await _client.Models.GenerateContentAsync("gemini-1.5-flash", finalPrompt, config);
+            var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", finalPrompt, config);
 
             var resultText = response?.Text ?? "{}";
             var cleanJson = resultText.Replace("```json", "").Replace("```", "").Trim();
@@ -249,7 +249,9 @@ Tono: empático, emprendedor, en español mexicano. Sin markdown, sin asteriscos
 Datos: {json}";
 
         var config = new GenerateContentConfig { Temperature = 0.6f };
-        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+        var contents = new List<Content> { new Content { Role = "user", Parts = new List<Part> { new Part { Text = prompt } } } };
+        
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", contents, config);
         return response.Text?.Trim() ?? "El negocio marcha bien. Revisa los pedidos pendientes para mantener el flujo.";
     }
 
@@ -262,7 +264,9 @@ Tono: empático y profesional, en español mexicano. Sin markdown, sin asterisco
 Datos: {json}";
 
         var config = new GenerateContentConfig { Temperature = 0.5f };
-        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+        var contents = new List<Content> { new Content { Role = "user", Parts = new List<Part> { new Part { Text = prompt } } } };
+
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", contents, config);
         return response.Text?.Trim() ?? "Sin datos suficientes para el análisis.";
     }
 
@@ -275,7 +279,9 @@ Tono: directo, cordial, como si hablaras al oído del chofer. Sin markdown, sin 
 Datos de ruta: {json}";
 
         var config = new GenerateContentConfig { Temperature = 0.4f };
-        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+        var contents = new List<Content> { new Content { Role = "user", Parts = new List<Part> { new Part { Text = prompt } } } };
+
+        var response = await _client.Models.GenerateContentAsync("gemini-1.5-flash", contents, config);
         return response.Text?.Trim() ?? "Ruta lista. Revisa las paradas en tu pantalla.";
     }
 }
