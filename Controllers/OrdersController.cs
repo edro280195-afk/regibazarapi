@@ -5,6 +5,8 @@ using EntregasApi.Data;
 using EntregasApi.DTOs;
 using EntregasApi.Models;
 using EntregasApi.Services;
+using Microsoft.AspNetCore.SignalR;
+using EntregasApi.Hubs;
 
 namespace EntregasApi.Controllers;
 
@@ -20,11 +22,12 @@ public class OrdersController : ControllerBase
     private readonly IPushNotificationService _pushService;
     private readonly IGeminiService _geminiService;
     private readonly IOrderService _orderService;
+    private readonly IHubContext<DeliveryHub> _hub;
     private readonly string FrontendUrl;
 
     public OrdersController(AppDbContext db, IExcelService excelService,
         ITokenService tokenService, IConfiguration config, IPushNotificationService pushService,
-        IGeminiService geminiService, IOrderService orderService)
+        IGeminiService geminiService, IOrderService orderService, IHubContext<DeliveryHub> hub)
     {
         _db = db;
         _excelService = excelService;
@@ -33,6 +36,7 @@ public class OrdersController : ControllerBase
         _pushService = pushService;
         _geminiService = geminiService;
         _orderService = orderService;
+        _hub = hub;
         FrontendUrl = config["App:FrontendUrl"] ?? "https://regibazar.com";
     }
 
@@ -459,6 +463,14 @@ public class OrdersController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
+
+        // ✨ Sincronización Admin-a-Admin en tiempo real
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
+            OrderId = order.Id, 
+            Status = order.Status.ToString(),
+            UpdatedBy = "Admin"
+        });
+
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
 
@@ -971,6 +983,9 @@ public class OrdersController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        // ✨ Sincronización Admin-a-Admin
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
+
         // Recargar nav prop para que MapToSummary incluya el nombre del corte
         await _db.Entry(order).Reference(o => o.SalesPeriod).LoadAsync();
 
@@ -1030,6 +1045,9 @@ public class OrdersController : ControllerBase
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
+
+        // ✨ Sincronización Admin-a-Admin
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
@@ -1125,6 +1143,15 @@ public class OrdersController : ControllerBase
 
         _db.OrderPayments.Add(payment);
         await _db.SaveChangesAsync();
+
+        // ✨ Sincronización Admin-a-Admin
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
+            OrderId = id, 
+            Status = order.Status.ToString(), 
+            PaymentAdded = true,
+            Amount = req.Amount,
+            UpdatedBy = "Admin"
+        });
 
         return Ok(new OrderPaymentDto(payment.Id, payment.OrderId, payment.Amount, payment.Method, payment.Date, payment.RegisteredBy, payment.Notes));
     }

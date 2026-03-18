@@ -276,15 +276,13 @@ public class DriverController : ControllerBase
         if (delivery == null) return NotFound("Entrega no encontrada.");
 
         // Solo procesamos si no estaba ya entregado (para evitar doble suma de puntos si le pican dos veces)
+        List<PaymentInputDto>? parsedPayments = null;
         if (delivery.Status != DeliveryStatus.Delivered)
         {
             delivery.Status = DeliveryStatus.Delivered;
             delivery.DeliveredAt = DateTime.UtcNow;
             delivery.Notes = req.Notes;
             delivery.Order.Status = Models.OrderStatus.Delivered;
-
-            // Deserializar pagos desde JSON crudo en FormData
-            List<PaymentInputDto>? parsedPayments = null;
             if (!string.IsNullOrWhiteSpace(req.PaymentsJson))
             {
                 try
@@ -355,6 +353,14 @@ public class DriverController : ControllerBase
         // Notificar en tiempo real
         await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}").SendAsync("DeliveryUpdate", new { Status = "Delivered" });
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "Delivered" });
+        
+        // ✨ PROPAGACIÓN MAGISTRAL ADEMÁS AL GRUPO DE ADMINS
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
+            OrderId = delivery.Order.Id, 
+            Status = "Delivered", 
+            ClientName = delivery.Order.Client?.Name,
+            AmountReceived = parsedPayments?.Sum(p => p.Amount) ?? 0
+        });
 
         var nextId = await AutoAdvanceToNext(route.Id, delivery.SortOrder);
         await CheckRouteCompletion(route.Id);
@@ -388,8 +394,13 @@ public class DriverController : ControllerBase
             tag: "delivery-failed"
         );
 
-        // Notificar Admin
+        // Notificar Admin Dashboard
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "NotDelivered" });
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
+            OrderId = delivery.Order.Id, 
+            Status = "NotDelivered",
+            Reason = req.Reason
+        });
 
         var nextId = await AutoAdvanceToNext(route.Id, delivery.SortOrder);
         await CheckRouteCompletion(route.Id);
@@ -478,6 +489,14 @@ public class DriverController : ControllerBase
 
         _db.DriverExpenses.Add(expense);
         await _db.SaveChangesAsync();
+
+        // ✨ Notificar admin del gasto en tiempo real
+        await _hub.Clients.Group("Admins").SendAsync("ExpenseAdded", new { 
+            RouteId = route.Id, 
+            Amount = expense.Amount, 
+            Type = expense.ExpenseType 
+        });
+
         return Ok(expense);
     }
 
