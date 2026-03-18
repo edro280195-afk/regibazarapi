@@ -74,7 +74,8 @@ public class DriverController : ControllerBase
                 Items: (d.Order.Items ?? new List<OrderItem>())
                     .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
                 AmountPaid: d.Order.AmountPaid,
-                BalanceDue: d.Order.BalanceDue
+                BalanceDue: d.Order.BalanceDue,
+                ArrivedAt: d.ArrivedAt
             )).ToList()
         });
     }
@@ -141,6 +142,9 @@ public class DriverController : ControllerBase
         foreach (var prev in previousInTransit) prev.Status = DeliveryStatus.Pending;
 
         delivery.Status = DeliveryStatus.InTransit;
+        // Registrar momento de llegada (solo la primera vez)
+        if (delivery.ArrivedAt == null)
+            delivery.ArrivedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
         // Notificaciones

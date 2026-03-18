@@ -156,7 +156,8 @@ public record RouteDeliveryDto(
     List<OrderItemDto>? Items = null,
     decimal AmountPaid = 0m,
     decimal BalanceDue = 0m,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    DateTime? ArrivedAt = null
 )
 {
     public int Id => DeliveryId;

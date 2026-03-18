@@ -34,6 +34,9 @@ public class Delivery
 
     public DateTime? DeliveredAt { get; set; }
 
+    /// <summary>Momento en que el repartidor llegó cerca del destino (proximidad 300m)</summary>
+    public DateTime? ArrivedAt { get; set; }
+
     public ICollection<DeliveryEvidence> Evidences { get; set; } = new List<DeliveryEvidence>();
 }
 
