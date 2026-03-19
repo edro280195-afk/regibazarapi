@@ -3,6 +3,7 @@ using System;
 using EntregasApi.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EntregasApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260319160453_AddFcmTokens")]
+    partial class AddFcmTokens
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -438,9 +441,6 @@ namespace EntregasApi.Migrations
                     b.Property<decimal>("AdvancePayment")
                         .HasColumnType("decimal(10,2)");
 
-                    b.Property<string>("AlternativeAddress")
-                        .HasColumnType("text");
-
                     b.Property<int>("ClientId")
                         .HasColumnType("integer");
 
@@ -571,16 +571,10 @@ namespace EntregasApi.Migrations
                     b.Property<int>("PackageNumber")
                         .HasColumnType("integer");
 
-                    b.Property<DateTime?>("ReturnedAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<string>("QrCodeValue")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
-
-                    b.Property<DateTime?>("ReturnedAt")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");

@@ -295,7 +295,8 @@ public class ExcelService : IExcelService
             Tags: tags,
             ClientPoints: client?.CurrentPoints ?? 0,
             DeliveryInstructions: order.DeliveryInstructions ?? client?.DeliveryInstructions,
-            DiscountAmount: order.DiscountAmount
+            DiscountAmount: order.DiscountAmount,
+            AlternativeAddress: order.AlternativeAddress
         );
     }
 }

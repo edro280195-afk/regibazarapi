@@ -60,7 +60,8 @@ public record OrderSummaryDto(
     // Loyalty
     int ClientPoints = 0,
     string? DeliveryInstructions = null,
-    decimal DiscountAmount = 0m
+    decimal DiscountAmount = 0m,
+    string? AlternativeAddress = null
 );
 
 
@@ -106,7 +107,8 @@ public record ManualOrderRequest(
     DateTime? PostponedAt = null,
     string? PostponedNote = null,
     string Status = "Pending",
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    string? AlternativeAddress = null
 );
 public record ManualOrderItem(
     string ProductName,
@@ -157,7 +159,9 @@ public record RouteDeliveryDto(
     decimal AmountPaid = 0m,
     decimal BalanceDue = 0m,
     string? DeliveryInstructions = null,
-    DateTime? ArrivedAt = null
+    DateTime? ArrivedAt = null,
+    List<OrderPackageDto>? Packages = null,
+    string? AlternativeAddress = null
 )
 {
     public int Id => DeliveryId;
@@ -549,7 +553,8 @@ public record UpdateOrderDetailsRequest(
     decimal? ShippingCost = null,
     decimal? AdvancePayment = null,
     int? SalesPeriodId = null,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    string? AlternativeAddress = null
 );
 
 // DTO para actualizar un producto individual
@@ -618,12 +623,13 @@ public record OrderPackageDto(
     string Status,
     DateTime CreatedAt,
     DateTime? LoadedAt,
-    DateTime? DeliveredAt
+    DateTime? DeliveredAt,
+    DateTime? ReturnedAt = null
 );
 
 public record ScanPackageRequest(
     string QrCodeValue,
-    string Action // "Load" (Subir a camioneta) o "Deliver" (Entregar a clienta)
+    string Action // "Load" | "Deliver" | "Return"
 );
 
 // ── C.A.M.I. ──

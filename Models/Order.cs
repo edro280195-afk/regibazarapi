@@ -57,6 +57,8 @@ public class Order
     public bool IsFullyPacked { get; set; }
     public bool IsFullyLoaded { get; set; }
 
+    public string? AlternativeAddress { get; set; }
+
     [Obsolete("Usar Payments collection")]
     [Column(TypeName = "decimal(10,2)")]
     public decimal AdvancePayment { get; set; } = 0m;

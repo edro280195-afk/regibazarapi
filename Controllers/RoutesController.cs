@@ -22,8 +22,9 @@ public class RoutesController : ControllerBase
     private readonly IPushNotificationService _push;
     private readonly IGeminiService _geminiService;
     private readonly IGoogleTtsService _tts;
+    private readonly ILogger<RoutesController> _logger;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IGoogleTtsService tts)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IGoogleTtsService tts, ILogger<RoutesController> logger)
     {
         _db = db;
         _tokenService = tokenService;
@@ -32,6 +33,7 @@ public class RoutesController : ControllerBase
         _push = push;
         _geminiService = geminiService;
         _tts = tts;
+        _logger = logger;
     }
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
@@ -43,9 +45,13 @@ public class RoutesController : ControllerBase
         if (req.OrderIds == null || req.OrderIds.Count == 0)
             return BadRequest("Selecciona al menos una orden.");
 
+        // Prevent duplicates in the request
+        var distinctOrderIds = req.OrderIds.Distinct().ToList();
+
         var orders = await _db.Orders
             .Include(o => o.Client)
-            .Where(o => req.OrderIds.Contains(o.Id)
+            .Include(o => o.Delivery) // Critical: Ensure we know if a delivery already exists
+            .Where(o => distinctOrderIds.Contains(o.Id)
                         && (o.Status == Models.OrderStatus.Pending || o.Status == Models.OrderStatus.Confirmed || o.Status == Models.OrderStatus.Shipped)
                         && o.OrderType == OrderType.Delivery)
             .ToListAsync();
@@ -53,46 +59,100 @@ public class RoutesController : ControllerBase
         if (!orders.Any())
             return BadRequest("No se encontraron pedidos válidos para ruta (recuerda que los PickUp no se envían).");
 
-        var route = new DeliveryRoute
+        using var transaction = await _db.Database.BeginTransactionAsync();
+        try
         {
-            DriverToken = _tokenService.GenerateAccessToken(),
-            Status = RouteStatus.Pending,
-            CreatedAt = DateTime.UtcNow,
-            // Asignamos un nombre default si no viene uno (puedes mejorarlo recibiéndolo del req)
-            Name = $"Ruta {DateTime.Now:dd/MM HH:mm}",
-            ScheduledDate = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc)
-        };
-
-        _db.DeliveryRoutes.Add(route);
-        await _db.SaveChangesAsync();
-
-        // Ordenamos la lista de la db para que coincida exactamente con el orden recibido del optimizador
-        var sortedOrders = req.OrderIds
-            .Select(id => orders.FirstOrDefault(o => o.Id == id))
-            .Where(o => o != null)
-            .ToList();
-
-        int sortOrder = 1;
-        foreach (var order in sortedOrders)
-        {
-            order.DeliveryRouteId = route.Id;
-            order.Status = Models.OrderStatus.InRoute;
-
-            var delivery = new Delivery
+            var route = new DeliveryRoute
             {
-                OrderId = order.Id,
-                DeliveryRouteId = route.Id,
-                SortOrder = sortOrder++,
-                Status = DeliveryStatus.Pending
+                DriverToken = _tokenService.GenerateAccessToken(),
+                Status = RouteStatus.Pending,
+                CreatedAt = DateTime.UtcNow,
+                Name = $"Ruta {DateTime.Now:dd/MM HH:mm}",
+                ScheduledDate = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc)
             };
-            _db.Deliveries.Add(delivery);
 
-            // 🔔 Notificar a la clienta que su pedido ya está en ruta
-            await _push.NotifyClientDriverEnRouteAsync(order.ClientId);
+            _db.DeliveryRoutes.Add(route);
+            // DO NOT SAVE YET - We do it all at once at the end
+
+            // Map orders to the requested sequence
+            var sortedOrders = distinctOrderIds
+                .Select(id => orders.FirstOrDefault(o => o.Id == id))
+                .Where(o => o != null)
+                .ToList();
+
+            int sortOrder = 1;
+            foreach (var order in sortedOrders!)
+            {
+                order.DeliveryRoute = route; 
+                order.Status = Models.OrderStatus.InRoute;
+
+                // 🚀 ROBUSTNESS: Reuse the existing delivery if it exists for this order
+                var delivery = order.Delivery;
+                if (delivery == null)
+                {
+                    delivery = new Delivery
+                    {
+                        Order = order,
+                        DeliveryRoute = route,
+                        SortOrder = sortOrder++,
+                        Status = DeliveryStatus.Pending
+                    };
+                    _db.Deliveries.Add(delivery);
+                }
+                else
+                {
+                    // Update existing delivery record
+                    delivery.DeliveryRoute = route;
+                    delivery.SortOrder = sortOrder++;
+                    delivery.Status = DeliveryStatus.Pending;
+                }
+            }
+
+            await _db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            // 🔔 Notificaciones Push: DESPUÉS de confirmar la transacción
+            // Lo hacemos en un bloque aparte para que si falla una notificación no rompa la creación de la ruta
+
+            // 1. FCM a todos los repartidores Android — "Nueva ruta disponible"
+            try
+            {
+                await _push.NotifyDriversNewRouteAsync(route.Name ?? "Nueva ruta", route.DriverToken, sortedOrders.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error enviando FCM a repartidores");
+            }
+
+            // 2. WebPush a clientes web — "Tu pedido va en camino"
+            foreach (var order in sortedOrders)
+            {
+                try
+                {
+                    await _push.NotifyClientDriverEnRouteAsync(order.ClientId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error enviando WebPush a cliente {ClientId}", order.ClientId);
+                }
+            }
+
+            return Ok(await MapRouteDto(route.Id));
         }
-
-        await _db.SaveChangesAsync();
-        return Ok(await MapRouteDto(route.Id));
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            
+            // Extract detailed inner exception message for debugging
+            var innerMsg = ex.InnerException != null ? ex.InnerException.Message : "";
+            _logger.LogError(ex, "[RoutesController.Create] ERROR: {Message} | INNER: {Inner}", ex.Message, innerMsg);
+            
+            return StatusCode(500, new { 
+                message = "Error interno al crear la ruta.", 
+                detail = ex.Message,
+                innerDetail = innerMsg
+            });
+        }
     }
 
     /// <summary>POST /api/routes/ai-select - Gemini elige rutas por voz</summary>
@@ -175,7 +235,10 @@ public class RoutesController : ControllerBase
                     .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
                 AmountPaid: d.Order.AmountPaid,
                 BalanceDue: d.Order.BalanceDue,
-                DeliveryInstructions: d.Order.Client.DeliveryInstructions
+                DeliveryInstructions: d.Order.Client.DeliveryInstructions,
+                ArrivedAt: d.ArrivedAt,
+                Packages: d.Order.Packages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList(),
+                AlternativeAddress: d.Order.AlternativeAddress
             )).ToList(),
             Expenses: allExpenses
                 .Where(e => e.DeliveryRouteId == route.Id)
@@ -329,6 +392,12 @@ public class RoutesController : ControllerBase
         // 🔔 Notificar a la clienta
         await _push.NotifyClientDriverEnRouteAsync(order.ClientId);
 
+        // 🔔 FCM a repartidor (broadcast porque el token de ruta puede no estar asignado aún)
+        if (!string.IsNullOrEmpty(route.DriverToken))
+        {
+            await _push.NotifyDriversNewRouteAsync(route.Name ?? "Ruta actualizada", route.DriverToken, route.Deliveries.Count);
+        }
+
         return Ok(new { Message = "Orden agregada correctamente" });
     }
 
@@ -353,6 +422,12 @@ public class RoutesController : ControllerBase
 
         // 🔔 Avisar al chofer
         await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
+
+        // 🔔 FCM a repartidor
+        if (!string.IsNullOrEmpty(route.DriverToken))
+        {
+            await _push.NotifyDriverFcmAsync(route.DriverToken, "📦 Pedido Removido", $"Se ha removido el pedido {orderId} de tu ruta.");
+        }
 
         return Ok(new { Message = "Orden eliminada de la ruta correctamente" });
     }
@@ -417,8 +492,11 @@ public class RoutesController : ControllerBase
                     .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
                 Items: (d.Order.Items ?? new List<OrderItem>())
                     .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
-                AmountPaid: d.Order.AmountPaid,
-                BalanceDue: d.Order.BalanceDue
+                BalanceDue: d.Order.BalanceDue,
+                DeliveryInstructions: d.Order.Client.DeliveryInstructions,
+                ArrivedAt: d.ArrivedAt,
+                Packages: d.Order.Packages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList(),
+                AlternativeAddress: d.Order.AlternativeAddress
             )).ToList(),
             Expenses: expenses
         );

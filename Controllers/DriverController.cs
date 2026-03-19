@@ -6,6 +6,7 @@ using EntregasApi.DTOs;
 using EntregasApi.Hubs; // <--- Importante
 using EntregasApi.Models;
 using EntregasApi.Services;
+using System.Collections.Concurrent;
 
 namespace EntregasApi.Controllers;
 
@@ -13,6 +14,9 @@ namespace EntregasApi.Controllers;
 [Route("api/driver/{driverToken}")]
 public class DriverController : ControllerBase
 {
+    // ── Idempotency cache — evita cargos dobles por reintentos de red ──
+    private static readonly ConcurrentDictionary<string, DateTime> _idempotencyCache = new();
+
     private readonly AppDbContext _db;
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IWebHostEnvironment _env;
@@ -42,6 +46,7 @@ public class DriverController : ControllerBase
             .Include(d => d.Order).ThenInclude(o => o.Client)
             .Include(d => d.Order).ThenInclude(o => o.Payments)
             .Include(d => d.Order).ThenInclude(o => o.Items)
+            .Include(d => d.Order).ThenInclude(o => o.Packages)
             .Include(d => d.Evidences)
             .Where(d => d.DeliveryRouteId == route.Id)
             .OrderBy(d => d.SortOrder)
@@ -75,7 +80,13 @@ public class DriverController : ControllerBase
                     .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
                 AmountPaid: d.Order.AmountPaid,
                 BalanceDue: d.Order.BalanceDue,
-                ArrivedAt: d.ArrivedAt
+                DeliveryInstructions: d.Order.Client.DeliveryInstructions,
+                ArrivedAt: d.ArrivedAt,
+                Packages: (d.Order.Packages ?? new List<OrderPackage>()).Any()
+                    ? (d.Order.Packages ?? new List<OrderPackage>())
+                        .Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList()
+                    : null,
+                AlternativeAddress: d.Order.AlternativeAddress
             )).ToList()
         });
     }
@@ -219,6 +230,86 @@ public class DriverController : ControllerBase
         return Ok(new { message = "Ruta reordenada exitosamente por el repartidor." });
     }
 
+    /// <summary>POST /api/driver/{token}/packages/scan — Escanear bolsa al cargar o entregar</summary>
+    [HttpPost("packages/scan")]
+    public async Task<IActionResult> ScanPackage(string driverToken, [FromBody] ScanPackageRequest req)
+    {
+        // 1. Validar token de ruta
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries)
+            .FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+
+        if (route == null) return NotFound(new { message = "Ruta no encontrada." });
+
+        // 2. Buscar paquete por QR
+        var package = await _db.OrderPackages
+            .Include(p => p.Order)
+                .ThenInclude(o => o.Packages)
+            .FirstOrDefaultAsync(p => p.QrCodeValue == req.QrCodeValue);
+
+        if (package == null)
+            return NotFound(new { message = "Código QR no reconocido. Esta bolsa no es del sistema." });
+
+        // 3. Seguridad — el paquete debe pertenecer a un pedido de esta ruta
+        var routeOrderIds = route.Deliveries.Select(d => d.OrderId).ToHashSet();
+        if (!routeOrderIds.Contains(package.OrderId))
+            return BadRequest(new { message = "Esta bolsa no pertenece a tu ruta de hoy." });
+
+        string successMessage;
+
+        // 4. Máquina de estados
+        if (req.Action.Equals("Load", StringComparison.OrdinalIgnoreCase))
+        {
+            if (package.Status >= PackageTrackingStatus.Loaded)
+                return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya estaba cargada." });
+
+            package.Status = PackageTrackingStatus.Loaded;
+            package.LoadedAt = DateTime.UtcNow;
+            successMessage = $"Bolsa #{package.PackageNumber} cargada ✓";
+        }
+        else if (req.Action.Equals("Deliver", StringComparison.OrdinalIgnoreCase))
+        {
+            if (package.Status == PackageTrackingStatus.Packed)
+                return BadRequest(new { message = $"¡Alerta! La bolsa #{package.PackageNumber} no fue cargada al vehículo." });
+
+            if (package.Status == PackageTrackingStatus.Delivered)
+                return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya fue entregada anteriormente." });
+
+            package.Status = PackageTrackingStatus.Delivered;
+            package.DeliveredAt = DateTime.UtcNow;
+            successMessage = $"Bolsa #{package.PackageNumber} entregada ✓";
+        }
+        else if (req.Action.Equals("Return", StringComparison.OrdinalIgnoreCase))
+        {
+            if (package.Status == PackageTrackingStatus.Delivered)
+                return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya fue entregada, no se puede devolver." });
+
+            if (package.Status == PackageTrackingStatus.Returned)
+                return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya fue marcada como devuelta." });
+
+            package.Status = PackageTrackingStatus.Returned;
+            package.ReturnedAt = DateTime.UtcNow;
+            successMessage = $"Bolsa #{package.PackageNumber} devuelta ↩️";
+        }
+        else
+        {
+            return BadRequest(new { message = "Acción inválida. Usa 'Load', 'Deliver' o 'Return'." });
+        }
+
+        // 5. Actualizar banderas de la orden
+        var order = package.Order;
+        order.IsFullyLoaded = order.Packages.All(p => p.Status >= PackageTrackingStatus.Loaded);
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new
+        {
+            message = successMessage,
+            packageNumber = package.PackageNumber,
+            allLoaded = order.IsFullyLoaded
+        });
+    }
+
     [HttpPost("location")]
     public async Task<IActionResult> UpdateLocation(string driverToken, UpdateLocationRequest req)
     {
@@ -266,6 +357,11 @@ public class DriverController : ControllerBase
     public async Task<IActionResult> MarkDelivered(string driverToken, int deliveryId,
         [FromForm] CompleteDeliveryRequest req, [FromForm] List<IFormFile>? photos)
     {
+        // Idempotency — si el cliente reintenta por timeout, devolver 200 inmediatamente
+        var iKey = Request.Headers["X-Idempotency-Key"].ToString();
+        if (!string.IsNullOrEmpty(iKey) && !_idempotencyCache.TryAdd(iKey, DateTime.UtcNow))
+            return Ok(new { message = "Entrega ya procesada (idempotente)." });
+
         var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
         if (route == null) return NotFound("Ruta no encontrada.");
 
@@ -376,6 +472,11 @@ public class DriverController : ControllerBase
     public async Task<IActionResult> MarkFailed(string driverToken, int deliveryId,
         [FromForm] FailDeliveryRequest req, [FromForm] List<IFormFile>? photos)
     {
+        // Idempotency
+        var iKey = Request.Headers["X-Idempotency-Key"].ToString();
+        if (!string.IsNullOrEmpty(iKey) && !_idempotencyCache.TryAdd(iKey, DateTime.UtcNow))
+            return Ok(new { message = "No-entrega ya procesada (idempotente)." });
+
         var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
         if (route == null) return NotFound();
 
@@ -453,15 +554,51 @@ public class DriverController : ControllerBase
     private async Task CheckRouteCompletion(int routeId)
     {
         var allDone = !await _db.Deliveries.AnyAsync(d => d.DeliveryRouteId == routeId && (d.Status == DeliveryStatus.Pending || d.Status == DeliveryStatus.InTransit));
-        if (allDone)
+        if (!allDone) return;
+
+        var route = await _db.DeliveryRoutes.FindAsync(routeId);
+        if (route == null) return;
+
+        route.Status = RouteStatus.Completed;
+        route.CompletedAt = DateTime.UtcNow;
+
+        // ── Auto-conciliación de bolsas sin resolver ──
+        // Carga todos los paquetes que aún estén en estado Loaded (ni entregados ni devueltos)
+        var loadedPackages = await _db.OrderPackages
+            .Include(p => p.Order)
+                .ThenInclude(o => o.Delivery)
+            .Where(p => p.Status == PackageTrackingStatus.Loaded
+                && p.Order.Delivery != null
+                && p.Order.Delivery.DeliveryRouteId == routeId)
+            .ToListAsync();
+
+        int autoReturned = 0;
+        foreach (var pkg in loadedPackages)
         {
-            var route = await _db.DeliveryRoutes.FindAsync(routeId);
-            if (route != null)
+            var deliveryStatus = pkg.Order.Delivery!.Status;
+            if (deliveryStatus == DeliveryStatus.Delivered)
             {
-                route.Status = RouteStatus.Completed;
-                route.CompletedAt = DateTime.UtcNow;
-                await _db.SaveChangesAsync();
+                pkg.Status = PackageTrackingStatus.Delivered;
+                pkg.DeliveredAt = pkg.Order.Delivery.DeliveredAt ?? DateTime.UtcNow;
             }
+            else
+            {
+                // NotDelivered o cualquier otro estado terminal → devuelta
+                pkg.Status = PackageTrackingStatus.Returned;
+                pkg.ReturnedAt = DateTime.UtcNow;
+                autoReturned++;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        if (autoReturned > 0)
+        {
+            await _push.SendNotificationToAdminsAsync(
+                "↩️ Bolsas devueltas al terminar ruta",
+                $"{autoReturned} bolsa(s) regresaron sin entregar en la ruta #{routeId}. Revisa el inventario.",
+                tag: "packages-returned"
+            );
         }
     }
 

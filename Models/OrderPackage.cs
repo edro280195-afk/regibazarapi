@@ -23,12 +23,14 @@ namespace EntregasApi.Models
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? LoadedAt { get; set; }
         public DateTime? DeliveredAt { get; set; }
+        public DateTime? ReturnedAt { get; set; }
     }
 
     public enum PackageTrackingStatus
     {
         Packed = 0,
         Loaded = 1,
-        Delivered = 2
+        Delivered = 2,
+        Returned = 3
     }
 }

@@ -1,6 +1,8 @@
 using EntregasApi.Data;
 using EntregasApi.Hubs;
 using EntregasApi.Services;
+using FirebaseAdmin;
+using Google.Apis.Auth.OAuth2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
@@ -11,14 +13,60 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", @"C:\Codigos\cami-voz-v2.json");
+// ── 1. Credenciales de Google Cloud (C.A.M.I. TTS) ──
+// Usamos ContentRootPath para que la ruta sea dinámica y no rompa en el servidor Linux de producción
+var camiCredPath = Path.Combine(builder.Environment.ContentRootPath, "cami-voz-v2.json");
+if (File.Exists(camiCredPath))
+{
+    Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", camiCredPath);
+    Console.WriteLine("✅ Credenciales de C.A.M.I. cargadas correctamente.");
+}
+else
+{
+    Console.WriteLine("⚠️ CUIDADO: No se encontró cami-voz-v2.json en la raíz.");
+}
+
+// ── 2. Firebase Admin SDK (FCM para Notificaciones Push Android) ──
+try
+{
+    // Primero intentamos leer la ruta desde tu appsettings.json
+    var firebaseCredPath = builder.Configuration["Firebase:ServiceAccountPath"];
+
+    // Si no está configurada ahí, buscamos el archivo "firebase-adminsdk.json" directo en la raíz
+    if (string.IsNullOrEmpty(firebaseCredPath))
+    {
+        firebaseCredPath = Path.Combine(builder.Environment.ContentRootPath, "firebase-adminsdk.json");
+    }
+
+    if (File.Exists(firebaseCredPath))
+    {
+        FirebaseApp.Create(new AppOptions
+        {
+            Credential = GoogleCredential.FromFile(firebaseCredPath)
+        });
+        Console.WriteLine("🔥 Motor de Firebase (Push) conectado con éxito.");
+    }
+    else
+    {
+        // Intentar con GOOGLE_APPLICATION_CREDENTIALS como fallback
+        FirebaseApp.Create(new AppOptions
+        {
+            Credential = GoogleCredential.GetApplicationDefault()
+        });
+        Console.WriteLine("🔥 Motor de Firebase conectado (Fallback default).");
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[Firebase] No se pudo inicializar Firebase Admin SDK: {ex.Message}");
+    Console.WriteLine("[Firebase] Las notificaciones FCM estarán deshabilitadas.");
+}
 
 // EPPlus license (NonCommercial)
 ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
 // ── Database ──
 var connectionString = builder.Configuration.GetConnectionString("Default");
-
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
@@ -62,6 +110,8 @@ builder.Services.AddScoped<IExcelService, ExcelService>();
 builder.Services.AddScoped<ISuppliersService, SuppliersService>();
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
 builder.Services.AddScoped<IPushNotificationService, PushNotificationService>();
+// 🔥 Aquí está el oro que te decía. Ya tienes la inyección lista.
+builder.Services.AddSingleton<IFcmService, FcmService>();
 builder.Services.AddScoped<ISalesPeriodService, SalesPeriodService>();
 builder.Services.AddScoped<IGeminiService, GeminiService>();
 builder.Services.AddScoped<ICamiService, CamiService>();
@@ -150,7 +200,7 @@ app.UseRouting();
 app.UseCors("AllowAll");
 
 // 3. Servir fotos de evidencia
-try 
+try
 {
     var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
     if (!Directory.Exists(uploadsDir)) Directory.CreateDirectory(uploadsDir);

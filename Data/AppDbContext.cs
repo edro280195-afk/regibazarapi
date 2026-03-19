@@ -28,6 +28,7 @@ public class AppDbContext : DbContext
     public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
     public DbSet<SalesPeriod> SalesPeriods => Set<SalesPeriod>();
     public DbSet<OrderPackage> OrderPackages => Set<OrderPackage>();
+    public DbSet<FcmToken> FcmTokens => Set<FcmToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -147,6 +148,17 @@ public class AppDbContext : DbContext
             Id = 1,
             DefaultShippingCost = 60m,
             LinkExpirationHours = 72
+        });
+
+        modelBuilder.Entity<FcmToken>(entity =>
+        {
+            entity.ToTable("FcmTokens");
+            entity.HasIndex(e => e.Token).IsUnique();
+            entity.HasIndex(e => e.Role);
+            entity.HasIndex(e => e.DriverRouteToken);
+            entity.Property(e => e.Role).HasDefaultValue("driver");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
         });
 
         modelBuilder.Entity<PushSubscriptionModel>(entity =>

@@ -1,5 +1,6 @@
 using EntregasApi.Data;
 using EntregasApi.Models;
+using EntregasApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,11 +15,68 @@ public class PushController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IConfiguration _config;
+    private readonly IFcmService _fcm;
 
-    public PushController(AppDbContext db, IConfiguration config)
+    public PushController(AppDbContext db, IConfiguration config, IFcmService fcm)
     {
         _db = db;
         _config = config;
+        _fcm = fcm;
+    }
+
+    // ═══════════════════════════════════════════
+    //  FCM — ANDROID NATIVE
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// Registra o actualiza un token FCM de dispositivo Android.
+    /// Llamar al iniciar la app y al refrescar el token.
+    /// </summary>
+    [HttpPost("subscribe-fcm")]
+    [AllowAnonymous]
+    public async Task<IActionResult> SubscribeFcm([FromBody] FcmSubscribeRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.FcmToken))
+            return BadRequest("FcmToken requerido.");
+
+        var existing = await _db.FcmTokens.FirstOrDefaultAsync(t => t.Token == req.FcmToken);
+
+        if (existing == null)
+        {
+            _db.FcmTokens.Add(new FcmToken
+            {
+                Token = req.FcmToken,
+                Role = req.Role ?? "driver",
+                DriverRouteToken = req.DriverRouteToken,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            if (!string.IsNullOrEmpty(req.Role)) existing.Role = req.Role;
+            if (req.DriverRouteToken != null) existing.DriverRouteToken = req.DriverRouteToken;
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
+
+        await _db.SaveChangesAsync();
+        return Ok(new { success = true });
+    }
+
+    /// <summary>
+    /// Elimina un token FCM (al hacer logout en la app).
+    /// </summary>
+    [HttpDelete("unsubscribe-fcm")]
+    [AllowAnonymous]
+    public async Task<IActionResult> UnsubscribeFcm([FromQuery] string fcmToken)
+    {
+        var existing = await _db.FcmTokens.FirstOrDefaultAsync(t => t.Token == fcmToken);
+        if (existing != null)
+        {
+            _db.FcmTokens.Remove(existing);
+            await _db.SaveChangesAsync();
+        }
+        return Ok();
     }
 
     // ═══════════════════════════════════════════
@@ -237,6 +295,13 @@ public class NotificationPayload
     public string Body { get; set; } = string.Empty;
     public string? Icon { get; set; }
     public string? Url { get; set; }
-    public string? Tag { get; set; }      // Agrupa notificaciones (reemplaza en vez de apilar)
-    public string? Type { get; set; }     // "chat", "status", "proximity" - para que el SW sepa qué hacer
+    public string? Tag { get; set; }
+    public string? Type { get; set; }
+}
+
+public class FcmSubscribeRequest
+{
+    public string FcmToken { get; set; } = string.Empty;
+    public string? Role { get; set; }              // "driver" | "admin"
+    public string? DriverRouteToken { get; set; }  // Token de ruta activa (opcional)
 }

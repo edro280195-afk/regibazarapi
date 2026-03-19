@@ -366,6 +366,7 @@ public class OrdersController : ControllerBase
                 ExpiresAt     = expirationUtc,
                 Status        = Models.OrderStatus.Pending,
                 OrderType     = reqOrderType,
+                AlternativeAddress = req.AlternativeAddress,
                 Items         = new List<OrderItem>(),
                 CreatedAt     = DateTime.UtcNow,
                 SalesPeriodId = (await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive))?.Id,
@@ -968,6 +969,9 @@ public class OrdersController : ControllerBase
         if (req.ShippingCost.HasValue) order.ShippingCost = req.ShippingCost.Value;
         if (req.AdvancePayment.HasValue) order.AdvancePayment = req.AdvancePayment.Value;
 
+        bool addressChanged = order.AlternativeAddress != req.AlternativeAddress;
+        order.AlternativeAddress = req.AlternativeAddress;
+
         if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
         {
             order.Status = newStatus;
@@ -1269,7 +1273,8 @@ public class OrdersController : ControllerBase
                 p.Status.ToString(),
                 p.CreatedAt,
                 p.LoadedAt,
-                p.DeliveredAt))
+                p.DeliveredAt,
+                p.ReturnedAt))
             .ToListAsync();
 
         return Ok(packages);
@@ -1320,7 +1325,7 @@ public class OrdersController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        var result = newPackages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt));
+        var result = newPackages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt));
         return Ok(result);
     }
 

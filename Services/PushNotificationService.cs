@@ -12,11 +12,15 @@ public interface IPushNotificationService
     Task SendNotificationToDriverAsync(string routeToken, string title, string message, string? url = null, string? tag = null);
     Task SendNotificationToAdminsAsync(string title, string message, string? url = null, string? tag = null);
 
-    // Helpers específicos
+    // Helpers específicos — WebPush (clientes web/PWA)
     Task NotifyClientDriverEnRouteAsync(int clientId, string? driverName = null);
     Task NotifyClientDriverNearbyAsync(int clientId, int distanceMeters);
     Task NotifyClientDeliveredAsync(int clientId);
     Task NotifyChatMessageAsync(string targetRole, int? clientId, string? routeToken, string senderName, string messageText);
+
+    // FCM — App Android nativa (repartidores)
+    Task NotifyDriversNewRouteAsync(string routeName, string driverToken, int deliveryCount);
+    Task NotifyDriverFcmAsync(string driverRouteToken, string title, string body, Dictionary<string, string>? data = null);
 }
 
 public class PushNotificationService : IPushNotificationService
@@ -24,12 +28,14 @@ public class PushNotificationService : IPushNotificationService
     private readonly AppDbContext _db;
     private readonly IConfiguration _config;
     private readonly ILogger<PushNotificationService> _logger;
+    private readonly IFcmService _fcm;
 
-    public PushNotificationService(AppDbContext db, IConfiguration config, ILogger<PushNotificationService> logger)
+    public PushNotificationService(AppDbContext db, IConfiguration config, ILogger<PushNotificationService> logger, IFcmService fcm)
     {
         _db = db;
         _config = config;
         _logger = logger;
+        _fcm = fcm;
     }
 
     // ═══════════════════════════════════════════
@@ -118,6 +124,65 @@ public class PushNotificationService : IPushNotificationService
 
             _ => Task.CompletedTask
         };
+    }
+
+    // ═══════════════════════════════════════════
+    //  FCM — APP ANDROID NATIVA
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// Notifica a TODOS los repartidores Android que hay una nueva ruta disponible.
+    /// </summary>
+    public async Task NotifyDriversNewRouteAsync(string routeName, string driverToken, int deliveryCount)
+    {
+        var allTokens = await _db.FcmTokens
+            .Where(t => t.Role == "driver")
+            .Select(t => new { t.Token, t.DriverRouteToken })
+            .ToListAsync();
+
+        _logger.LogInformation("FCM nueva ruta [{Route}]: {Total} tokens de driver en BD. RouteToken={DriverToken}",
+            routeName, allTokens.Count, driverToken);
+
+        if (allTokens.Count == 0)
+        {
+            _logger.LogWarning("FCM nueva ruta: no hay tokens de driver registrados. El repartidor debe abrir la app para registrarse.");
+            return;
+        }
+
+        // Primero intentar notificación dirigida al driver específico de esta ruta
+        var targetedTokens = allTokens.Where(t => t.DriverRouteToken == driverToken).Select(t => t.Token).ToList();
+        var broadcastTokens = allTokens.Select(t => t.Token).ToList();
+
+        _logger.LogInformation("FCM nueva ruta: {Targeted} token(s) con RouteToken coincidente, {Total} en broadcast.",
+            targetedTokens.Count, broadcastTokens.Count);
+
+        await _fcm.SendToTokensAsync(
+            broadcastTokens, // broadcast a todos los drivers registrados
+            title: "🚗 Nueva ruta asignada",
+            body: $"{routeName} — {deliveryCount} entregas listas para iniciar",
+            data: new Dictionary<string, string>
+            {
+                { "type", "new_route" },
+                { "driverToken", driverToken },
+                { "deliveryCount", deliveryCount.ToString() }
+            }
+        );
+    }
+
+    /// <summary>
+    /// Notifica al chofer de una ruta específica por su token de ruta.
+    /// </summary>
+    public async Task NotifyDriverFcmAsync(string driverRouteToken, string title, string body, Dictionary<string, string>? data = null)
+    {
+        var tokens = await _db.FcmTokens
+            .Where(t => t.Role == "driver" && t.DriverRouteToken == driverRouteToken)
+            .Select(t => t.Token)
+            .ToListAsync();
+
+        foreach (var token in tokens)
+        {
+            await _fcm.SendToTokenAsync(token, title, body, data);
+        }
     }
 
     // ═══════════════════════════════════════════
