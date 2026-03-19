@@ -21,6 +21,7 @@ public interface IPushNotificationService
     // FCM — App Android nativa (repartidores)
     Task NotifyDriversNewRouteAsync(string routeName, string driverToken, int deliveryCount);
     Task NotifyDriverFcmAsync(string driverRouteToken, string title, string body, Dictionary<string, string>? data = null);
+    Task BroadcastToAllDriversAsync(string title, string body, Dictionary<string, string>? data = null);
 }
 
 public class PushNotificationService : IPushNotificationService
@@ -167,6 +168,25 @@ public class PushNotificationService : IPushNotificationService
                 { "deliveryCount", deliveryCount.ToString() }
             }
         );
+    }
+
+    /// <summary>
+    /// Broadcast FCM a todos los tokens de repartidor registrados, con título y cuerpo personalizados.
+    /// </summary>
+    public async Task BroadcastToAllDriversAsync(string title, string body, Dictionary<string, string>? data = null)
+    {
+        var tokens = await _db.FcmTokens
+            .Where(t => t.Role == "driver")
+            .Select(t => t.Token)
+            .ToListAsync();
+
+        if (tokens.Count == 0)
+        {
+            _logger.LogWarning("BroadcastToAllDrivers: no hay tokens de driver registrados.");
+            return;
+        }
+
+        await _fcm.SendToTokensAsync(tokens, title, body, data);
     }
 
     /// <summary>

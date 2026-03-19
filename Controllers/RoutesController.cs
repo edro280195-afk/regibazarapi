@@ -353,6 +353,9 @@ public class RoutesController : ControllerBase
         await _hub.Clients.Group($"Route_{route.DriverToken}")
             .SendAsync("RouteUpdated");
 
+        // 🔔 FCM broadcast al repartidor
+        await _push.BroadcastToAllDriversAsync("🔄 Ruta reordenada", $"El orden de entregas de {route.Name} fue actualizado.");
+
         return Ok(new { Message = "Orden actualizado correctamente" });
     }
 
@@ -423,11 +426,8 @@ public class RoutesController : ControllerBase
         // 🔔 Avisar al chofer
         await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
 
-        // 🔔 FCM a repartidor
-        if (!string.IsNullOrEmpty(route.DriverToken))
-        {
-            await _push.NotifyDriverFcmAsync(route.DriverToken, "📦 Pedido Removido", $"Se ha removido el pedido {orderId} de tu ruta.");
-        }
+        // 🔔 FCM broadcast al repartidor
+        await _push.BroadcastToAllDriversAsync("📦 Pedido eliminado de ruta", $"Se eliminó un pedido de {route.Name}.");
 
         return Ok(new { Message = "Orden eliminada de la ruta correctamente" });
     }
@@ -512,6 +512,9 @@ public class RoutesController : ControllerBase
 
         if (route == null) return NotFound();
 
+        var routeName = route.Name ?? "Ruta cancelada";
+        var driverToken = route.DriverToken;
+
         // 2. 🚀 ATAQUE DIRECTO: Buscamos las órdenes en su propia tabla y las soltamos
         var linkedOrders = await _db.Orders.Where(o => o.DeliveryRouteId == id).ToListAsync();
 
@@ -557,6 +560,16 @@ public class RoutesController : ControllerBase
         _db.DeliveryRoutes.Remove(route);
 
         await _db.SaveChangesAsync();
+
+        // 🔔 FCM broadcast — notificar al repartidor que la ruta fue cancelada
+        try
+        {
+            await _push.BroadcastToAllDriversAsync("🚫 Ruta cancelada", $"La ruta {routeName} fue eliminada.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "No se pudo notificar FCM al cancelar ruta");
+        }
 
         return NoContent();
     }
