@@ -36,6 +36,7 @@ public class ClientViewController : ControllerBase
             .Include(o => o.Items)
             .Include(o => o.DeliveryRoute)
             .Include(o => o.Payments)
+            .Include(o => o.Delivery).ThenInclude(d => d!.Evidences)
             .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
         if (order == null)
@@ -132,7 +133,8 @@ public class ClientViewController : ControllerBase
             ClientPoints: order.Client?.CurrentPoints ?? 0,
             DeliveryInstructions: order.DeliveryInstructions,
             ExpiresAt: order.ExpiresAt,
-            ScheduledDeliveryDate: order.ExpiresAt.AddDays(-1)
+            ScheduledDeliveryDate: order.ExpiresAt.AddDays(-1),
+            EvidenceUrls: order.Delivery?.Evidences?.Select(e => e.ImagePath).ToList()
         ));
     }
 

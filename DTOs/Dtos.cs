@@ -216,7 +216,8 @@ public record ClientOrderView(
     int ClientPoints = 0,
     string? DeliveryInstructions = null,
     DateTime? ExpiresAt = null,
-    DateTime? ScheduledDeliveryDate = null
+    DateTime? ScheduledDeliveryDate = null,
+    List<string>? EvidenceUrls = null
 );
 
 // ── OrderPayment ──

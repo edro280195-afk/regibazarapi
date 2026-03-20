@@ -118,6 +118,7 @@ builder.Services.AddScoped<ICamiService, CamiService>();
 builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
 builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();

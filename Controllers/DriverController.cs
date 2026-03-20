@@ -19,18 +19,18 @@ public class DriverController : ControllerBase
 
     private readonly AppDbContext _db;
     private readonly IHubContext<DeliveryHub> _hub;
-    private readonly IWebHostEnvironment _env;
     private readonly IPushNotificationService _push;
     private readonly ICamiService _cami;
+    private readonly ICloudinaryService _cloudinary;
 
-    public DriverController(AppDbContext db, IHubContext<DeliveryHub> hub, IWebHostEnvironment env,
-        IPushNotificationService push, ICamiService cami)
+    public DriverController(AppDbContext db, IHubContext<DeliveryHub> hub,
+        IPushNotificationService push, ICamiService cami, ICloudinaryService cloudinary)
     {
         _db = db;
         _hub = hub;
-        _env = env;
         _push = push;
         _cami = cami;
+        _cloudinary = cloudinary;
     }
 
     /// <summary>GET /api/driver/{token} - Obtener ruta del repartidor</summary>
@@ -71,7 +71,7 @@ public class DriverController : ControllerBase
                 DeliveredAt: d.DeliveredAt,
                 Notes: d.Notes,
                 FailureReason: d.FailureReason,
-                EvidenceUrls: d.Evidences.Select(e => $"/uploads/{e.ImagePath}").ToList(),
+                EvidenceUrls: d.Evidences.Select(e => e.ImagePath).ToList(),
                 ClientPhone: d.Order.Client.Phone,
                 PaymentMethod: d.Order.PaymentMethod,
                 Payments: (d.Order.Payments ?? new List<OrderPayment>())
@@ -539,15 +539,16 @@ public class DriverController : ControllerBase
 
     private async Task SavePhotos(Delivery delivery, List<IFormFile> photos, EvidenceType type)
     {
-        var uploadDir = Path.Combine(_env.ContentRootPath, "uploads", "evidence");
-        Directory.CreateDirectory(uploadDir);
-
         foreach (var photo in photos.Where(p => p.Length > 0))
         {
-            var fileName = $"{delivery.Id}_{Guid.NewGuid():N}{Path.GetExtension(photo.FileName)}";
-            using var stream = new FileStream(Path.Combine(uploadDir, fileName), FileMode.Create);
-            await photo.CopyToAsync(stream);
-            _db.DeliveryEvidences.Add(new DeliveryEvidence { DeliveryId = delivery.Id, ImagePath = $"evidence/{fileName}", Type = type });
+            using var stream = photo.OpenReadStream();
+            var url = await _cloudinary.UploadAsync(stream, photo.FileName, "evidence");
+            _db.DeliveryEvidences.Add(new DeliveryEvidence
+            {
+                DeliveryId = delivery.Id,
+                ImagePath = url,   // URL permanente de Cloudinary
+                Type = type
+            });
         }
     }
 
@@ -620,12 +621,8 @@ public class DriverController : ControllerBase
 
         if (photo != null && photo.Length > 0)
         {
-            var fileName = $"r{route.Id}_{Guid.NewGuid():N}{Path.GetExtension(photo.FileName)}";
-            var uploadDir = Path.Combine(_env.ContentRootPath, "uploads", "expenses");
-            Directory.CreateDirectory(uploadDir);
-            using var stream = new FileStream(Path.Combine(uploadDir, fileName), FileMode.Create);
-            await photo.CopyToAsync(stream);
-            expense.EvidencePath = $"expenses/{fileName}";
+            using var stream = photo.OpenReadStream();
+            expense.EvidencePath = await _cloudinary.UploadAsync(stream, photo.FileName, "expenses");
         }
 
         _db.DriverExpenses.Add(expense);
