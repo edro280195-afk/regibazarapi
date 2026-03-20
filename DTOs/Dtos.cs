@@ -243,6 +243,12 @@ public record AddPaymentRequest
 
     [MaxLength(500)]
     public string? Notes { get; init; }
+
+    /// <summary>
+    /// Fecha real del pago. Si no se manda, se usa DateTime.UtcNow.
+    /// Permite registrar pagos con fecha retroactiva para cuadrar reportes.
+    /// </summary>
+    public DateTime? PaymentDate { get; init; }
 };
 
 public record DriverLocationDto(

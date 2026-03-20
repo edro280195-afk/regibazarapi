@@ -163,8 +163,11 @@ public class OrdersController : ControllerBase
             }
             else
             {
-                query = query.Where(o => (o.Client != null && o.Client.Name.ToLower().Contains(searchStr)) 
-                                      || (o.Client != null && o.Client.Phone != null && o.Client.Phone.Contains(searchStr)));
+                // Búsqueda general: nombre/tel de clienta O nombre de artículo en la tabla OrderItems
+                query = query.Where(o =>
+                    (o.Client != null && o.Client.Name.ToLower().Contains(searchStr)) ||
+                    (o.Client != null && o.Client.Phone != null && o.Client.Phone.Contains(searchStr)) ||
+                    _db.OrderItems.Any(i => i.OrderId == o.Id && i.ProductName.ToLower().Contains(searchStr)));
             }
         }
 
@@ -1147,12 +1150,17 @@ public class OrdersController : ControllerBase
         if (order == null) return NotFound("Orden no encontrada");
         if (req.Amount <= 0) return BadRequest("El monto debe ser mayor a 0");
 
+        // Si viene fecha de pago explícita la usamos (retroactivo); si no, usamos ahora.
+        var paymentDate = req.PaymentDate.HasValue
+            ? DateTime.SpecifyKind(req.PaymentDate.Value, DateTimeKind.Utc)
+            : DateTime.UtcNow;
+
         var payment = new OrderPayment
         {
             OrderId = id,
             Amount = req.Amount,
             Method = req.Method,
-            Date = DateTime.UtcNow,
+            Date = paymentDate,
             RegisteredBy = req.RegisteredBy ?? "Admin",  // ✅ Default seguro
             Notes = req.Notes
         };
