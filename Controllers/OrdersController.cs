@@ -469,11 +469,23 @@ public class OrdersController : ControllerBase
         await _db.SaveChangesAsync();
 
         // ✨ Sincronización Admin-a-Admin en tiempo real
-        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
-            OrderId = order.Id, 
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
+            OrderId = order.Id,
             Status = order.Status.ToString(),
             UpdatedBy = "Admin"
         });
+
+        // ✨ Notificar al conductor si el pedido está en ruta activa
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new {
+                    OrderId = order.Id,
+                    ClientName = order.Client?.Name ?? "",
+                    NewTotal = order.Total
+                });
+        }
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
@@ -1005,6 +1017,18 @@ public class OrdersController : ControllerBase
         // ✨ Sincronización Admin-a-Admin
         await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
 
+        // ✨ Notificar al conductor si el pedido está en ruta activa
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new {
+                    OrderId = order.Id,
+                    ClientName = order.Client?.Name ?? "",
+                    NewTotal = order.Total
+                });
+        }
+
         // Recargar nav prop para que MapToSummary incluya el nombre del corte
         await _db.Entry(order).Reference(o => o.SalesPeriod).LoadAsync();
 
@@ -1035,6 +1059,21 @@ public class OrdersController : ControllerBase
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();
+
+        // ✨ Sincronización Admin-a-Admin
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
+
+        // ✨ Notificar al conductor si el pedido está en ruta activa
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new {
+                    OrderId = order.Id,
+                    ClientName = order.Client?.Name ?? "",
+                    NewTotal = order.Total
+                });
+        }
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
@@ -1067,6 +1106,18 @@ public class OrdersController : ControllerBase
 
         // ✨ Sincronización Admin-a-Admin
         await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
+
+        // ✨ Notificar al conductor si el pedido está en ruta activa
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new {
+                    OrderId = order.Id,
+                    ClientName = order.Client?.Name ?? "",
+                    NewTotal = order.Total
+                });
+        }
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
@@ -1169,13 +1220,31 @@ public class OrdersController : ControllerBase
         await _db.SaveChangesAsync();
 
         // ✨ Sincronización Admin-a-Admin
-        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
-            OrderId = id, 
-            Status = order.Status.ToString(), 
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
+            OrderId = id,
+            Status = order.Status.ToString(),
             PaymentAdded = true,
             Amount = req.Amount,
             UpdatedBy = "Admin"
         });
+
+        // ✨ Notificar al conductor: el saldo a cobrar cambió
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+            {
+                var totalPaid = order.Payments.Sum(p => p.Amount);
+                var balanceDue = Math.Max(0, order.Total - totalPaid);
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new {
+                    OrderId = id,
+                    ClientName = order.Client?.Name ?? "",
+                    NewTotal = order.Total,
+                    BalanceDue = balanceDue,
+                    ChangeType = "payment"
+                });
+            }
+        }
 
         return Ok(new OrderPaymentDto(payment.Id, payment.OrderId, payment.Amount, payment.Method, payment.Date, payment.RegisteredBy, payment.Notes));
     }
@@ -1191,6 +1260,30 @@ public class OrdersController : ControllerBase
 
         _db.OrderPayments.Remove(payment);
         await _db.SaveChangesAsync();
+
+        // ✨ Notificar al conductor: el saldo a cobrar aumentó (pago eliminado)
+        var affectedOrder = await _db.Orders
+            .Include(o => o.Payments)
+            .Include(o => o.Client)
+            .FirstOrDefaultAsync(o => o.Id == orderId);
+
+        if (affectedOrder?.DeliveryRouteId.HasValue == true)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(affectedOrder.DeliveryRouteId.Value);
+            if (route != null)
+            {
+                var totalPaid = affectedOrder.Payments.Sum(p => p.Amount);
+                var balanceDue = Math.Max(0, affectedOrder.Total - totalPaid);
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new {
+                    OrderId = orderId,
+                    ClientName = affectedOrder.Client?.Name ?? "",
+                    NewTotal = affectedOrder.Total,
+                    BalanceDue = balanceDue,
+                    ChangeType = "payment"
+                });
+            }
+        }
+
         return NoContent();
     }
 

@@ -161,7 +161,10 @@ public record RouteDeliveryDto(
     string? DeliveryInstructions = null,
     DateTime? ArrivedAt = null,
     List<OrderPackageDto>? Packages = null,
-    string? AlternativeAddress = null
+    string? AlternativeAddress = null,
+    // Feature #5 — Etiqueta y tipo de cliente para el chofer
+    string? ClientTag = null,
+    string? ClientType = null
 )
 {
     public int Id => DeliveryId;

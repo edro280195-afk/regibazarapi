@@ -561,6 +561,11 @@ public class RoutesController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        // 🔔 SignalR directo al conductor — la ruta ya no existe, que lo sepa al instante
+        await _hub.Clients.Group($"Route_{driverToken}").SendAsync("RouteDeleted", new {
+            Message = $"La ruta '{routeName}' fue eliminada por el administrador."
+        });
+
         // 🔔 FCM broadcast — notificar al repartidor que la ruta fue cancelada
         try
         {

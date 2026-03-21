@@ -132,6 +132,7 @@ public class CamiController : ControllerBase
 
     /// <summary>Route briefing — genera briefing de voz para el repartidor con TTS.</summary>
     [HttpGet("route-briefing/{routeId}")]
+    [AllowAnonymous]
     public async Task<ActionResult<RouteBriefingResponse>> RouteBriefing(int routeId)
     {
         try

@@ -86,7 +86,10 @@ public class DriverController : ControllerBase
                     ? (d.Order.Packages ?? new List<OrderPackage>())
                         .Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList()
                     : null,
-                AlternativeAddress: d.Order.AlternativeAddress
+                AlternativeAddress: d.Order.AlternativeAddress,
+                // Feature #5 — Etiqueta y tipo de cliente para el chofer
+                ClientTag: d.Order.Client.Tag.ToString() == "None" ? null : d.Order.Client.Tag.ToString(),
+                ClientType: d.Order.Client.Type
             )).ToList()
         });
     }
@@ -161,13 +164,36 @@ public class DriverController : ControllerBase
         // Notificaciones
         await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
             .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
-        
+
         if (delivery.Order.ClientId > 0)
             await _push.NotifyClientDriverEnRouteAsync(delivery.Order.ClientId);
 
         // Admin
         await _hub.Clients.Group($"Route_{driverToken}")
              .SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "InTransit" });
+
+        // Feature #9 — Saludo proactivo de CAMI a la clienta (fire-and-forget)
+        // Pre-cargar la orden aquí (dentro del scope del request) para evitar usar _db
+        // después de que el DbContext haya sido eliminado al finalizar la solicitud HTTP.
+        var orderForCami = await _db.Orders
+            .Include(o => o.Items)
+            .Include(o => o.Client)
+            .FirstOrDefaultAsync(o => o.Id == delivery.OrderId);
+        var camiAccessToken = delivery.Order.AccessToken;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (orderForCami != null)
+                {
+                    var greeting = await _cami.GetProactiveGreetingAsync(orderForCami);
+                    await _hub.Clients.Group($"Order_{camiAccessToken}")
+                        .SendAsync("CamiGreeting", new { greeting.Message, greeting.AudioBase64 });
+                }
+            }
+            catch { /* No bloquea el flujo principal */ }
+        });
 
         return Ok(new { message = "Entrega marcada en tránsito." });
     }
