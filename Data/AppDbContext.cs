@@ -21,6 +21,7 @@ public class AppDbContext : DbContext
     public DbSet<DriverExpense> DriverExpenses => Set<DriverExpense>();
 
     // --- NUEVAS TABLAS ---
+    public DbSet<CashRegisterSession> CashRegisterSessions => Set<CashRegisterSession>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
@@ -70,7 +71,16 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(p => p.OrderId);
             entity.HasIndex(p => p.Date);
+
+            entity.HasOne(p => p.CashRegisterSession)
+                  .WithMany(s => s.Payments)
+                  .HasForeignKey(p => p.CashRegisterSessionId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
+
+        modelBuilder.Entity<Product>()
+            .HasIndex(p => p.SKU)
+            .IsUnique();
         // Order -> Packages (1:N)
         modelBuilder.Entity<Order>()
             .HasMany(o => o.Packages)

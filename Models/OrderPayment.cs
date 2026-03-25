@@ -26,4 +26,8 @@ public class OrderPayment
 
     [MaxLength(500)]
     public string? Notes { get; set; }
+
+    public int? CashRegisterSessionId { get; set; }
+    [ForeignKey(nameof(CashRegisterSessionId))]
+    public CashRegisterSession? CashRegisterSession { get; set; }
 }

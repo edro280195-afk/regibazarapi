@@ -5,7 +5,7 @@ namespace EntregasApi.DTOs;
 
 // ── Auth ──
 public record LoginRequest(string Email, string Password);
-public record LoginResponse(string Token, string Name, DateTime ExpiresAt);
+public record LoginResponse(string Token, string Name, string Role, DateTime ExpiresAt);
 public record RegisterRequest(string Name, string Email, string Password);
 
 // ── General ──
@@ -658,3 +658,15 @@ public record CamiGreetingResponse(string Message, string? AudioBase64 = null);
 public record CamiAlert(string Type, string Message, string Icon, int? RelatedId = null);
 public record RouteBriefingResponse(string Text, string? AudioBase64 = null);
 public record DashboardInsightRequest(decimal RevenueToday, decimal RevenueMonth, int PendingOrders, int DeliveredOrders, int ActiveRoutes, decimal PendingAmount, int TotalClients);
+
+// ── POS ──
+public record OpenSessionRequest(int UserId, decimal InitialCash);
+public record CloseSessionRequest(int SessionId, decimal ActualCash);
+public record PaymentRequest(int OrderId, int SessionId, decimal Amount, string Method);
+public record ScanItemRequest(int OrderId, string Sku);
+public record CreatePosOrderRequest(string ClientName);
+
+// ── POS VOICE ASSISTANT (CAMI) ──
+public record PosVoiceRequest(string Text, int? OrderId = null);
+public record PosVoiceResponse(string Message, string? AudioBase64, List<PosVoiceAction> Actions);
+public record PosVoiceAction(string Type, string? ClientName = null, string? ProductName = null, decimal? Price = null, int? Quantity = null);

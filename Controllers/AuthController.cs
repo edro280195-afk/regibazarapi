@@ -37,7 +37,7 @@ public class AuthController : ControllerBase
         await _db.SaveChangesAsync();
 
         var token = _tokenService.GenerateJwt(user.Id, user.Email, user.Name);
-        return Ok(new LoginResponse(token, user.Name, DateTime.UtcNow.AddDays(7)));
+        return Ok(new LoginResponse(token, user.Name, user.Role, DateTime.UtcNow.AddDays(7)));
     }
 
     [HttpPost("login")]
@@ -48,6 +48,6 @@ public class AuthController : ControllerBase
             return Unauthorized("Correo o contraseña incorrectos.");
 
         var token = _tokenService.GenerateJwt(user.Id, user.Email, user.Name);
-        return Ok(new LoginResponse(token, user.Name, DateTime.UtcNow.AddDays(7)));
+        return Ok(new LoginResponse(token, user.Name, user.Role, DateTime.UtcNow.AddDays(7)));
     }
 }

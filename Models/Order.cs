@@ -89,6 +89,10 @@ public class OrderItem
     [Required, MaxLength(300)]
     public string ProductName { get; set; } = string.Empty;
 
+    public int? ProductId { get; set; }
+    [ForeignKey(nameof(ProductId))]
+    public Product? Product { get; set; }
+
     public int Quantity { get; set; } = 1;
 
     [Column(TypeName = "decimal(10,2)")]
@@ -113,5 +117,6 @@ public enum OrderStatus
 public enum OrderType
 {
     Delivery = 0,
-    PickUp = 1
+    PickUp = 1,
+    POS_Tienda = 2
 }

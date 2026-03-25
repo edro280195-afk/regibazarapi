@@ -15,6 +15,7 @@ public interface IGeminiService
     Task<string> GetDashboardInsightAsync(object dashboardData);
     Task<string> GetClientInsightAsync(object clientData);
     Task<string> GetRouteBriefingAsync(object routeData);
+    Task<PosVoiceResponse> ParsePosVoiceAsync(string text, object? currentState = null);
 }
 
 public class GeminiService : IGeminiService
@@ -283,5 +284,61 @@ Datos de ruta: {json}";
 
         var response = await _client.Models.GenerateContentAsync("gemini-1.5-flash", contents, config);
         return response.Text?.Trim() ?? "Ruta lista. Revisa las paradas en tu pantalla.";
+    }
+    public async Task<PosVoiceResponse> ParsePosVoiceAsync(string text, object? currentState = null)
+    {
+        try
+        {
+            var systemInstruction = @"Eres 'Cami', la asistente de voz coquette, inteligente y ultra-eficiente de Regi Bazar. 
+Tu misión es gestionar el punto de venta (POS) de manera magistral, interpretando el lenguaje natural de las administradoras.
+
+ACCIONES POSIBLES (Type):
+- 'SET_CLIENT': Cuando mencionan al cliente (ej: 'Para Mary Carmen', 'Atiende a Susana').
+- 'ADD_ITEM': Cuando dictan productos (ej: 'una blusa de 200', 'dos labiales de 50 pesos', 'otra de 100').
+- 'REMOVE_ITEM': Cuando piden quitar o borrar un producto específico (ej: 'quita el labial', 'borra la blusa roja').
+- 'CLEAR_CART': Cuando piden borrar todo o cancelar la venta actual (ej: 'cancela todo', 'borra la cuenta', 'empezamos de nuevo').
+- 'APPLY_DISCOUNT': Cuando mencionan un descuento o rebaja (ej: 'hazle un descuento de 50 pesos', 'réstale 20 al total', 'rebájale 100 pesos').
+
+REGLAS MAGISTRALES DE INTERPRETACIÓN:
+1. FUZZY MATCHING: Si el nombre del cliente o producto suena parecido a algo común, asúmelo (ej: 'Meleny' -> 'Melanie').
+2. PRECIOS: Si dicen 'de 100', 'a 100' o simplemente el número después de un producto, trátalo como el precio unitario.
+3. CANTIDADES: 'una', 'dos', 'un par' deben convertirse a números (1, 2, 2). Si no dicen cantidad, asume 1.
+4. DESCUENTOS: Interpreta frases como 'quítale 20 pesos al final' como APPLY_DISCOUNT con precio 20. No lo confundas con REMOVE_ITEM.
+5. MENSAJES COQUETTE: Tu respuesta en 'message' debe ser encantadora, breve y confirmar TODO lo que hiciste (ej: '¡Listo hermosa! Agregué la blusa para Mary y le apliqué su descuento de 20 pesos. 🎀✨').
+
+ESTRUCTURA DE RESPUESTA (JSON PURO):
+{
+  ""message"": ""Confirmación coquette con emojis"",
+  ""actions"": [
+    { ""type"": ""SET_CLIENT"", ""clientName"": ""Nombre"" },
+    { ""type"": ""ADD_ITEM"": ""productName"": ""Producto"", ""price"": 100, ""quantity"": 1 },
+    { ""type"": ""REMOVE_ITEM"": ""productName"": ""Producto"" },
+    { ""type"": ""APPLY_DISCOUNT"", ""price"": 50 },
+    { ""type"": ""CLEAR_CART"" }
+  ]
+}
+
+NUNCA devuelvas Markdown (```json), solo el JSON crudo.";
+
+            var config = new GenerateContentConfig
+            {
+                SystemInstruction = new Content { Role = "system", Parts = new List<Part> { new Part { Text = systemInstruction } } },
+                ResponseMimeType = "application/json",
+                Temperature = 0.2f
+            };
+
+            var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", text, config);
+            var resultText = response?.Text ?? "{}";
+            
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var result = JsonSerializer.Deserialize<PosVoiceResponse>(resultText, options);
+
+            return result ?? new PosVoiceResponse("No entendí bien, ¿me repites? 🎀", null, new List<PosVoiceAction>());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error en ParsePosVoiceAsync");
+            return new PosVoiceResponse("Tuve un pequeño tropiezo con la señal, ¿me dices de nuevo? ✨", null, new List<PosVoiceAction>());
+        }
     }
 }

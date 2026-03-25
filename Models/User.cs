@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace EntregasApi.Models;
 
@@ -15,6 +16,9 @@ public class User
 
     [Required]
     public string PasswordHash { get; set; } = string.Empty;
+
+    [Column("Rol")]
+    public string Role { get; set; } = "Admin";
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

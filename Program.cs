@@ -118,6 +118,7 @@ builder.Services.AddScoped<ICamiService, CamiService>();
 builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
 builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddScoped<IPosService, PosService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 
 // ── SignalR ──
@@ -226,5 +227,6 @@ app.MapHub<DeliveryHub>("/hubs/delivery");
 app.MapHub<TrackingHub>("/hubs/tracking");
 app.MapHub<OrderHub>("/hubs/orders");
 app.MapHub<LogisticsHub>("/hubs/logistics");
+app.MapHub<PosHub>("/hubs/pos");
 
 app.Run();
