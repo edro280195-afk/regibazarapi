@@ -22,9 +22,10 @@ public class RoutesController : ControllerBase
     private readonly IPushNotificationService _push;
     private readonly IGeminiService _geminiService;
     private readonly IGoogleTtsService _tts;
+    private readonly IRouteOptimizerService _optimizer;
     private readonly ILogger<RoutesController> _logger;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IGoogleTtsService tts, ILogger<RoutesController> logger)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IGoogleTtsService tts, IRouteOptimizerService optimizer, ILogger<RoutesController> logger)
     {
         _db = db;
         _tokenService = tokenService;
@@ -33,6 +34,7 @@ public class RoutesController : ControllerBase
         _push = push;
         _geminiService = geminiService;
         _tts = tts;
+        _optimizer = optimizer;
         _logger = logger;
     }
 
@@ -377,31 +379,60 @@ public class RoutesController : ControllerBase
         order.DeliveryRouteId = id;
         order.Status = Models.OrderStatus.InRoute;
 
-        int nextSortOrder = route.Deliveries.Any() ? route.Deliveries.Max(d => d.SortOrder) + 1 : 1;
-
-        var delivery = new Delivery
-        {
-            OrderId = orderId,
-            DeliveryRouteId = id,
-            SortOrder = nextSortOrder,
-            Status = DeliveryStatus.Pending
-        };
-        _db.Deliveries.Add(delivery);
-        await _db.SaveChangesAsync();
-
-        // 🔔 Avisar al chofer
-        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
-
-        // 🔔 Notificar a la clienta
-        await _push.NotifyClientDriverEnRouteAsync(order.ClientId);
-
-        // 🔔 FCM a repartidor (broadcast porque el token de ruta puede no estar asignado aún)
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
             await _push.NotifyDriversNewRouteAsync(route.Name ?? "Ruta actualizada", route.DriverToken, route.Deliveries.Count);
         }
 
-        return Ok(new { Message = "Orden agregada correctamente" });
+        // 🚀 MEJORA: Recalcular la ruta automáticamente para que no se agregue al final
+        await OptimizeRouteInternal(id);
+
+        return Ok(new { Message = "Orden agregada y ruta optimizada correctamente" });
+    }
+
+    [HttpPost("{id}/optimize")]
+    public async Task<IActionResult> OptimizeRoute(int id)
+    {
+        await OptimizeRouteInternal(id);
+        return Ok(new { Message = "Ruta optimizada correctamente" });
+    }
+
+    private async Task OptimizeRouteInternal(int routeId)
+    {
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries)
+            .ThenInclude(d => d.Order)
+            .ThenInclude(o => o.Client)
+            .FirstOrDefaultAsync(r => r.Id == routeId);
+
+        if (route == null || !route.Deliveries.Any()) return;
+
+        // Solo optimizar si la ruta no está completada
+        if (route.Status == RouteStatus.Completed) return;
+
+        var orders = route.Deliveries.Select(d => d.Order).ToList();
+        
+        // Ubicación base (negocio)
+        var lat = _config.GetValue<double>("Cami:RouteCenterLat", 25.8694);
+        var lng = _config.GetValue<double>("Cami:RouteCenterLng", -97.5027);
+
+        var optimizedOrders = _optimizer.OptimizeRoute(orders, lat, lng);
+
+        // Actualizar SortOrder basado en el nuevo orden optimizado
+        for (int i = 0; i < optimizedOrders.Count; i++)
+        {
+            var orderId = optimizedOrders[i].Id;
+            var delivery = route.Deliveries.FirstOrDefault(d => d.OrderId == orderId);
+            if (delivery != null)
+            {
+                delivery.SortOrder = i + 1;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        // 🔔 Avisar al chofer
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
     }
 
     [HttpDelete("{id}/remove-order/{orderId}")]
