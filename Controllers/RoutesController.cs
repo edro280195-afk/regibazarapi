@@ -381,7 +381,9 @@ public class RoutesController : ControllerBase
 
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
-            await _push.NotifyDriversNewRouteAsync(route.Name ?? "Ruta actualizada", route.DriverToken, route.Deliveries.Count);
+            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"{route.Deliveries.Count} entregas listas para iniciar", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+            // 📡 Silent refresh via SignalR
+            await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
         }
 
         // 🚀 MEJORA: Recalcular la ruta automáticamente para que no se agregue al final
@@ -432,7 +434,7 @@ public class RoutesController : ControllerBase
         await _db.SaveChangesAsync();
 
         // 🔔 Avisar al chofer
-        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
     }
 
     [HttpDelete("{id}/remove-order/{orderId}")]
@@ -455,10 +457,10 @@ public class RoutesController : ControllerBase
         await _db.SaveChangesAsync();
 
         // 🔔 Avisar al chofer
-        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
 
         // 🔔 FCM broadcast al repartidor
-        await _push.BroadcastToAllDriversAsync("📦 Pedido eliminado de ruta", $"Se eliminó un pedido de {route.Name}.");
+        await _push.BroadcastToAllDriversAsync("📦 Pedido eliminado de ruta", $"Se eliminó un pedido de {route.Name}.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
 
         return Ok(new { Message = "Orden eliminada de la ruta correctamente" });
     }
