@@ -326,6 +326,73 @@ public class RoutesController : ControllerBase
         return Ok(msgDto);
     }
 
+    [HttpGet("{id}/deliveries/{deliveryId}/chat")]
+    public async Task<IActionResult> GetDeliveryChat(int id, int deliveryId)
+    {
+        var msgs = await _db.ChatMessages
+            .Where(m => m.DeliveryRouteId == id && m.DeliveryId == deliveryId)
+            .OrderBy(m => m.Timestamp)
+            .Select(m => new {
+                id = m.Id,
+                sender = m.Sender,
+                text = m.Text,
+                timestamp = m.Timestamp,
+                deliveryRouteId = m.DeliveryRouteId,
+                deliveryId = m.DeliveryId
+            })
+            .ToListAsync();
+
+        return Ok(msgs);
+    }
+
+    [HttpPost("{id}/deliveries/{deliveryId}/chat")]
+    public async Task<IActionResult> SendAdminDeliveryMessage(int id, int deliveryId, [FromBody] SendMessageRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FindAsync(id);
+        if (route == null) return NotFound("Ruta no encontrada");
+
+        var delivery = await _db.Deliveries.Include(d => d.Order)
+            .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == id);
+            
+        if (delivery == null) return NotFound("Entrega no encontrada");
+
+        var msg = new ChatMessage
+        {
+            DeliveryRouteId = route.Id,
+            DeliveryId = delivery.Id,
+            Sender = "Admin",
+            Text = req.Text,
+            Timestamp = DateTime.UtcNow
+        };
+
+        _db.ChatMessages.Add(msg);
+        await _db.SaveChangesAsync();
+
+        var msgDto = new
+        {
+            id = msg.Id,
+            sender = msg.Sender,
+            text = msg.Text,
+            timestamp = msg.Timestamp,
+            deliveryRouteId = msg.DeliveryRouteId,
+            deliveryId = msg.DeliveryId
+        };
+
+        // Avisamos a la clienta
+        await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
+            .SendAsync("ReceiveClientChatMessage", msgDto);
+
+        // Avisamos al chofer
+        await _hub.Clients.Group($"Route_{route.DriverToken}")
+            .SendAsync("ReceiveClientChatMessage", msgDto);
+
+        // Avisamos a los otros admins
+        await _hub.Clients.Group("Admins")
+            .SendAsync("ReceiveClientChatMessage", msgDto);
+
+        return Ok(msgDto);
+    }
+
     // ═══════════════════════════════════════════
     //  REORDENAMIENTO MANUAL (DRAG & DROP)
     // ═══════════════════════════════════════════

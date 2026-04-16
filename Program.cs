@@ -119,6 +119,7 @@ builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
 builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPosService, PosService>();
+builder.Services.AddScoped<ITandaService, TandaService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 
 // ── SignalR ──

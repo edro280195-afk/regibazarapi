@@ -767,6 +767,10 @@ public class DriverController : ControllerBase
         await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
             .SendAsync("ReceiveClientChatMessage", msgDto);
 
+        // ✨ ADEMÁS PROPAGAMOS AL GRUPO DE ADMINS
+        await _hub.Clients.Group("Admins")
+            .SendAsync("ReceiveClientChatMessage", msgDto);
+
         return Ok(msgDto);
     }
 

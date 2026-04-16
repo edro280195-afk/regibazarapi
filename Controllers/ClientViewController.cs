@@ -261,6 +261,10 @@ public class ClientViewController : ControllerBase
         {
             await _hub.Clients.Group($"Route_{route.DriverToken}")
                 .SendAsync("ReceiveClientChatMessage", msgDto); // Mandamos el ligero
+
+            // ✨ PROPAGAMOS A ADMINS TAMBIÉN
+            await _hub.Clients.Group("Admins")
+                .SendAsync("ReceiveClientChatMessage", msgDto);
         }
 
         return Ok(msgDto); // Regresamos el ligero

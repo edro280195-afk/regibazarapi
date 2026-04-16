@@ -23,6 +23,10 @@ public class AppDbContext : DbContext
     // --- NUEVAS TABLAS ---
     public DbSet<CashRegisterSession> CashRegisterSessions => Set<CashRegisterSession>();
     public DbSet<Product> Products => Set<Product>();
+    public DbSet<TandaProduct> TandaProducts => Set<TandaProduct>();
+    public DbSet<Tanda> Tandas => Set<Tanda>();
+    public DbSet<TandaParticipant> TandaParticipants => Set<TandaParticipant>();
+    public DbSet<TandaPayment> TandaPayments => Set<TandaPayment>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
     public DbSet<PushSubscriptionModel> PushSubscriptions => Set<PushSubscriptionModel>();
@@ -51,6 +55,11 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Client>()
             .HasIndex(c => c.Name)
             .IsUnique();
+
+        modelBuilder.Entity<TandaParticipant>()
+            .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })
+            .IsUnique()
+            .HasDatabaseName("IX_TandaParticipant_Tanda_Turn");
 
         // --- RELACIONES & CONFIGURACIONES ---
 
