@@ -198,20 +198,15 @@ public class ClientViewController : ControllerBase
     public async Task<IActionResult> GetChat(string accessToken)
     {
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
-        if (order == null || order.DeliveryRouteId == null) return Ok(new List<object>());
+        if (order == null) return NotFound("Pedido no encontrado.");
 
-        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
-        if (delivery == null) return Ok(new List<object>());
-
-        if (order.Status == Models.OrderStatus.Delivered || order.Status == Models.OrderStatus.NotDelivered || order.Status == Models.OrderStatus.Canceled)
-            return Ok(new List<object>());
-
+        // Obtenemos los mensajes asociados a la orden
         var msgs = await _db.ChatMessages
-            .Where(m => m.DeliveryId == delivery.Id)
+            .Where(m => m.OrderId == order.Id)
             .OrderBy(m => m.Timestamp)
-            // 🚀 ANTÍDOTO: Creamos un objeto ligero sin relaciones para evitar el ciclo JSON
             .Select(m => new {
                 id = m.Id,
+                orderId = m.OrderId,
                 deliveryRouteId = m.DeliveryRouteId,
                 deliveryId = m.DeliveryId,
                 sender = m.Sender,
@@ -228,27 +223,32 @@ public class ClientViewController : ControllerBase
     public async Task<IActionResult> SendMessage(string accessToken, [FromBody] SendMessageRequest req)
     {
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
-        if (order == null || order.DeliveryRouteId == null) return NotFound("Pedido no activo en ruta.");
+        if (order == null) return NotFound("Pedido no encontrado.");
 
-        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
-        if (delivery == null) return NotFound();
-
+        // El chat ahora es global para la orden
         var msg = new ChatMessage
         {
-            DeliveryRouteId = order.DeliveryRouteId.Value,
-            DeliveryId = delivery.Id,
+            OrderId = order.Id,
+            DeliveryRouteId = order.DeliveryRouteId, // Si ya tiene ruta, lo asociamos
             Sender = "Client",
             Text = req.Text,
             Timestamp = DateTime.UtcNow
         };
 
+        // Si el pedido ya tiene una entrega asociada, la guardamos también
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+        if (delivery != null)
+        {
+            msg.DeliveryId = delivery.Id;
+        }
+
         _db.ChatMessages.Add(msg);
         await _db.SaveChangesAsync();
 
-        // 🚀 ANTÍDOTO: Empacamos solo los datos seguros
         var msgDto = new
         {
             id = msg.Id,
+            orderId = msg.OrderId,
             deliveryRouteId = msg.DeliveryRouteId,
             deliveryId = msg.DeliveryId,
             sender = msg.Sender,
@@ -256,18 +256,22 @@ public class ClientViewController : ControllerBase
             timestamp = msg.Timestamp
         };
 
-        var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId);
-        if (route != null)
-        {
-            await _hub.Clients.Group($"Route_{route.DriverToken}")
-                .SendAsync("ReceiveClientChatMessage", msgDto); // Mandamos el ligero
+        // Notificamos a los Administradores (Siempre)
+        await _hub.Clients.Group("Admins")
+            .SendAsync("ReceiveClientChatMessage", msgDto);
 
-            // ✨ PROPAGAMOS A ADMINS TAMBIÉN
-            await _hub.Clients.Group("Admins")
-                .SendAsync("ReceiveClientChatMessage", msgDto);
+        // Si hay una ruta activa, notificamos al repartidor
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+            {
+                await _hub.Clients.Group($"Route_{route.DriverToken}")
+                    .SendAsync("ReceiveClientChatMessage", msgDto);
+            }
         }
 
-        return Ok(msgDto); // Regresamos el ligero
+        return Ok(msgDto);
     }
     private ObjectResult Gone(string message)
     {
