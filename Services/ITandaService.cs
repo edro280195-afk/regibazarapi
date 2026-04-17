@@ -11,6 +11,7 @@ public interface ITandaService
     Task<TandaParticipantDto?> GetSundayDeliveryAsync(Guid tandaId);
     Task UpdateParticipantTurnAsync(Guid participantId, int newTurn);
     Task UpdateParticipantVariantAsync(Guid participantId, string? variant);
+    Task ConfirmParticipantDeliveryAsync(Guid participantId);
     Task RemoveParticipantAsync(Guid participantId);
     Task ProcessPenaltiesAsync(Guid tandaId);
     Task ShuffleParticipantsAsync(Guid tandaId);

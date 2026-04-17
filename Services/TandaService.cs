@@ -146,6 +146,16 @@ public class TandaService : ITandaService
         await _db.SaveChangesAsync();
     }
 
+    public async Task ConfirmParticipantDeliveryAsync(Guid participantId)
+    {
+        var participant = await _db.TandaParticipants.FindAsync(participantId);
+        if (participant == null) throw new Exception("Participante no encontrado");
+
+        participant.IsDelivered = true;
+        participant.DeliveryDate = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+    }
+
     public async Task RemoveParticipantAsync(Guid participantId)
     {
         var participant = await _db.TandaParticipants
@@ -287,6 +297,7 @@ public class TandaService : ITandaService
                 HasPaidCurrentWeek = p.Payments.Any(pay => pay.WeekNumber == currentWeek),
                 PaidWeeks = p.Payments.Select(pay => pay.WeekNumber).ToList(),
                 IsWinnerThisWeek = p.AssignedTurn == currentWeek,
+                IsDelivered = p.IsDelivered,
                 Variant = p.Variant
             }).OrderBy(p => p.AssignedTurn).ToList()
         };

@@ -206,6 +206,20 @@ public class TandaController : ControllerBase
         }
     }
 
+    [HttpPatch("participants/{id}/confirm-delivery")]
+    public async Task<IActionResult> ConfirmParticipantDelivery(Guid id)
+    {
+        try
+        {
+            await _tandaService.ConfirmParticipantDeliveryAsync(id);
+            return Ok(new { message = "¡Entrega de tanda confirmada! ✨" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpDelete("participants/{id}")]
     public async Task<IActionResult> RemoveParticipant(Guid id)
     {

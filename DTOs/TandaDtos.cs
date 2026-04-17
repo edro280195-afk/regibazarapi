@@ -79,6 +79,7 @@ public class TandaParticipantViewDto
     public bool HasPaidCurrentWeek { get; set; }
     public List<int> PaidWeeks { get; set; } = new();
     public bool IsWinnerThisWeek { get; set; }
+    public bool IsDelivered { get; set; }
     public string? Variant { get; set; }
 }
 
