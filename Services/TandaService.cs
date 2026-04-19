@@ -384,7 +384,11 @@ public class TandaService : ITandaService
     private int CalculateCurrentWeek(DateTime startDate)
     {
         var timeSpan = DateTime.UtcNow.Date - startDate.Date;
-        if (timeSpan.TotalDays < 0) return 0;
-        return (int)(timeSpan.TotalDays / 7) + 1;
+        int days = (int)timeSpan.TotalDays;
+        
+        if (days < 0) return 0;
+        // Restamos 1 día para que el cambio de semana ocurra el Lunes (día 8) 
+        // y no el Domingo (día 7), permitiendo que la entrega dominical sea el cierre de la semana.
+        return ((days == 0 ? 0 : days - 1) / 7) + 1;
     }
 }

@@ -54,7 +54,9 @@ public class RoutesController : ControllerBase
             .Include(o => o.Client)
             .Include(o => o.Delivery) // Critical: Ensure we know if a delivery already exists
             .Where(o => distinctOrderIds.Contains(o.Id)
-                        && (o.Status == Models.OrderStatus.Pending || o.Status == Models.OrderStatus.Confirmed || o.Status == Models.OrderStatus.Shipped)
+                        && o.Status != Models.OrderStatus.Canceled
+                        && o.Status != Models.OrderStatus.Delivered
+                        && o.DeliveryRouteId == null
                         && o.OrderType == OrderType.Delivery)
             .ToListAsync();
 
