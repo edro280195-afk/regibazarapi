@@ -448,9 +448,20 @@ public class RoutesController : ControllerBase
         order.DeliveryRouteId = id;
         order.Status = Models.OrderStatus.InRoute;
 
+        // ✨ CRITICAL FIX: Create the Delivery record that was missing
+        var delivery = new Delivery
+        {
+            OrderId = orderId,
+            DeliveryRouteId = id,
+            SortOrder = route.Deliveries.Count + 1,
+            Status = DeliveryStatus.Pending
+        };
+        _db.Deliveries.Add(delivery);
+        await _db.SaveChangesAsync();
+
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
-            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"{route.Deliveries.Count} entregas listas para iniciar", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"Se agregaron entregas. Nueva cuenta: {route.Deliveries.Count + 1}", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
             // 📡 Silent refresh via SignalR
             await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
         }
@@ -476,7 +487,33 @@ public class RoutesController : ControllerBase
             .ThenInclude(o => o.Client)
             .FirstOrDefaultAsync(r => r.Id == routeId);
 
-        if (route == null || !route.Deliveries.Any()) return;
+        if (route == null) return;
+        
+        // 🛠️ AUTO-REPAIR: Add missing Deliveries for orders in this route
+        var ordersInRoute = await _db.Orders
+            .Where(o => o.DeliveryRouteId == routeId)
+            .ToListAsync();
+            
+        bool fixedAny = false;
+        foreach (var order in ordersInRoute)
+        {
+            if (!route.Deliveries.Any(d => d.OrderId == order.Id))
+            {
+                var newDelivery = new Delivery
+                {
+                    OrderId = order.Id,
+                    DeliveryRouteId = routeId,
+                    SortOrder = route.Deliveries.Count + 1,
+                    Status = DeliveryStatus.Pending
+                };
+                _db.Deliveries.Add(newDelivery);
+                route.Deliveries.Add(newDelivery);
+                fixedAny = true;
+            }
+        }
+        if (fixedAny) await _db.SaveChangesAsync();
+
+        if (!route.Deliveries.Any()) return;
 
         // Solo optimizar si la ruta no está completada
         if (route.Status == RouteStatus.Completed) return;
