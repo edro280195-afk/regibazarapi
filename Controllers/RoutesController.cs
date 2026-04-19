@@ -644,78 +644,70 @@ public class RoutesController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id)
     {
-        // 1. Buscamos la ruta y sus entregas
-        var route = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries)
-            .FirstOrDefaultAsync(r => r.Id == id);
-
-        if (route == null) return NotFound();
-
-        var routeName = route.Name ?? "Ruta cancelada";
-        var driverToken = route.DriverToken;
-
-        // 2. 🚀 ATAQUE DIRECTO: Buscamos las órdenes en su propia tabla y las soltamos
-        var linkedOrders = await _db.Orders.Where(o => o.DeliveryRouteId == id).ToListAsync();
-
-        if (linkedOrders.Any())
+        using var transaction = await _db.Database.BeginTransactionAsync();
+        try
         {
+            // 1. Buscamos la ruta y cargamos explícitamente sus dependencias
+            var route = await _db.DeliveryRoutes
+                .Include(r => r.Deliveries)
+                .FirstOrDefaultAsync(r => r.Id == id);
+
+            if (route == null) return NotFound();
+
+            var routeName = route.Name ?? "Ruta cancelada";
+            var driverToken = route.DriverToken;
+
+            // 2. Liberar las órdenes vinculadas
+            var linkedOrders = await _db.Orders.Where(o => o.DeliveryRouteId == id).ToListAsync();
             foreach (var order in linkedOrders)
             {
-                order.DeliveryRouteId = null; // Rompemos la cadena
-
-                if (order.Status != Models.OrderStatus.Delivered)
+                order.DeliveryRouteId = null;
+                if (order.Status != Models.OrderStatus.Delivered && order.Status != Models.OrderStatus.Canceled)
                 {
                     order.Status = Models.OrderStatus.Pending;
                 }
             }
 
-            // Obligamos a EF Core a guardar ESTO antes de siquiera pensar en borrar la ruta
+            // 3. Limpiar ChatMessages vinculados a la ruta o a sus entregas
+            var deliveryIds = route.Deliveries.Select(d => d.Id).ToList();
+            var chats = await _db.ChatMessages
+                .Where(c => c.DeliveryRouteId == id || (c.DeliveryId != null && deliveryIds.Contains(c.DeliveryId.Value)))
+                .ToListAsync();
+            if (chats.Any()) _db.ChatMessages.RemoveRange(chats);
+
+            // 4. Limpiar Gastos (DriverExpenses)
+            var expenses = await _db.DriverExpenses.Where(e => e.DeliveryRouteId == id).ToListAsync();
+            if (expenses.Any()) _db.DriverExpenses.RemoveRange(expenses);
+
+            // 5. Limpiar Evidencias de Entrega
+            var evidences = await _db.DeliveryEvidences.Where(e => deliveryIds.Contains(e.DeliveryId)).ToListAsync();
+            if (evidences.Any()) _db.DeliveryEvidences.RemoveRange(evidences);
+
+            // 6. Borrar las entregas
+            if (route.Deliveries.Any()) _db.Deliveries.RemoveRange(route.Deliveries);
+
+            // 7. Borrar la ruta
+            _db.DeliveryRoutes.Remove(route);
+
             await _db.SaveChangesAsync();
-        }
+            await transaction.CommitAsync();
 
-        // 3. Limpiar ChatMessages
-        var chats = await _db.ChatMessages.Where(c => c.DeliveryRouteId == id).ToListAsync();
-        if (chats.Any())
-        {
-            _db.ChatMessages.RemoveRange(chats);
-        }
+            // 🔔 Notificaciones Push/SignalR (Fuera de la transacción por performance y seguridad)
+            await _hub.Clients.Group($"Route_{driverToken}").SendAsync("RouteDeleted", new {
+                Message = $"La ruta '{routeName}' fue eliminada por el administrador."
+            });
 
-        // 4. Limpiar Gastos (Descomenta esto si tienes DriverExpenses en tu DbContext)
-        /*
-        var expenses = await _db.DriverExpenses.Where(e => e.DriverRouteId == id).ToListAsync();
-        if (expenses.Any()) 
-        {
-            _db.DriverExpenses.RemoveRange(expenses);
-        }
-        */
+            try { await _push.BroadcastToAllDriversAsync("🚫 Ruta cancelada", $"La ruta {routeName} fue eliminada."); }
+            catch { /* Ignorar errores de notificación */ }
 
-        // 5. Borrar los registros intermedios de entregas
-        if (route.Deliveries.Any())
-        {
-            _db.Deliveries.RemoveRange(route.Deliveries);
-        }
-
-        // 6. Ahora sí, la ruta está completamente huérfana. Le damos cuello.
-        _db.DeliveryRoutes.Remove(route);
-
-        await _db.SaveChangesAsync();
-
-        // 🔔 SignalR directo al conductor — la ruta ya no existe, que lo sepa al instante
-        await _hub.Clients.Group($"Route_{driverToken}").SendAsync("RouteDeleted", new {
-            Message = $"La ruta '{routeName}' fue eliminada por el administrador."
-        });
-
-        // 🔔 FCM broadcast — notificar al repartidor que la ruta fue cancelada
-        try
-        {
-            await _push.BroadcastToAllDriversAsync("🚫 Ruta cancelada", $"La ruta {routeName} fue eliminada.");
+            return NoContent();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "No se pudo notificar FCM al cancelar ruta");
+            await transaction.RollbackAsync();
+            _logger.LogError(ex, "Error crítico eliminando ruta {RouteId}", id);
+            return StatusCode(500, new { Message = "Error interno al eliminar la ruta", Detail = ex.Message });
         }
-
-        return NoContent();
     }
 
     // ═══════════════════════════════════════════
