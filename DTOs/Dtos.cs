@@ -61,7 +61,8 @@ public record OrderSummaryDto(
     int ClientPoints = 0,
     string? DeliveryInstructions = null,
     decimal DiscountAmount = 0m,
-    string? AlternativeAddress = null
+    string? AlternativeAddress = null,
+    int? DeliveryRouteId = null
 );
 
 
