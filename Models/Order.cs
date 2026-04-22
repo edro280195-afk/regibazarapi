@@ -46,6 +46,7 @@ public class Order
     public OrderType OrderType { get; set; } = OrderType.Delivery;
     public DateTime? PostponedAt { get; set; }
     public string? PostponedNote { get; set; }
+    public DateTime? ScheduledDeliveryDate { get; set; }
 
     // ── Nuevos campos ──
     public string? Tags { get; set; }

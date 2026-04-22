@@ -350,7 +350,10 @@ public class OrdersController : ControllerBase
 
             // Actualizamos fecha para que suba en la lista (opcional, para que se vea reciente)
             existingOrder.CreatedAt = DateTime.UtcNow;
-            existingOrder.ExpiresAt = _orderService.CalculateExpiration(client.Type, existingOrder.CreatedAt);
+            // Actualizamos fechas basándonos en si mandó una fecha manual o no
+            var dates = _orderService.CalculateOrderDates(client.Type, existingOrder.CreatedAt, req.ScheduledDeliveryDate);
+            existingOrder.ExpiresAt = dates.ExpiresAt;
+            existingOrder.ScheduledDeliveryDate = dates.ScheduledDeliveryDate;
         }
         else
         {
@@ -358,7 +361,7 @@ public class OrdersController : ControllerBase
             // No tiene pendientes, creamos uno nuevo.
 
             var accessToken = _tokenService.GenerateAccessToken();
-            var expirationUtc = _orderService.CalculateExpiration(client.Type, DateTime.UtcNow);
+            var dates = _orderService.CalculateOrderDates(client.Type, DateTime.UtcNow, req.ScheduledDeliveryDate);
 
             // 6. Creamos la orden con la fecha calculada
             var newOrder = new Order
@@ -366,7 +369,8 @@ public class OrdersController : ControllerBase
                 ClientId      = client.Id,
                 AccessToken   = accessToken,
                 ShippingCost  = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
-                ExpiresAt     = expirationUtc,
+                ExpiresAt     = dates.ExpiresAt,
+                ScheduledDeliveryDate = dates.ScheduledDeliveryDate,
                 Status        = Models.OrderStatus.Pending,
                 OrderType     = reqOrderType,
                 AlternativeAddress = req.AlternativeAddress,
@@ -1010,6 +1014,12 @@ public class OrdersController : ControllerBase
         order.DeliveryTime = req.DeliveryTime;
         order.PickupDate = req.PickupDate;
         order.DeliveryInstructions = req.DeliveryInstructions;
+
+        // Re-calculamos expiración si cambió la fecha de entrega o el tipo de clienta
+        var finalDates = _orderService.CalculateOrderDates(order.Client?.Type ?? "Nueva", order.CreatedAt, req.ScheduledDeliveryDate);
+        order.ExpiresAt = finalDates.ExpiresAt;
+        order.ScheduledDeliveryDate = finalDates.ScheduledDeliveryDate;
+
         order.Total = order.Subtotal + order.ShippingCost;
 
         await _db.SaveChangesAsync();

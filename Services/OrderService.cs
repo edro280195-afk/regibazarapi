@@ -29,7 +29,9 @@ public class OrderService : IOrderService
 
             foreach (var order in pendingOrders)
             {
-                order.ExpiresAt = CalculateExpiration(client.Type, order.CreatedAt);
+                var dates = CalculateOrderDates(client.Type, order.CreatedAt, order.ScheduledDeliveryDate);
+                order.ExpiresAt = dates.ExpiresAt;
+                order.ScheduledDeliveryDate = dates.ScheduledDeliveryDate;
             }
 
             // No llamamos SaveChangesAsync aquí — el llamador decide cuándo guardar
@@ -39,6 +41,49 @@ public class OrderService : IOrderService
         {
             // Log exception here in a real scenario
             Console.WriteLine($"Error syncing order expirations for client {clientId}: {ex.Message}");
+        }
+    }
+
+    /// <inheritdoc />
+    public (DateTime ExpiresAt, DateTime ScheduledDeliveryDate) CalculateOrderDates(string clientType, DateTime createdAt, DateTime? manualDate = null)
+    {
+        var mexicoZone = BackendExtensions.GetMexicoZone();
+
+        if (manualDate.HasValue)
+        {
+            // Si hay fecha manual (asumimos que viene como Date local sin hora)
+            DateTime localDelivery;
+            if (manualDate.Value.Kind == DateTimeKind.Utc)
+            {
+                localDelivery = TimeZoneInfo.ConvertTimeFromUtc(manualDate.Value, mexicoZone).Date;
+            }
+            else
+            {
+                localDelivery = manualDate.Value.Date;
+            }
+
+            // El vencimiento es 2 días después de la entrega
+            var localExpiration = localDelivery.AddDays(2);
+
+            return (
+                TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone),
+                TimeZoneInfo.ConvertTimeToUtc(localDelivery, mexicoZone)
+            );
+        }
+        else
+        {
+            // Lógica estándar
+            var expiresAt = CalculateExpiration(clientType, createdAt);
+            
+            // Si el vencimiento es un Lunes a las 00:00:00 (vía CalculateExpiration), 
+            // la entrega programada es el Domingo (1 día antes)
+            var localExpiresAt = TimeZoneInfo.ConvertTimeFromUtc(expiresAt, mexicoZone);
+            var localDelivery = localExpiresAt.AddDays(-1).Date;
+
+            return (
+                expiresAt,
+                TimeZoneInfo.ConvertTimeToUtc(localDelivery, mexicoZone)
+            );
         }
     }
 

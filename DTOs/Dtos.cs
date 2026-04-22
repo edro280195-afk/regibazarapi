@@ -62,7 +62,8 @@ public record OrderSummaryDto(
     string? DeliveryInstructions = null,
     decimal DiscountAmount = 0m,
     string? AlternativeAddress = null,
-    int? DeliveryRouteId = null
+    int? DeliveryRouteId = null,
+    DateTime? ScheduledDeliveryDate = null
 );
 
 
@@ -109,7 +110,8 @@ public record ManualOrderRequest(
     string? PostponedNote = null,
     string Status = "Pending",
     string? DeliveryInstructions = null,
-    string? AlternativeAddress = null
+    string? AlternativeAddress = null,
+    DateTime? ScheduledDeliveryDate = null
 );
 public record ManualOrderItem(
     string ProductName,
@@ -565,7 +567,8 @@ public record UpdateOrderDetailsRequest(
     decimal? AdvancePayment = null,
     int? SalesPeriodId = null,
     string? DeliveryInstructions = null,
-    string? AlternativeAddress = null
+    string? AlternativeAddress = null,
+    DateTime? ScheduledDeliveryDate = null
 );
 
 // DTO para actualizar un producto individual

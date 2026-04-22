@@ -70,11 +70,7 @@ public class TandaService : ITandaService
 
     public async Task<TandaPaymentDto> RegisterPaymentAsync(RegisterPaymentDto dto)
     {
-        var today = DateTime.UtcNow.DayOfWeek;
-        if (today != DayOfWeek.Friday && today != DayOfWeek.Saturday)
-        {
-            throw new Exception("Fuera de horario: Los pagos de la tanda solo se pueden registrar en Viernes o Sábado.");
-        }
+        // Eliminada la restricción de día de la semana para pagos (a petición de la administradora)
 
         var participant = await _db.TandaParticipants.FindAsync(dto.ParticipantId);
         if (participant == null)

@@ -150,15 +150,15 @@ public class AppDbContext : DbContext
         // Chat
         modelBuilder.Entity<ChatMessage>(entity =>
         {
-            entity.HasOne(m => m.Order)
-                  .WithMany() // Or if you add ICollection<ChatMessage> to Order, add it here
-                  .HasForeignKey(m => m.OrderId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
             entity.HasOne(m => m.DeliveryRoute)
                   .WithMany(r => r.ChatMessages)
                   .HasForeignKey(m => m.DeliveryRouteId)
                   .OnDelete(DeleteBehavior.SetNull); // Keep messages if route is deleted
+
+            entity.HasOne(m => m.Delivery)
+                  .WithMany()
+                  .HasForeignKey(m => m.DeliveryId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
 
         // Loyalty (Puntos)

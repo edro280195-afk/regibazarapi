@@ -297,7 +297,8 @@ public class ExcelService : IExcelService
             DeliveryInstructions: order.DeliveryInstructions ?? client?.DeliveryInstructions,
             DiscountAmount: order.DiscountAmount,
             AlternativeAddress: order.AlternativeAddress,
-            DeliveryRouteId: order.DeliveryRouteId
+            DeliveryRouteId: order.DeliveryRouteId,
+            ScheduledDeliveryDate: order.ScheduledDeliveryDate
         );
     }
 }

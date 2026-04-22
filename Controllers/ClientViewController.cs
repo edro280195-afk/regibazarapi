@@ -133,7 +133,7 @@ public class ClientViewController : ControllerBase
             ClientPoints: order.Client?.CurrentPoints ?? 0,
             DeliveryInstructions: order.DeliveryInstructions,
             ExpiresAt: order.ExpiresAt,
-            ScheduledDeliveryDate: order.ExpiresAt.AddDays(-1),
+            ScheduledDeliveryDate: order.ScheduledDeliveryDate,
             EvidenceUrls: order.Delivery?.Evidences?.Select(e => e.ImagePath).ToList()
         ));
     }
@@ -200,13 +200,16 @@ public class ClientViewController : ControllerBase
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound("Pedido no encontrado.");
 
-        // Obtenemos los mensajes asociados a la orden
+        // Intentamos obtener el delivery asociado para filtrar los mensajes
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+        
+        // Obtenemos los mensajes asociados a la entrega o a la ruta (si existe)
         var msgs = await _db.ChatMessages
-            .Where(m => m.OrderId == order.Id)
+            .Where(m => (m.DeliveryRouteId != null && m.DeliveryRouteId == order.DeliveryRouteId) || 
+                        (delivery != null && m.DeliveryId == delivery.Id))
             .OrderBy(m => m.Timestamp)
             .Select(m => new {
                 id = m.Id,
-                orderId = m.OrderId,
                 deliveryRouteId = m.DeliveryRouteId,
                 deliveryId = m.DeliveryId,
                 sender = m.Sender,
@@ -225,22 +228,16 @@ public class ClientViewController : ControllerBase
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound("Pedido no encontrado.");
 
-        // El chat ahora es global para la orden
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+
         var msg = new ChatMessage
         {
-            OrderId = order.Id,
-            DeliveryRouteId = order.DeliveryRouteId, // Si ya tiene ruta, lo asociamos
+            DeliveryRouteId = order.DeliveryRouteId,
+            DeliveryId = delivery?.Id,
             Sender = "Client",
             Text = req.Text,
             Timestamp = DateTime.UtcNow
         };
-
-        // Si el pedido ya tiene una entrega asociada, la guardamos también
-        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
-        if (delivery != null)
-        {
-            msg.DeliveryId = delivery.Id;
-        }
 
         _db.ChatMessages.Add(msg);
         await _db.SaveChangesAsync();
@@ -248,7 +245,6 @@ public class ClientViewController : ControllerBase
         var msgDto = new
         {
             id = msg.Id,
-            orderId = msg.OrderId,
             deliveryRouteId = msg.DeliveryRouteId,
             deliveryId = msg.DeliveryId,
             sender = msg.Sender,
