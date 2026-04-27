@@ -25,4 +25,5 @@ public interface ITandaService
     Task<List<TandaDto>> GetTandasAsync();
     Task<TandaDto?> GetTandaByIdAsync(Guid id);
     Task<TandaViewDto?> GetTandaByTokenAsync(string token);
+    Task DeletePaymentAsync(Guid paymentId);
 }

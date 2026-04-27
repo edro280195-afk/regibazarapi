@@ -387,4 +387,13 @@ public class TandaService : ITandaService
         // y no el Domingo (día 7), permitiendo que la entrega dominical sea el cierre de la semana.
         return ((days == 0 ? 0 : days - 1) / 7) + 1;
     }
+
+    public async Task DeletePaymentAsync(Guid paymentId)
+    {
+        var payment = await _db.TandaPayments.FindAsync(paymentId);
+        if (payment == null) throw new Exception("El registro de pago no existe.");
+
+        _db.TandaPayments.Remove(payment);
+        await _db.SaveChangesAsync();
+    }
 }

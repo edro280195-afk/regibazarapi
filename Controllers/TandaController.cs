@@ -234,4 +234,18 @@ public class TandaController : ControllerBase
             return BadRequest(new { message });
         }
     }
+
+    [HttpDelete("payments/{id}")]
+    public async Task<IActionResult> DeletePayment(Guid id)
+    {
+        try
+        {
+            await _tandaService.DeletePaymentAsync(id);
+            return Ok(new { message = "Pago eliminado correctamente" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
 }

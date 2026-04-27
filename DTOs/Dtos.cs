@@ -128,7 +128,7 @@ public record ManualOrderItemRequest(
 public record ParseLiveRequest(string Text, List<AiParsedOrder>? CurrentState);
 
 // ── Delivery Route ──
-public record CreateRouteRequest(List<int> OrderIds);
+public record CreateRouteRequest(List<int> OrderIds, bool Force = false);
 
 public record RouteDto(
     int Id,

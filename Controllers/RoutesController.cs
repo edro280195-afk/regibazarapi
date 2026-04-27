@@ -50,18 +50,46 @@ public class RoutesController : ControllerBase
         // Prevent duplicates in the request
         var distinctOrderIds = req.OrderIds.Distinct().ToList();
 
-        var orders = await _db.Orders
+        var ordersInDb = await _db.Orders
             .Include(o => o.Client)
-            .Include(o => o.Delivery) // Critical: Ensure we know if a delivery already exists
-            .Where(o => distinctOrderIds.Contains(o.Id)
-                        && o.Status != Models.OrderStatus.Canceled
-                        && o.Status != Models.OrderStatus.Delivered
-                        && o.DeliveryRouteId == null
-                        && o.OrderType == OrderType.Delivery)
+            .Include(o => o.Delivery)
+            .Where(o => distinctOrderIds.Contains(o.Id))
             .ToListAsync();
 
+        var skippedOrders = ordersInDb
+            .Where(o => o.Status == Models.OrderStatus.Canceled 
+                     || o.Status == Models.OrderStatus.Delivered 
+                     || o.DeliveryRouteId != null 
+                     || o.OrderType == OrderType.PickUp)
+            .Select(o => new { 
+                o.Id, 
+                o.Client.Name, 
+                Reason = o.Status == Models.OrderStatus.Canceled ? "Cancelado" :
+                         o.Status == Models.OrderStatus.Delivered ? "Entregado" :
+                         o.DeliveryRouteId != null ? "Ya en otra ruta" : "Es PickUp"
+            })
+            .ToList();
+
+        if (skippedOrders.Any() && !req.Force)
+        {
+            return Conflict(new { 
+                message = "Algunos pedidos no son aptos para ruta o ya están asignados.", 
+                skippedOrders 
+            });
+        }
+
+        var orders = ordersInDb
+            .Where(o => distinctOrderIds.Contains(o.Id))
+            .Where(o => req.Force || (o.Status != Models.OrderStatus.Canceled 
+                                     && o.Status != Models.OrderStatus.Delivered 
+                                     && o.DeliveryRouteId == null 
+                                     && o.OrderType == OrderType.Delivery))
+            // Even with force, we probably shouldn't add Canceled or Delivered orders
+            .Where(o => o.Status != Models.OrderStatus.Canceled && o.Status != Models.OrderStatus.Delivered)
+            .ToList();
+
         if (!orders.Any())
-            return BadRequest("No se encontraron pedidos válidos para ruta (recuerda que los PickUp no se envían).");
+            return BadRequest("No se encontraron pedidos válidos para ruta.");
 
         using var transaction = await _db.Database.BeginTransactionAsync();
         try
@@ -435,7 +463,7 @@ public class RoutesController : ControllerBase
     // ═══════════════════════════════════════════
 
     [HttpPost("{id}/add-order")]
-    public async Task<IActionResult> AddOrderToRoute(int id, [FromBody] int orderId)
+    public async Task<IActionResult> AddOrderToRoute(int id, [FromBody] int orderId, [FromQuery] double? lat = null, [FromQuery] double? lng = null)
     {
         var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
         if (route == null) return NotFound("Ruta no encontrada");
@@ -467,19 +495,19 @@ public class RoutesController : ControllerBase
         }
 
         // 🚀 MEJORA: Recalcular la ruta automáticamente para que no se agregue al final
-        await OptimizeRouteInternal(id);
+        await OptimizeRouteInternal(id, lat, lng);
 
         return Ok(new { Message = "Orden agregada y ruta optimizada correctamente" });
     }
 
     [HttpPost("{id}/optimize")]
-    public async Task<IActionResult> OptimizeRoute(int id)
+    public async Task<IActionResult> OptimizeRoute(int id, [FromQuery] double? lat = null, [FromQuery] double? lng = null)
     {
-        await OptimizeRouteInternal(id);
+        await OptimizeRouteInternal(id, lat, lng);
         return Ok(new { Message = "Ruta optimizada correctamente" });
     }
 
-    private async Task OptimizeRouteInternal(int routeId)
+    private async Task OptimizeRouteInternal(int routeId, double? startLat = null, double? startLng = null)
     {
         var route = await _db.DeliveryRoutes
             .Include(r => r.Deliveries)
@@ -520,9 +548,9 @@ public class RoutesController : ControllerBase
 
         var orders = route.Deliveries.Select(d => d.Order).ToList();
         
-        // Ubicación base (negocio)
-        var lat = _config.GetValue<double>("Cami:RouteCenterLat", 25.8694);
-        var lng = _config.GetValue<double>("Cami:RouteCenterLng", -97.5027);
+        // Ubicación base (negocio) - Fallback a Nuevo Laredo si no se pasan coordenadas
+        var lat = startLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
+        var lng = startLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
 
         var optimizedOrders = _optimizer.OptimizeRoute(orders, lat, lng);
 
