@@ -65,6 +65,9 @@ catch (Exception ex)
 // EPPlus license (NonCommercial)
 ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
+// ── HTTP Client (Mercado Pago y otras llamadas externas) ──
+builder.Services.AddHttpClient();
+
 // ── Database ──
 var connectionString = builder.Configuration.GetConnectionString("Default");
 builder.Services.AddDbContext<AppDbContext>(options =>

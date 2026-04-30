@@ -674,3 +674,17 @@ public record CreatePosOrderRequest(string ClientName);
 public record PosVoiceRequest(string Text, int? OrderId = null);
 public record PosVoiceResponse(string Message, string? AudioBase64, List<PosVoiceAction> Actions);
 public record PosVoiceAction(string Type, string? ClientName = null, string? ProductName = null, decimal? Price = null, int? Quantity = null);
+
+// ── Pago con Tarjeta (Mercado Pago) ──
+public record CardPaymentRequest(
+    string CardToken,
+    string PaymentMethodId,
+    string? IssuerId,
+    int Installments);
+
+public record CardPaymentResultDto(
+    string Status,
+    string StatusDetail,
+    decimal Amount,
+    string Message,
+    long? PaymentId = null);
