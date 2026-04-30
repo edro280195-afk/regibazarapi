@@ -382,10 +382,10 @@ public class TandaService : ITandaService
         var timeSpan = DateTime.UtcNow.Date - startDate.Date;
         int days = (int)timeSpan.TotalDays;
         
-        if (days < 0) return 0;
+        if (days <= 0) return 1;
         // Restamos 1 día para que el cambio de semana ocurra el Lunes (día 8) 
         // y no el Domingo (día 7), permitiendo que la entrega dominical sea el cierre de la semana.
-        return ((days == 0 ? 0 : days - 1) / 7) + 1;
+        return ((days - 1) / 7) + 1;
     }
 
     public async Task DeletePaymentAsync(Guid paymentId)
