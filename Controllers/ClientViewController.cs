@@ -316,7 +316,9 @@ public class ClientViewController : ControllerBase
             installments = req.Installments,
             payment_method_id = req.PaymentMethodId,
             issuer_id = issuerId,
-            payer = new { email = "pagos@regibazar.com" }
+            payer = new { email = "pagos@regibazar.com" },
+            external_reference = $"order_{order.Id}",
+            metadata = new { order_id = order.Id, type = "order_payment" }
         };
 
         HttpResponseMessage httpResponse;
