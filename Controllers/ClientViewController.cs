@@ -330,10 +330,33 @@ public class ClientViewController : ControllerBase
             return StatusCode(502, new { message = "No se pudo conectar con Mercado Pago. Intenta de nuevo." });
         }
 
+        var rawBody = await httpResponse.Content.ReadAsStringAsync();
+        Console.WriteLine($"[MercadoPago] HTTP {(int)httpResponse.StatusCode}: {rawBody}");
+
+        // Si MP devuelve error HTTP (4xx/5xx), parseamos su mensaje y lo devolvemos
+        if (!httpResponse.IsSuccessStatusCode)
+        {
+            string mpErrorMsg = "Error al procesar el pago con Mercado Pago.";
+            try
+            {
+                var errDoc = System.Text.Json.JsonDocument.Parse(rawBody);
+                if (errDoc.RootElement.TryGetProperty("message", out var msgEl))
+                    mpErrorMsg = msgEl.GetString() ?? mpErrorMsg;
+                if (errDoc.RootElement.TryGetProperty("cause", out var causeEl) && causeEl.GetArrayLength() > 0)
+                {
+                    var desc = causeEl[0].TryGetProperty("description", out var d) ? d.GetString() : null;
+                    if (!string.IsNullOrEmpty(desc)) mpErrorMsg = desc;
+                }
+            }
+            catch { }
+            return StatusCode(502, new { message = mpErrorMsg });
+        }
+
         MpPaymentApiResponse? mpResult;
         try
         {
-            mpResult = await httpResponse.Content.ReadFromJsonAsync<MpPaymentApiResponse>(
+            mpResult = System.Text.Json.JsonSerializer.Deserialize<MpPaymentApiResponse>(
+                rawBody,
                 new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
         catch
