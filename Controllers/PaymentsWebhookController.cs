@@ -84,7 +84,10 @@ public class PaymentsWebhookController : ControllerBase
             {
                 await ProcessOrderPayment(mpPayment);
             }
-            // Aquí podríamos agregar tanda_ si fuera necesario en el futuro
+            else if (mpPayment.ExternalReference.StartsWith("tanda_"))
+            {
+                await ProcessTandaPayment(mpPayment);
+            }
         }
         catch (Exception ex)
         {
@@ -92,6 +95,60 @@ public class PaymentsWebhookController : ControllerBase
         }
 
         return Ok();
+    }
+
+    private async Task ProcessTandaPayment(MpPaymentDetail mpPayment)
+    {
+        // Format: tanda_{tandaId}_{participantId}_{weekNumber}
+        var parts = mpPayment.ExternalReference?.Split('_');
+        if (parts == null || parts.Length < 4) return;
+
+        if (!Guid.TryParse(parts[1], out Guid tandaId) || 
+            !Guid.TryParse(parts[2], out Guid participantId) ||
+            !int.TryParse(parts[3], out int week))
+            return;
+
+        if (mpPayment.Status != "approved") return;
+
+        var participant = await _db.TandaParticipants
+            .Include(p => p.Payments)
+            .Include(p => p.Tanda)
+            .Include(p => p.Client)
+            .FirstOrDefaultAsync(p => p.Id == participantId);
+
+        if (participant == null) return;
+
+        // Verificar duplicados
+        var existing = participant.Payments.Any(p => p.WeekNumber == week && p.Notes != null && p.Notes.Contains($"MP#{mpPayment.Id}"));
+        if (existing) return;
+
+        var payment = new TandaPayment
+        {
+            ParticipantId = participant.Id,
+            WeekNumber = week,
+            AmountPaid = mpPayment.TransactionAmount,
+            PaymentDate = DateTime.UtcNow,
+            IsVerified = true,
+            Notes = $"MP#{mpPayment.Id} (Tarjeta/Webhook)"
+        };
+
+        _db.TandaPayments.Add(payment);
+        await _db.SaveChangesAsync();
+
+        // Notificar a Admins
+        var clientName = participant.Client?.Name ?? "Participante";
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
+            TandaId = tandaId,
+            ParticipantName = clientName,
+            Amount = mpPayment.TransactionAmount,
+            Type = "tanda_card_payment_webhook"
+        });
+
+        await _push.SendNotificationToAdminsAsync(
+            $"💎 Pago Tanda (Webhook): ${mpPayment.TransactionAmount:F2}",
+            $"{clientName} pagó la semana {week} de {participant.Tanda?.Name ?? "Tanda"}.",
+            tag: "tanda-payment-webhook"
+        );
     }
 
     private async Task ProcessOrderPayment(MpPaymentDetail mpPayment)

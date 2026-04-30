@@ -74,6 +74,7 @@ public class TandaViewDto
 
 public class TandaParticipantViewDto
 {
+    public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public int AssignedTurn { get; set; }
     public bool HasPaidCurrentWeek { get; set; }

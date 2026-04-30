@@ -288,6 +288,7 @@ public class TandaService : ITandaService
             CurrentWeek = currentWeek,
             Participants = tanda.Participants.Select(p => new TandaParticipantViewDto
             {
+                Id = p.Id,
                 Name = AnonymizeName(p.Client?.Name ?? "Participante"),
                 AssignedTurn = p.AssignedTurn,
                 HasPaidCurrentWeek = p.Payments.Any(pay => pay.WeekNumber == currentWeek),
