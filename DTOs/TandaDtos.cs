@@ -162,3 +162,8 @@ public class UpdateParticipantVariantDto
 {
     public string? Variant { get; set; }
 }
+
+public class ReorderParticipantsDto
+{
+    public List<Guid> ParticipantIds { get; set; } = new();
+}

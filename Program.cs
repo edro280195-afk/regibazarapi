@@ -123,6 +123,7 @@ builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPosService, PosService>();
 builder.Services.AddScoped<ITandaService, TandaService>();
+builder.Services.AddScoped<IRaffleService, RaffleService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 
 // ── SignalR ──
@@ -186,11 +187,11 @@ builder.Services.AddDirectoryBrowser();
 var app = builder.Build();
 
 // ── Migrate DB on startup ──
-//using (var scope = app.Services.CreateScope())
-//{
-//    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-//    await db.Database.MigrateAsync();
-//}
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
 
 // ── Middleware pipeline ──
 if (app.Environment.IsDevelopment())

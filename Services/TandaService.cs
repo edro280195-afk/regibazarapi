@@ -194,23 +194,50 @@ public class TandaService : ITandaService
         await _db.SaveChangesAsync();
     }
 
-    public async Task ShuffleParticipantsAsync(Guid tandaId)
+    public async Task<List<TandaParticipantDto>> ShuffleParticipantsAsync(Guid tandaId, Guid? forcedTurn1Id = null)
     {
         var participants = await _db.TandaParticipants
+            .Include(p => p.Client)
             .Where(p => p.TandaId == tandaId)
             .ToListAsync();
 
-        if (!participants.Any()) return;
+        if (!participants.Any()) return new List<TandaParticipantDto>();
 
-        var random = new Random();
-        var shuffledIndices = Enumerable.Range(1, participants.Count).OrderBy(x => random.Next()).ToList();
-
-        for (int i = 0; i < participants.Count; i++)
+        // Paso 1: Liberar turnos actuales con offset temporal
+        foreach (var p in participants)
         {
-            participants[i].AssignedTurn = shuffledIndices[i];
+            p.AssignedTurn += 1000;
+        }
+        await _db.SaveChangesAsync();
+
+        // Paso 2: Realizar el shuffle
+        var random = new Random();
+        
+        // Si hay un ganador forzado (desde la ruleta), lo asignamos al Turno 1
+        var remainingParticipants = participants.ToList();
+        if (forcedTurn1Id.HasValue)
+        {
+            var winner = remainingParticipants.FirstOrDefault(p => p.Id == forcedTurn1Id.Value);
+            if (winner != null)
+            {
+                winner.AssignedTurn = 1;
+                remainingParticipants.Remove(winner);
+            }
+        }
+
+        // Shuffle para el resto de los turnos
+        var startTurn = forcedTurn1Id.HasValue ? 2 : 1;
+        var turns = Enumerable.Range(startTurn, participants.Count - (forcedTurn1Id.HasValue ? 1 : 0))
+                             .OrderBy(x => random.Next()).ToList();
+
+        for (int i = 0; i < remainingParticipants.Count; i++)
+        {
+            remainingParticipants[i].AssignedTurn = turns[i];
         }
 
         await _db.SaveChangesAsync();
+
+        return participants.Select(MapToParticipantDto).ToList();
     }
 
     public async Task<List<TandaProductDto>> GetProductsAsync()
@@ -395,6 +422,37 @@ public class TandaService : ITandaService
         if (payment == null) throw new Exception("El registro de pago no existe.");
 
         _db.TandaPayments.Remove(payment);
+        await _db.SaveChangesAsync();
+    }
+
+    public async Task ReorderParticipantsAsync(Guid tandaId, List<Guid> participantIdsInOrder)
+    {
+        var participants = await _db.TandaParticipants
+            .Where(p => p.TandaId == tandaId)
+            .ToListAsync();
+
+        if (participants.Count != participantIdsInOrder.Count)
+            throw new Exception("La lista de participantes no coincide con el total de la tanda.");
+
+        // Para evitar el error de dependencia circular (circular dependency) por el índice único {tanda_id, assigned_turn}
+        // movemos temporalmente los turnos a un rango fuera de lo normal (sumando 1000)
+        foreach (var p in participants)
+        {
+            p.AssignedTurn += 1000;
+        }
+        await _db.SaveChangesAsync();
+
+        // Ahora asignamos el orden final solicitado
+        for (int i = 0; i < participantIdsInOrder.Count; i++)
+        {
+            var pId = participantIdsInOrder[i];
+            var participant = participants.FirstOrDefault(p => p.Id == pId);
+            if (participant != null)
+            {
+                participant.AssignedTurn = i + 1;
+            }
+        }
+
         await _db.SaveChangesAsync();
     }
 }

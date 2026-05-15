@@ -14,7 +14,7 @@ public interface ITandaService
     Task ConfirmParticipantDeliveryAsync(Guid participantId);
     Task RemoveParticipantAsync(Guid participantId);
     Task ProcessPenaltiesAsync(Guid tandaId);
-    Task ShuffleParticipantsAsync(Guid tandaId);
+    Task<List<TandaParticipantDto>> ShuffleParticipantsAsync(Guid tandaId, Guid? forcedTurn1Id = null);
     Task<TandaDto> UpdateTandaAsync(Guid id, UpdateTandaDto dto);
     
     // Catalogo de productos
@@ -26,4 +26,5 @@ public interface ITandaService
     Task<TandaDto?> GetTandaByIdAsync(Guid id);
     Task<TandaViewDto?> GetTandaByTokenAsync(string token);
     Task DeletePaymentAsync(Guid paymentId);
+    Task ReorderParticipantsAsync(Guid tandaId, List<Guid> participantIdsInOrder);
 }

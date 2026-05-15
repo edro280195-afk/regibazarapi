@@ -12,10 +12,12 @@ namespace EntregasApi.Controllers;
 public class TandaController : ControllerBase
 {
     private readonly ITandaService _tandaService;
+    private readonly IRaffleService _raffleService;
 
-    public TandaController(ITandaService tandaService)
+    public TandaController(ITandaService tandaService, IRaffleService raffleService)
     {
         _tandaService = tandaService;
+        _raffleService = raffleService;
     }
 
     [HttpGet]
@@ -123,12 +125,87 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost("{id}/shuffle")]
-    public async Task<IActionResult> ShuffleParticipants(Guid id)
+    public async Task<IActionResult> ShuffleParticipants(Guid id, [FromQuery] Guid? winnerId)
     {
         try
         {
-            await _tandaService.ShuffleParticipantsAsync(id);
-            return Ok(new { message = "Sorteo realizado con éxito 🎲" });
+            var result = await _tandaService.ShuffleParticipantsAsync(id, winnerId);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("{id}/shuffle-with-raffle")]
+    public async Task<IActionResult> ShuffleWithRaffle(Guid id, [FromBody] SelectWinnerDto dto)
+    {
+        try
+        {
+            // Buscar o crear sorteo vinculado a esta tanda
+            var existingRaffles = await _raffleService.GetRafflesByTandaAsync(id);
+            var activeRaffle = existingRaffles.FirstOrDefault(r => r.Status == "Draft" || r.Status == "Active");
+
+            if (activeRaffle == null)
+            {
+                // Crear sorteo automáticamente para esta tanda
+                var tanda = await _tandaService.GetTandaByIdAsync(id);
+                if (tanda == null)
+                    return NotFound(new { message = "Tanda no encontrada" });
+
+                var createDto = new CreateRaffleDto
+                {
+                    Name = $"Sorteo de turnos - {tanda.Name}",
+                    Description = "Sorteo de asignación de turnos para la tanda",
+                    AnimationType = "roulette",
+                    PrizeType = "custom",
+                    PrizeDescription = "Nuevo turno asignado",
+                    RequiredPurchases = 1,
+                    EligibilityRule = "purchaseCount",
+                    ClientSegmentFilter = "all",
+                    TandaId = id,
+                    ShuffleTandaTurns = true,
+                    RaffleDate = DateTime.UtcNow,
+                    NotifyWinner = false,
+                    AutoDraw = false
+                };
+
+                var raffle = await _raffleService.CreateRaffleAsync(createDto);
+                await _raffleService.UpdateRaffleAsync(raffle.Id, new UpdateRaffleDto { Status = "Active" });
+
+                // Evaluar participantes de la tanda
+                await _raffleService.EvaluateRaffleAsync(raffle.Id);
+
+                // Hacer el shuffle
+                var result = await _raffleService.ShuffleTandaTurnsAsync(raffle.Id, dto);
+
+                // Anunciar ganador (completar sorteo)
+                await _raffleService.AnnounceWinnerAsync(raffle.Id);
+
+                return Ok(result);
+            }
+
+            // Si ya existe un sorteo activo, usarlo
+            await _raffleService.EvaluateRaffleAsync(activeRaffle.Id);
+            var shuffleResult = await _raffleService.ShuffleTandaTurnsAsync(activeRaffle.Id, dto);
+            await _raffleService.AnnounceWinnerAsync(activeRaffle.Id);
+
+            return Ok(shuffleResult);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("{id}/raffles")]
+    public async Task<IActionResult> GetTandaRaffles(Guid id)
+    {
+        try
+        {
+            var raffles = await _raffleService.GetRafflesByTandaAsync(id);
+            return Ok(raffles);
         }
         catch (Exception ex)
         {
@@ -242,6 +319,20 @@ public class TandaController : ControllerBase
         {
             await _tandaService.DeletePaymentAsync(id);
             return Ok(new { message = "Pago eliminado correctamente" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("{id}/reorder")]
+    public async Task<IActionResult> ReorderParticipants(Guid id, [FromBody] ReorderParticipantsDto dto)
+    {
+        try
+        {
+            await _tandaService.ReorderParticipantsAsync(id, dto.ParticipantIds);
+            return Ok(new { message = "Orden de participantes actualizado correctamente ✨" });
         }
         catch (Exception ex)
         {

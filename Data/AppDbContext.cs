@@ -35,6 +35,12 @@ public class AppDbContext : DbContext
     public DbSet<OrderPackage> OrderPackages => Set<OrderPackage>();
     public DbSet<FcmToken> FcmTokens => Set<FcmToken>();
 
+    // Sorteos
+    public DbSet<Raffle> Raffles => Set<Raffle>();
+    public DbSet<RaffleParticipant> RaffleParticipants => Set<RaffleParticipant>();
+    public DbSet<RaffleEntry> RaffleEntries => Set<RaffleEntry>();
+    public DbSet<RaffleDraw> RaffleDraws => Set<RaffleDraw>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -205,6 +211,83 @@ public class AppDbContext : DbContext
 
             entity.Property(e => e.CreatedAt)
                   .HasDefaultValueSql("NOW()");
+        });
+
+        // Sorteos
+        modelBuilder.Entity<Raffle>(entity =>
+        {
+            entity.HasIndex(r => r.Status);
+            entity.HasIndex(r => r.RaffleDate);
+            entity.HasIndex(r => r.TandaId);
+
+            entity.HasOne(r => r.Winner)
+                  .WithMany()
+                  .HasForeignKey(r => r.WinnerId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(r => r.Tanda)
+                  .WithMany()
+                  .HasForeignKey(r => r.TandaId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(r => r.PrizeProduct)
+                  .WithMany()
+                  .HasForeignKey(r => r.PrizeProductId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasMany(r => r.Participants)
+                  .WithOne(p => p.Raffle)
+                  .HasForeignKey(p => p.RaffleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasMany(r => r.Entries)
+                  .WithOne(e => e.Raffle)
+                  .HasForeignKey(e => e.RaffleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasMany(r => r.Draws)
+                  .WithOne(d => d.Raffle)
+                  .HasForeignKey(d => d.RaffleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RaffleParticipant>(entity =>
+        {
+            entity.HasIndex(p => new { p.RaffleId, p.ClientId })
+                  .IsUnique()
+                  .HasDatabaseName("IX_RaffleParticipant_Raffle_Client");
+
+            entity.HasOne(p => p.Client)
+                  .WithMany()
+                  .HasForeignKey(p => p.ClientId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RaffleEntry>(entity =>
+        {
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => new { e.RaffleId, e.ClientId });
+
+            entity.HasOne(e => e.Client)
+                  .WithMany()
+                  .HasForeignKey(e => e.ClientId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Order)
+                  .WithMany()
+                  .HasForeignKey(e => e.OrderId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RaffleDraw>(entity =>
+        {
+            entity.HasIndex(d => d.RaffleId);
+            entity.HasIndex(d => d.DrawDate);
+
+            entity.HasOne(d => d.Winner)
+                  .WithMany()
+                  .HasForeignKey(d => d.WinnerId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }
