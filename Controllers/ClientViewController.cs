@@ -270,6 +270,21 @@ public class ClientViewController : ControllerBase
 
         return Ok(msgDto);
     }
+    /// <summary>PATCH /api/pedido/{token}/instructions - Actualiza las instrucciones de entrega</summary>
+    [HttpPatch("instructions")]
+    [AllowAnonymous]
+    public async Task<IActionResult> UpdateInstructions(string accessToken, [FromBody] UpdateInstructionsRequest req)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
+        if (order == null) return NotFound(new { message = "Pedido no encontrado." });
+        if (order.ExpiresAt < DateTime.UtcNow) return StatusCode(410, new { message = "Este enlace ha expirado." });
+
+        order.DeliveryInstructions = req.Instructions;
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "Instrucciones actualizadas." });
+    }
+
     /// <summary>POST /api/pedido/{token}/payment/card - La clienta paga con tarjeta via Mercado Pago</summary>
     [HttpPost("payment/card")]
     [AllowAnonymous]

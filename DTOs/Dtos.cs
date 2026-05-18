@@ -579,6 +579,8 @@ public record UpdateOrderItemRequest(
 );
 
 public record SendMessageRequest(string Text);
+public record UpdateInstructionsRequest(string Instructions);
+
 
 // ── SalesPeriods (Cortes de Venta) ──
 public record SalesPeriodDto(
