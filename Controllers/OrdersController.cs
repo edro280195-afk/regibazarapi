@@ -959,9 +959,12 @@ public class OrdersController : ControllerBase
         {
             bool typeChanged = !string.IsNullOrEmpty(req.Type) && order.Client.Type != req.Type;
 
+            // No sobrescribir datos opcionales del cliente si llegan vacíos/null:
+            // la edición rápida desde el Kanban mandaba "" cuando el formulario no
+            // incluía esos campos y borraba la BD.
             order.Client.Name = req.ClientName;
-            order.Client.Address = req.ClientAddress;
-            order.Client.Phone = req.ClientPhone;
+            if (!string.IsNullOrWhiteSpace(req.ClientAddress)) order.Client.Address = req.ClientAddress;
+            if (!string.IsNullOrWhiteSpace(req.ClientPhone)) order.Client.Phone = req.ClientPhone;
             if (!string.IsNullOrEmpty(req.Type)) order.Client.Type = req.Type;
 
             // Si el tipo cambió, sincronizamos las caducidades de todos sus pedidos pendientes

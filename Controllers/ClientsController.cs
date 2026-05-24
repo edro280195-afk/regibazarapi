@@ -102,11 +102,14 @@ public class ClientsController : ControllerBase
         bool typeChanged = client.Type != req.Type;
 
         // 2. Actualizamos los datos de la clienta
+        // Los campos opcionales se ignoran si llegan vacíos/null: este endpoint se usa
+        // desde formularios parciales (guardar solo dirección, solo tag, etc.) y antes
+        // borraba los datos previamente capturados.
         client.Name = req.Name;
-        client.Phone = req.Phone;
-        client.Address = req.Address;
+        if (!string.IsNullOrWhiteSpace(req.Phone)) client.Phone = req.Phone;
+        if (!string.IsNullOrWhiteSpace(req.Address)) client.Address = req.Address;
         client.Type = req.Type;
-        client.DeliveryInstructions = req.DeliveryInstructions;
+        if (!string.IsNullOrWhiteSpace(req.DeliveryInstructions)) client.DeliveryInstructions = req.DeliveryInstructions;
 
         if (Enum.TryParse<ClientTag>(req.Tag, true, out var newTag))
         {
