@@ -642,8 +642,11 @@ public class OrdersController : ControllerBase
         // ── 2. Incomes / Billed (Venta Real: Entregas ocurridas en el rango) ──
         // NOTA: Usamos Deliveries para ser ultra-precisos sobre CUANDO se entregó
         var deliveredInPeriodIds = await _db.Deliveries
-            .Where(d => d.Status == DeliveryStatus.Delivered && d.DeliveredAt >= startDate && d.DeliveredAt < endDateExclusive)
-            .Select(d => d.OrderId)
+            .Where(d => d.OrderId != null
+                        && d.Status == DeliveryStatus.Delivered
+                        && d.DeliveredAt >= startDate
+                        && d.DeliveredAt < endDateExclusive)
+            .Select(d => d.OrderId!.Value)
             .ToListAsync();
         
         // También incluimos orders marcadas como Delivered cuya creación sea en el rango si no tienen registro de Delivery (retro-compatibilidad)

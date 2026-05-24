@@ -8,11 +8,19 @@ public class Delivery
     [Key]
     public int Id { get; set; }
 
-    [Required]
-    public int OrderId { get; set; }
+    // Una Delivery apunta a una Order normal O a un TandaParticipant (XOR, ver AppDbContext).
+    public int? OrderId { get; set; }
 
     [ForeignKey(nameof(OrderId))]
-    public Order Order { get; set; } = null!;
+    public Order? Order { get; set; }
+
+    public Guid? TandaParticipantId { get; set; }
+
+    [ForeignKey(nameof(TandaParticipantId))]
+    public TandaParticipant? TandaParticipant { get; set; }
+
+    /// <summary>Tipo de entrega: pedido regular o turno de tanda.</summary>
+    public DeliveryKind Kind { get; set; } = DeliveryKind.Order;
 
     [Required]
     public int DeliveryRouteId { get; set; }
@@ -72,4 +80,10 @@ public enum EvidenceType
 {
     DeliveryProof = 0,
     NonDeliveryProof = 1
+}
+
+public enum DeliveryKind
+{
+    Order = 0,
+    Tanda = 1
 }

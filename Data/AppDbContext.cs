@@ -69,11 +69,29 @@ public class AppDbContext : DbContext
 
         // --- RELACIONES & CONFIGURACIONES ---
 
-        // One-to-one: Order -> Delivery
+        // One-to-one: Order -> Delivery (OrderId es nullable para soportar deliveries de tanda)
         modelBuilder.Entity<Order>()
             .HasOne(o => o.Delivery)
             .WithOne(d => d.Order)
-            .HasForeignKey<Delivery>(d => d.OrderId);
+            .HasForeignKey<Delivery>(d => d.OrderId)
+            .IsRequired(false);
+
+        // Delivery -> TandaParticipant (many-to-one opcional; XOR con OrderId)
+        modelBuilder.Entity<Delivery>(entity =>
+        {
+            entity.HasOne(d => d.TandaParticipant)
+                  .WithMany()
+                  .HasForeignKey(d => d.TandaParticipantId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(d => d.TandaParticipantId);
+
+            // Garantiza el XOR: exactamente uno de OrderId / TandaParticipantId debe estar presente.
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_Deliveries_OrderXorTanda",
+                "(\"OrderId\" IS NOT NULL AND \"TandaParticipantId\" IS NULL) OR " +
+                "(\"OrderId\" IS NULL AND \"TandaParticipantId\" IS NOT NULL)"));
+        });
 
         // Order -> Payments (1:N)
         modelBuilder.Entity<Order>()

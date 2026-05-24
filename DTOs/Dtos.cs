@@ -128,7 +128,11 @@ public record ManualOrderItemRequest(
 public record ParseLiveRequest(string Text, List<AiParsedOrder>? CurrentState);
 
 // ── Delivery Route ──
-public record CreateRouteRequest(List<int> OrderIds, bool Force = false);
+public record CreateRouteRequest(
+    List<int> OrderIds,
+    bool Force = false,
+    List<Guid>? TandaParticipantIds = null
+);
 
 public record RouteDto(
     int Id,
@@ -143,7 +147,7 @@ public record RouteDto(
 
 public record RouteDeliveryDto(
     int DeliveryId,
-    int OrderId,
+    int? OrderId,
     int SortOrder,
     string ClientName,
     string? ClientAddress,
@@ -167,12 +171,39 @@ public record RouteDeliveryDto(
     string? AlternativeAddress = null,
     // Feature #5 — Etiqueta y tipo de cliente para el chofer
     string? ClientTag = null,
-    string? ClientType = null
+    string? ClientType = null,
+    // ── Tanda fields (cuando Kind == "Tanda") ──
+    string Kind = "Order",
+    Guid? TandaParticipantId = null,
+    Guid? TandaId = null,
+    string? TandaName = null,
+    string? TandaProductName = null,
+    int? TandaWeek = null,
+    int? TandaTotalWeeks = null,
+    string? TandaVariant = null
 )
 {
     public int Id => DeliveryId;
     public string? Address => ClientAddress;
 }
+
+// Tandas listas para incluirse en una ruta dominical
+public record AvailableTandaDto(
+    Guid TandaParticipantId,
+    Guid TandaId,
+    string TandaName,
+    string? TandaProductName,
+    int Week,
+    int TotalWeeks,
+    string? Variant,
+    int ClientId,
+    string ClientName,
+    string? ClientAddress,
+    string? ClientPhone,
+    double? ClientLatitude,
+    double? ClientLongitude,
+    string? DeliveryInstructions
+);
 
 // ── AI Voice Routes ──
 public record AiRouteSelectionRequest(

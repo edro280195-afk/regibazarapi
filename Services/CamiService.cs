@@ -479,9 +479,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             return "No encontré tu ruta activa. Por favor, verifica tu conexión.";
 
         // 2. Obtener IDs de pedidos asignados a esta ruta para inyectar contexto
+        // (Las deliveries de tanda no tienen OrderId; se excluyen para el contexto del chofer.)
         var orderIds = await _db.Deliveries
-            .Where(d => d.DeliveryRouteId == route.Id)
-            .Select(d => d.OrderId)
+            .Where(d => d.DeliveryRouteId == route.Id && d.OrderId != null)
+            .Select(d => d.OrderId!.Value)
             .ToListAsync();
 
         var contextMessage = $"Solo puedes modificar o consultar los pedidos con IDs: {string.Join(", ", orderIds)}.";
@@ -1037,7 +1038,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     {
         var limite = GetInt(args, "limite", 5);
         var rutas = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.TandaParticipant).ThenInclude(p => p!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.TandaParticipant).ThenInclude(p => p!.Tanda)
             .OrderByDescending(r => r.CreatedAt)
             .Take(Math.Clamp(limite, 1, 20))
             .Select(r => new
@@ -1050,8 +1053,15 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                 entregas = r.Deliveries.Select(d => new
                 {
                     orderId  = d.OrderId,
-                    clienta  = d.Order.Client.Name,
-                    estadoEntrega = d.Order.Status.ToSpanishString()
+                    tipo     = d.Kind.ToString(),
+                    clienta  = d.Kind == DeliveryKind.Tanda
+                        ? (d.TandaParticipant != null && d.TandaParticipant.Client != null
+                            ? d.TandaParticipant.Client.Name
+                            : "Tanda")
+                        : (d.Order != null ? d.Order.Client.Name : "—"),
+                    estadoEntrega = d.Order != null
+                        ? d.Order.Status.ToSpanishString()
+                        : d.Status.ToString()
                 })
             })
             .ToListAsync();
@@ -1521,6 +1531,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             _db.Deliveries.Add(new Delivery
             {
                 OrderId         = order.Id,
+                Kind            = DeliveryKind.Order,
                 DeliveryRouteId = route.Id,
                 SortOrder       = sort++,
                 Status          = DeliveryStatus.Pending
@@ -1541,7 +1552,8 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     {
         var rutaId = GetInt(args, "ruta_id");
         var route  = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.TandaParticipant)
             .FirstOrDefaultAsync(r => r.Id == rutaId);
 
         if (route == null)
@@ -1551,13 +1563,31 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         route.CompletedAt = DateTime.UtcNow;
 
         var entregados = 0;
+        var entregadosTanda = 0;
+        var now = DateTime.UtcNow;
         foreach (var delivery in route.Deliveries)
         {
-            if (delivery.Order.Status == OrderStatus.InRoute)
+            if (delivery.Kind == DeliveryKind.Tanda)
+            {
+                if (delivery.Status == DeliveryStatus.Pending)
+                {
+                    delivery.Status = DeliveryStatus.Delivered;
+                    delivery.DeliveredAt = now;
+                    if (delivery.TandaParticipant != null)
+                    {
+                        delivery.TandaParticipant.IsDelivered = true;
+                        delivery.TandaParticipant.DeliveryDate = now;
+                    }
+                    entregadosTanda++;
+                }
+                continue;
+            }
+
+            if (delivery.Order != null && delivery.Order.Status == OrderStatus.InRoute)
             {
                 delivery.Order.Status = OrderStatus.Delivered;
                 delivery.Status       = DeliveryStatus.Delivered;
-                delivery.DeliveredAt  = DateTime.UtcNow;
+                delivery.DeliveredAt  = now;
                 entregados++;
 
                 // Puntos de lealtad
@@ -1571,7 +1601,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                         ClientId = delivery.Order.ClientId,
                         Points   = puntos,
                         Reason   = $"Pedido #{delivery.OrderId} entregada (ruta #{rutaId})",
-                        Date     = DateTime.UtcNow
+                        Date     = now
                     });
                 }
             }
@@ -1581,9 +1611,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
 
         return ToJson(new
         {
-            mensaje   = $"Ruta #{rutaId} liquidada. {entregados} pedidos marcados como entregados.",
+            mensaje   = $"Ruta #{rutaId} liquidada. {entregados} pedidos y {entregadosTanda} tandas marcadas como entregadas.",
             rutaId    = rutaId,
-            entregados = entregados
+            entregados = entregados,
+            tandas = entregadosTanda
         });
     }
 
