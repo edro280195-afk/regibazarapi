@@ -131,7 +131,67 @@ public record ParseLiveRequest(string Text, List<AiParsedOrder>? CurrentState);
 public record CreateRouteRequest(
     List<int> OrderIds,
     bool Force = false,
-    List<Guid>? TandaParticipantIds = null
+    List<Guid>? TandaParticipantIds = null,
+    /// <summary>
+    /// Si es true, OrderIds y TandaParticipantIds vienen en el orden óptimo deseado
+    /// (típicamente desde un preview del frontend) y se respeta sin re-optimizar.
+    /// Si es false (default), el backend re-optimiza usando Google Routes API.
+    /// </summary>
+    bool PreOptimized = false
+);
+
+public record SkippedStopDto(
+    string Kind,         // "Order" | "Tanda"
+    string Id,           // int como string o Guid como string
+    string Name,         // nombre del cliente
+    string Reason
+);
+
+public record CreateRouteResponse(
+    RouteDto Route,
+    List<SkippedStopDto> Skipped
+);
+
+public record PreviewRouteRequest(
+    List<int>? OrderIds,
+    List<Guid>? TandaParticipantIds,
+    double? StartLat,
+    double? StartLng
+);
+
+public record PreviewStopDto(
+    string Kind,                 // "Order" | "Tanda"
+    int? OrderId,
+    Guid? TandaParticipantId,
+    int SortOrder,
+    string ClientName,
+    string? ClientAddress,
+    double? Latitude,
+    double? Longitude,
+    decimal Total,
+    bool HasCoords,
+    string? TandaName,
+    int? TandaWeek
+);
+
+public record PreviewRouteResponse(
+    List<PreviewStopDto> Stops,
+    int TotalDistanceMeters,
+    int TotalDurationSeconds,
+    string OptimizerSource,
+    List<SkippedStopDto> Skipped,
+    int StopsWithoutCoords
+);
+
+public record BulkGeocodeRequest(List<int> ClientIds);
+public record SetClientCoordinatesRequest(double Latitude, double Longitude, string? Address);
+public record BulkGeocodeResultDto(
+    int ClientId,
+    bool Success,
+    double? Latitude,
+    double? Longitude,
+    string? FormattedAddress,
+    string? Error
 );
 
 public record RouteDto(

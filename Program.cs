@@ -120,6 +120,7 @@ builder.Services.AddScoped<IGeminiService, GeminiService>();
 builder.Services.AddScoped<ICamiService, CamiService>();
 builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
 builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
+builder.Services.AddScoped<IGeocodingService, GeocodingService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPosService, PosService>();
 builder.Services.AddScoped<ITandaService, TandaService>();

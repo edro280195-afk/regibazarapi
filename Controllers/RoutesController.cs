@@ -40,9 +40,9 @@ public class RoutesController : ControllerBase
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
 
-    /// <summary>POST /api/routes - Crear ruta con órdenes y/o tandas seleccionadas</summary>
+    /// <summary>POST /api/routes - Crear ruta con órdenes y/o tandas seleccionadas. Optimiza con Google Routes API.</summary>
     [HttpPost]
-    public async Task<ActionResult<RouteDto>> Create(CreateRouteRequest req)
+    public async Task<ActionResult<CreateRouteResponse>> Create(CreateRouteRequest req)
     {
         var distinctOrderIds = (req.OrderIds ?? new List<int>()).Distinct().ToList();
         var distinctTandaIds = (req.TandaParticipantIds ?? new List<Guid>()).Distinct().ToList();
@@ -50,80 +50,43 @@ public class RoutesController : ControllerBase
         if (distinctOrderIds.Count == 0 && distinctTandaIds.Count == 0)
             return BadRequest("Selecciona al menos un pedido o una tanda.");
 
-        var ordersInDb = distinctOrderIds.Count > 0
-            ? await _db.Orders
-                .Include(o => o.Client)
-                .Include(o => o.Delivery)
-                .Where(o => distinctOrderIds.Contains(o.Id))
-                .ToListAsync()
-            : new List<Order>();
+        var (orders, tandas, skipped) = await ValidateAndPartitionAsync(distinctOrderIds, distinctTandaIds);
 
-        var skippedOrders = ordersInDb
-            .Where(o => o.Status == Models.OrderStatus.Canceled
-                     || o.Status == Models.OrderStatus.Delivered
-                     || o.DeliveryRouteId != null
-                     || o.OrderType == OrderType.PickUp)
-            .Select(o => new {
-                o.Id,
-                o.Client.Name,
-                Reason = o.Status == Models.OrderStatus.Canceled ? "Cancelado" :
-                         o.Status == Models.OrderStatus.Delivered ? "Entregado" :
-                         o.DeliveryRouteId != null ? "Ya en otra ruta" : "Es PickUp"
-            })
-            .ToList();
-
-        // Validación tandas: el participante existe, no fue entregado y no está en otra ruta activa.
-        var tandaParticipantsInDb = distinctTandaIds.Count > 0
-            ? await _db.TandaParticipants
-                .Include(p => p.Client)
-                .Include(p => p.Tanda)
-                    .ThenInclude(t => t!.Product)
-                .Where(p => distinctTandaIds.Contains(p.Id))
-                .ToListAsync()
-            : new List<TandaParticipant>();
-
-        var tandaParticipantsInActiveRoute = distinctTandaIds.Count > 0
-            ? await _db.Deliveries
-                .Where(d => d.TandaParticipantId != null
-                            && distinctTandaIds.Contains(d.TandaParticipantId!.Value)
-                            && (d.DeliveryRoute.Status == RouteStatus.Pending || d.DeliveryRoute.Status == RouteStatus.Active))
-                .Select(d => d.TandaParticipantId!.Value)
-                .ToListAsync()
-            : new List<Guid>();
-
-        var skippedTandas = tandaParticipantsInDb
-            .Where(p => p.IsDelivered || tandaParticipantsInActiveRoute.Contains(p.Id))
-            .Select(p => new {
-                Id = p.Id,
-                Name = p.Client?.Name ?? p.CustomerName ?? "Tanda",
-                Reason = p.IsDelivered ? "Tanda ya entregada" : "Ya en otra ruta"
-            })
-            .ToList();
-
-        if ((skippedOrders.Any() || skippedTandas.Any()) && !req.Force)
+        if (orders.Count == 0 && tandas.Count == 0)
         {
-            return Conflict(new {
-                message = "Algunos pedidos o tandas no son aptos para ruta o ya están asignados.",
-                skippedOrders,
-                skippedTandas
+            return BadRequest(new
+            {
+                message = "Ningún pedido ni tanda es válido para esta ruta.",
+                skipped
             });
         }
 
-        var orders = ordersInDb
-            .Where(o => req.Force || (o.Status != Models.OrderStatus.Canceled
-                                     && o.Status != Models.OrderStatus.Delivered
-                                     && o.DeliveryRouteId == null
-                                     && o.OrderType == OrderType.Delivery))
-            .Where(o => o.Status != Models.OrderStatus.Canceled && o.Status != Models.OrderStatus.Delivered)
-            .ToList();
+        // Resolver coordenadas: stops para el optimizer
+        var allStops = new List<RouteStop>();
+        foreach (var o in orders)
+            allStops.Add(new RouteStop($"order:{o.Id}", o.Client?.Latitude, o.Client?.Longitude));
+        foreach (var p in tandas)
+            allStops.Add(new RouteStop($"tanda:{p.Id}", p.Client?.Latitude, p.Client?.Longitude));
 
-        var validTandaParticipants = tandaParticipantsInDb
-            .Where(p => req.Force || (!p.IsDelivered && !tandaParticipantsInActiveRoute.Contains(p.Id)))
-            .Where(p => !p.IsDelivered) // nunca incluir tandas ya entregadas, ni con force
-            .ToList();
-
-        if (!orders.Any() && !validTandaParticipants.Any())
-            return BadRequest("No se encontraron pedidos o tandas válidos para ruta.");
+        // Si el frontend ya optimizó, respetamos su orden. Si no, llamamos a Google Routes.
+        List<string> orderedIds;
+        if (req.PreOptimized)
+        {
+            // El orden recibido en req.OrderIds + req.TandaParticipantIds es el deseado.
+            orderedIds = distinctOrderIds.Select(i => $"order:{i}")
+                .Concat(distinctTandaIds.Select(g => $"tanda:{g}"))
+                .Where(id => allStops.Any(s => s.Id == id))
+                .ToList();
+        }
+        else
+        {
+            var center = (
+                lat: _config.GetValue<double>("Cami:RouteCenterLat", 27.4861),
+                lng: _config.GetValue<double>("Cami:RouteCenterLng", -99.5069)
+            );
+            var optimized = await _optimizer.OptimizeAsync(allStops, center.lat, center.lng);
+            orderedIds = optimized.OrderedStopIds;
+        }
 
         using var transaction = await _db.Database.BeginTransactionAsync();
         try
@@ -136,96 +99,247 @@ public class RoutesController : ControllerBase
                 Name = $"Ruta {DateTime.Now:dd/MM HH:mm}",
                 ScheduledDate = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc)
             };
-
             _db.DeliveryRoutes.Add(route);
 
-            var sortedOrders = distinctOrderIds
-                .Select(id => orders.FirstOrDefault(o => o.Id == id))
-                .Where(o => o != null)
-                .ToList();
-
             int sortOrder = 1;
-            foreach (var order in sortedOrders!)
-            {
-                order.DeliveryRoute = route;
-                order.Status = Models.OrderStatus.InRoute;
+            var createdOrderClientIds = new List<int>();
 
-                var delivery = order.Delivery;
-                if (delivery == null)
+            foreach (var stopId in orderedIds)
+            {
+                if (stopId.StartsWith("order:"))
                 {
-                    delivery = new Delivery
+                    var orderId = int.Parse(stopId.Substring(6));
+                    var order = orders.FirstOrDefault(o => o.Id == orderId);
+                    if (order == null) continue;
+
+                    order.DeliveryRoute = route;
+                    order.Status = Models.OrderStatus.InRoute;
+
+                    var delivery = order.Delivery;
+                    if (delivery == null)
                     {
-                        Order = order,
-                        Kind = DeliveryKind.Order,
+                        _db.Deliveries.Add(new Delivery
+                        {
+                            Order = order,
+                            Kind = DeliveryKind.Order,
+                            DeliveryRoute = route,
+                            SortOrder = sortOrder++,
+                            Status = DeliveryStatus.Pending
+                        });
+                    }
+                    else
+                    {
+                        delivery.DeliveryRoute = route;
+                        delivery.Kind = DeliveryKind.Order;
+                        delivery.SortOrder = sortOrder++;
+                        delivery.Status = DeliveryStatus.Pending;
+                    }
+                    createdOrderClientIds.Add(order.ClientId);
+                }
+                else if (stopId.StartsWith("tanda:"))
+                {
+                    var tandaId = Guid.Parse(stopId.Substring(6));
+                    var participant = tandas.FirstOrDefault(p => p.Id == tandaId);
+                    if (participant == null) continue;
+
+                    _db.Deliveries.Add(new Delivery
+                    {
+                        TandaParticipantId = participant.Id,
+                        Kind = DeliveryKind.Tanda,
                         DeliveryRoute = route,
                         SortOrder = sortOrder++,
                         Status = DeliveryStatus.Pending
-                    };
-                    _db.Deliveries.Add(delivery);
+                    });
                 }
-                else
-                {
-                    delivery.DeliveryRoute = route;
-                    delivery.Kind = DeliveryKind.Order;
-                    delivery.SortOrder = sortOrder++;
-                    delivery.Status = DeliveryStatus.Pending;
-                }
-            }
-
-            // Tandas: una Delivery por cada TandaParticipant. No tiene OrderId.
-            var sortedTandas = distinctTandaIds
-                .Select(id => validTandaParticipants.FirstOrDefault(p => p.Id == id))
-                .Where(p => p != null)
-                .ToList();
-
-            foreach (var participant in sortedTandas!)
-            {
-                _db.Deliveries.Add(new Delivery
-                {
-                    TandaParticipantId = participant.Id,
-                    Kind = DeliveryKind.Tanda,
-                    DeliveryRoute = route,
-                    SortOrder = sortOrder++,
-                    Status = DeliveryStatus.Pending
-                });
             }
 
             await _db.SaveChangesAsync();
             await transaction.CommitAsync();
 
             // 🔔 Notificaciones Push (después de commit)
-            int totalStops = sortedOrders.Count + sortedTandas.Count;
-            try
+            int totalStops = sortOrder - 1;
+            try { await _push.NotifyDriversNewRouteAsync(route.Name ?? "Nueva ruta", route.DriverToken, totalStops); }
+            catch (Exception ex) { _logger.LogError(ex, "Error enviando FCM a repartidores"); }
+
+            foreach (var clientId in createdOrderClientIds.Distinct())
             {
-                await _push.NotifyDriversNewRouteAsync(route.Name ?? "Nueva ruta", route.DriverToken, totalStops);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error enviando FCM a repartidores");
+                try { await _push.NotifyClientDriverEnRouteAsync(clientId); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Error enviando WebPush a cliente {ClientId}", clientId); }
             }
 
-            foreach (var order in sortedOrders)
-            {
-                try { await _push.NotifyClientDriverEnRouteAsync(order.ClientId); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Error enviando WebPush a cliente {ClientId}", order.ClientId); }
-            }
-
-            return Ok(await MapRouteDto(route.Id));
+            var routeDto = await MapRouteDto(route.Id);
+            return Ok(new CreateRouteResponse(routeDto, skipped));
         }
         catch (Exception ex)
         {
             await transaction.RollbackAsync();
-            
-            // Extract detailed inner exception message for debugging
             var innerMsg = ex.InnerException != null ? ex.InnerException.Message : "";
             _logger.LogError(ex, "[RoutesController.Create] ERROR: {Message} | INNER: {Inner}", ex.Message, innerMsg);
-            
-            return StatusCode(500, new { 
-                message = "Error interno al crear la ruta.", 
+            return StatusCode(500, new {
+                message = "Error interno al crear la ruta.",
                 detail = ex.Message,
                 innerDetail = innerMsg
             });
         }
+    }
+
+    /// <summary>POST /api/routes/preview - Calcula ruta óptima sin guardar. Usado por el builder.</summary>
+    [HttpPost("preview")]
+    public async Task<ActionResult<PreviewRouteResponse>> PreviewRoute([FromBody] PreviewRouteRequest req)
+    {
+        var orderIds = (req.OrderIds ?? new List<int>()).Distinct().ToList();
+        var tandaIds = (req.TandaParticipantIds ?? new List<Guid>()).Distinct().ToList();
+
+        if (orderIds.Count == 0 && tandaIds.Count == 0)
+            return Ok(new PreviewRouteResponse(new List<PreviewStopDto>(), 0, 0, "empty", new List<SkippedStopDto>(), 0));
+
+        var (orders, tandas, skipped) = await ValidateAndPartitionAsync(orderIds, tandaIds);
+
+        var allStops = new List<RouteStop>();
+        foreach (var o in orders)
+            allStops.Add(new RouteStop($"order:{o.Id}", o.Client?.Latitude, o.Client?.Longitude));
+        foreach (var p in tandas)
+            allStops.Add(new RouteStop($"tanda:{p.Id}", p.Client?.Latitude, p.Client?.Longitude));
+
+        var centerLat = req.StartLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
+        var centerLng = req.StartLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
+
+        var optimized = await _optimizer.OptimizeAsync(allStops, centerLat, centerLng);
+
+        var stopsDto = new List<PreviewStopDto>();
+        int idx = 1;
+        foreach (var stopId in optimized.OrderedStopIds)
+        {
+            if (stopId.StartsWith("order:"))
+            {
+                var orderId = int.Parse(stopId.Substring(6));
+                var o = orders.FirstOrDefault(x => x.Id == orderId);
+                if (o == null) continue;
+                stopsDto.Add(new PreviewStopDto(
+                    Kind: "Order",
+                    OrderId: o.Id,
+                    TandaParticipantId: null,
+                    SortOrder: idx++,
+                    ClientName: o.Client?.Name ?? "Cliente",
+                    ClientAddress: o.AlternativeAddress ?? o.Client?.Address,
+                    Latitude: o.Client?.Latitude,
+                    Longitude: o.Client?.Longitude,
+                    Total: o.Total,
+                    HasCoords: o.Client?.Latitude.HasValue == true && o.Client?.Longitude.HasValue == true,
+                    TandaName: null,
+                    TandaWeek: null
+                ));
+            }
+            else if (stopId.StartsWith("tanda:"))
+            {
+                var tandaId = Guid.Parse(stopId.Substring(6));
+                var p = tandas.FirstOrDefault(x => x.Id == tandaId);
+                if (p == null) continue;
+                int? currentWeek = null;
+                if (p.Tanda != null)
+                {
+                    var days = (int)(DateTime.UtcNow.Date - p.Tanda.StartDate.Date).TotalDays;
+                    currentWeek = days <= 0 ? 1 : ((days - 1) / 7) + 1;
+                }
+                stopsDto.Add(new PreviewStopDto(
+                    Kind: "Tanda",
+                    OrderId: null,
+                    TandaParticipantId: p.Id,
+                    SortOrder: idx++,
+                    ClientName: p.Client?.Name ?? p.CustomerName ?? "Tanda",
+                    ClientAddress: p.Client?.Address,
+                    Latitude: p.Client?.Latitude,
+                    Longitude: p.Client?.Longitude,
+                    Total: 0m,
+                    HasCoords: p.Client?.Latitude.HasValue == true && p.Client?.Longitude.HasValue == true,
+                    TandaName: p.Tanda?.Name,
+                    TandaWeek: currentWeek
+                ));
+            }
+        }
+
+        int withoutCoords = stopsDto.Count(s => !s.HasCoords);
+        return Ok(new PreviewRouteResponse(
+            Stops: stopsDto,
+            TotalDistanceMeters: optimized.DistanceMeters,
+            TotalDurationSeconds: optimized.DurationSeconds,
+            OptimizerSource: optimized.Source,
+            Skipped: skipped,
+            StopsWithoutCoords: withoutCoords
+        ));
+    }
+
+    /// <summary>
+    /// Valida los IDs recibidos y los separa entre los aptos (devueltos como entidades cargadas)
+    /// y los rechazados (devueltos con razón específica).
+    /// </summary>
+    private async Task<(List<Order> orders, List<TandaParticipant> tandas, List<SkippedStopDto> skipped)>
+        ValidateAndPartitionAsync(List<int> orderIds, List<Guid> tandaIds)
+    {
+        var skipped = new List<SkippedStopDto>();
+
+        var ordersInDb = orderIds.Count > 0
+            ? await _db.Orders
+                .Include(o => o.Client)
+                .Include(o => o.Delivery)
+                .Where(o => orderIds.Contains(o.Id))
+                .ToListAsync()
+            : new List<Order>();
+
+        // IDs faltantes (no existen en BD)
+        foreach (var id in orderIds.Where(id => ordersInDb.All(o => o.Id != id)))
+            skipped.Add(new SkippedStopDto("Order", id.ToString(), $"Pedido #{id}", "No existe"));
+
+        var validOrders = new List<Order>();
+        foreach (var o in ordersInDb)
+        {
+            string? reason = null;
+            if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
+            else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
+            else if (o.DeliveryRouteId != null) reason = "Ya en otra ruta";
+            else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
+
+            if (reason != null)
+                skipped.Add(new SkippedStopDto("Order", o.Id.ToString(), o.Client?.Name ?? $"#{o.Id}", reason));
+            else
+                validOrders.Add(o);
+        }
+
+        var tandasInDb = tandaIds.Count > 0
+            ? await _db.TandaParticipants
+                .Include(p => p.Client)
+                .Include(p => p.Tanda)
+                    .ThenInclude(t => t!.Product)
+                .Where(p => tandaIds.Contains(p.Id))
+                .ToListAsync()
+            : new List<TandaParticipant>();
+
+        foreach (var id in tandaIds.Where(id => tandasInDb.All(p => p.Id != id)))
+            skipped.Add(new SkippedStopDto("Tanda", id.ToString(), "Tanda", "No existe"));
+
+        var tandasInActiveRoute = tandaIds.Count > 0
+            ? await _db.Deliveries
+                .Where(d => d.TandaParticipantId != null
+                            && tandaIds.Contains(d.TandaParticipantId!.Value)
+                            && (d.DeliveryRoute.Status == RouteStatus.Pending || d.DeliveryRoute.Status == RouteStatus.Active))
+                .Select(d => d.TandaParticipantId!.Value)
+                .ToListAsync()
+            : new List<Guid>();
+
+        var validTandas = new List<TandaParticipant>();
+        foreach (var p in tandasInDb)
+        {
+            string? reason = null;
+            if (p.IsDelivered) reason = "Tanda ya entregada";
+            else if (tandasInActiveRoute.Contains(p.Id)) reason = "Ya en otra ruta activa";
+
+            if (reason != null)
+                skipped.Add(new SkippedStopDto("Tanda", p.Id.ToString(), p.Client?.Name ?? p.CustomerName ?? "Tanda", reason));
+            else
+                validTandas.Add(p);
+        }
+
+        return (validOrders, validTandas, skipped);
     }
 
     /// <summary>POST /api/routes/ai-select - Gemini elige rutas por voz</summary>
@@ -708,54 +822,32 @@ public class RoutesController : ControllerBase
         var lat = startLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
         var lng = startLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
 
-        // Resolvemos lat/lng de cada delivery (desde Order.Client o TandaParticipant.Client).
-        var resolved = route.Deliveries.Select(d =>
+        // Construimos los stops genéricos y delegamos a Google Routes API.
+        var deliveryById = route.Deliveries.ToDictionary(d => StopIdFor(d), d => d);
+        var stops = route.Deliveries.Select(d =>
         {
             var client = d.Kind == DeliveryKind.Tanda
                 ? d.TandaParticipant?.Client
                 : d.Order?.Client;
-            return new { Delivery = d, Lat = client?.Latitude, Lng = client?.Longitude };
+            return new RouteStop(StopIdFor(d), client?.Latitude, client?.Longitude);
         }).ToList();
 
-        var withCoords = resolved.Where(r => r.Lat != null && r.Lng != null).ToList();
-        var withoutCoords = resolved.Where(r => r.Lat == null || r.Lng == null).ToList();
+        var optimized = await _optimizer.OptimizeAsync(stops, lat, lng);
 
-        var ordered = new List<Delivery>();
-        var remaining = withCoords.ToList();
-        double currentLat = lat;
-        double currentLng = lng;
-
-        while (remaining.Any())
+        for (int i = 0; i < optimized.OrderedStopIds.Count; i++)
         {
-            var nearest = remaining
-                .Select(r => new { r, dist = HaversineKm(currentLat, currentLng, r.Lat!.Value, r.Lng!.Value) })
-                .OrderBy(x => x.dist)
-                .First();
-            ordered.Add(nearest.r.Delivery);
-            currentLat = nearest.r.Lat!.Value;
-            currentLng = nearest.r.Lng!.Value;
-            remaining.Remove(nearest.r);
+            if (deliveryById.TryGetValue(optimized.OrderedStopIds[i], out var d))
+                d.SortOrder = i + 1;
         }
-        ordered.AddRange(withoutCoords.Select(r => r.Delivery));
-
-        for (int i = 0; i < ordered.Count; i++)
-            ordered[i].SortOrder = i + 1;
 
         await _db.SaveChangesAsync();
-
         await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
     }
 
-    private static double HaversineKm(double lat1, double lon1, double lat2, double lon2)
-    {
-        const double R = 6371;
-        double dLat = Math.PI * (lat2 - lat1) / 180.0;
-        double dLon = Math.PI * (lon2 - lon1) / 180.0;
-        double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
-                   Math.Cos(Math.PI * lat1 / 180.0) * Math.Cos(Math.PI * lat2 / 180.0) *
-                   Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
-        return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
-    }
+    private static string StopIdFor(Delivery d) =>
+        d.Kind == DeliveryKind.Tanda
+            ? $"tanda:{d.TandaParticipantId}"
+            : $"order:{d.OrderId}";
 
     [HttpDelete("{id}/remove-order/{orderId}")]
     public async Task<IActionResult> RemoveOrderFromRoute(int id, int orderId)
