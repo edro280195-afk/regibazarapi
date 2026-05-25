@@ -1046,7 +1046,7 @@ public class RoutesController : ControllerBase
             .ToListAsync();
 
         var currentPendingDeliveries = existingDeliveries
-            .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.Failed)
+            .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.NotDelivered)
             .ToList();
 
         using var transaction = await _db.Database.BeginTransactionAsync();
@@ -1099,10 +1099,10 @@ public class RoutesController : ControllerBase
                 .ToListAsync();
 
             var locked = allCurrent
-                .Where(d => d.Status == DeliveryStatus.Delivered || d.Status == DeliveryStatus.Failed)
+                .Where(d => d.Status == DeliveryStatus.Delivered || d.Status == DeliveryStatus.NotDelivered)
                 .OrderBy(d => d.SortOrder).ToList();
             var pendingToOptimize = allCurrent
-                .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.Failed)
+                .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.NotDelivered)
                 .ToList();
 
             for (int i = 0; i < locked.Count; i++) locked[i].SortOrder = i + 1;
