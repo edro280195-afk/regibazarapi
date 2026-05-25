@@ -265,7 +265,10 @@ public class RoutesController : ControllerBase
             TotalDurationSeconds: optimized.DurationSeconds,
             OptimizerSource: optimized.Source,
             Skipped: skipped,
-            StopsWithoutCoords: withoutCoords
+            StopsWithoutCoords: withoutCoords,
+            PolylineEncoded: optimized.PolylineEncoded,
+            DepotLatitude: centerLat,
+            DepotLongitude: centerLng
         ));
     }
 

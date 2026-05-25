@@ -180,7 +180,10 @@ public record PreviewRouteResponse(
     int TotalDurationSeconds,
     string OptimizerSource,
     List<SkippedStopDto> Skipped,
-    int StopsWithoutCoords
+    int StopsWithoutCoords,
+    string? PolylineEncoded = null,
+    double? DepotLatitude = null,
+    double? DepotLongitude = null
 );
 
 public record BulkGeocodeRequest(List<int> ClientIds);

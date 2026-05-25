@@ -92,7 +92,8 @@ public class RouteOptimizerService : IRouteOptimizerService
 
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://routes.googleapis.com/directions/v2:computeRoutes");
         req.Headers.Add("X-Goog-Api-Key", apiKey);
-        req.Headers.Add("X-Goog-FieldMask", "routes.distanceMeters,routes.duration,routes.optimizedIntermediateWaypointIndex");
+        req.Headers.Add("X-Goog-FieldMask",
+            "routes.distanceMeters,routes.duration,routes.optimizedIntermediateWaypointIndex,routes.polyline.encodedPolyline");
         req.Content = JsonContent.Create(body);
 
         using var resp = await http.SendAsync(req, ct);
@@ -129,8 +130,12 @@ public class RouteOptimizerService : IRouteOptimizerService
             order = Enumerable.Range(0, stops.Count).ToList();
         }
 
+        string? polyline = null;
+        if (route.TryGetProperty("polyline", out var poly) && poly.TryGetProperty("encodedPolyline", out var ep))
+            polyline = ep.GetString();
+
         var orderedIds = order.Select(i => stops[i].Id).ToList();
-        return new OptimizedRoute(orderedIds, distanceMeters, durationSeconds, "google-routes-v2");
+        return new OptimizedRoute(orderedIds, distanceMeters, durationSeconds, "google-routes-v2", polyline);
     }
 
     private List<string> NearestNeighborHaversine(List<RouteStop> stops, double startLat, double startLng)

@@ -17,7 +17,9 @@ public record OptimizedRoute(
     /// <summary>Duración total estimada en segundos (0 si no se pudo calcular).</summary>
     int DurationSeconds,
     /// <summary>Origen real usado por el optimizador (sirve para mostrar al usuario).</summary>
-    string Source
+    string Source,
+    /// <summary>Polyline encoded de Google (siguiendo calles reales). Null si fallback Haversine.</summary>
+    string? PolylineEncoded = null
 );
 
 public interface IRouteOptimizerService
