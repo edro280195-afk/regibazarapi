@@ -186,6 +186,16 @@ public record PreviewRouteResponse(
     double? DepotLongitude = null
 );
 
+public record RecomposeRouteRequest(
+    List<int> OrderIds,
+    List<Guid>? TandaParticipantIds = null
+);
+
+public record RecomposeRouteResponse(
+    RouteDto Route,
+    List<SkippedStopDto> Skipped
+);
+
 public record BulkGeocodeRequest(List<int> ClientIds);
 public record SetClientCoordinatesRequest(double Latitude, double Longitude, string? Address);
 public record BulkGeocodeResultDto(

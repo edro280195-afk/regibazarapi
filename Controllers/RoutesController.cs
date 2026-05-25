@@ -960,6 +960,191 @@ public class RoutesController : ControllerBase
     }
 
     // ═══════════════════════════════════════════
+    //  RE-ARMADO DE RUTA EXISTENTE
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// PUT /api/routes/{id}/recompose — Rehace las paradas pendientes de una ruta existente.
+    /// Las entregas ya Delivered o Failed quedan bloqueadas. Solo se re-optimizan las Pending.
+    /// </summary>
+    [HttpPut("{id}/recompose")]
+    public async Task<ActionResult<RecomposeRouteResponse>> Recompose(int id, [FromBody] RecomposeRouteRequest req)
+    {
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries)
+            .FirstOrDefaultAsync(r => r.Id == id);
+
+        if (route == null) return NotFound("Ruta no encontrada.");
+        if (route.Status == RouteStatus.Completed)
+            return BadRequest("La ruta ya está completada y no se puede recomponer.");
+
+        var distinctOrderIds = (req.OrderIds ?? new List<int>()).Distinct().ToList();
+        var distinctTandaIds = (req.TandaParticipantIds ?? new List<Guid>()).Distinct().ToList();
+        var skipped = new List<SkippedStopDto>();
+
+        // Órdenes: permitir las que están en ESTA ruta aunque ya tengan DeliveryRouteId
+        var ordersInDb = distinctOrderIds.Count > 0
+            ? await _db.Orders.Include(o => o.Client).Include(o => o.Delivery)
+                .Where(o => distinctOrderIds.Contains(o.Id))
+                .ToListAsync()
+            : new List<Order>();
+
+        foreach (var oid in distinctOrderIds.Where(i => ordersInDb.All(o => o.Id != i)))
+            skipped.Add(new SkippedStopDto("Order", oid.ToString(), $"Pedido #{oid}", "No existe"));
+
+        var validOrders = new List<Order>();
+        foreach (var o in ordersInDb)
+        {
+            string? reason = null;
+            if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
+            else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
+            else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
+            else if (o.DeliveryRouteId != null && o.DeliveryRouteId != id) reason = "En otra ruta";
+            if (reason != null)
+                skipped.Add(new SkippedStopDto("Order", o.Id.ToString(), o.Client?.Name ?? $"#{o.Id}", reason));
+            else
+                validOrders.Add(o);
+        }
+
+        var tandasInDb = distinctTandaIds.Count > 0
+            ? await _db.TandaParticipants
+                .Include(p => p.Client)
+                .Include(p => p.Tanda).ThenInclude(t => t!.Product)
+                .Where(p => distinctTandaIds.Contains(p.Id))
+                .ToListAsync()
+            : new List<TandaParticipant>();
+
+        foreach (var tid in distinctTandaIds.Where(g => tandasInDb.All(p => p.Id != g)))
+            skipped.Add(new SkippedStopDto("Tanda", tid.ToString(), "Tanda", "No existe"));
+
+        var tandasInOtherRoutes = distinctTandaIds.Count > 0
+            ? await _db.Deliveries
+                .Where(d => d.TandaParticipantId != null
+                            && distinctTandaIds.Contains(d.TandaParticipantId!.Value)
+                            && d.DeliveryRouteId != id
+                            && (d.DeliveryRoute.Status == RouteStatus.Pending || d.DeliveryRoute.Status == RouteStatus.Active))
+                .Select(d => d.TandaParticipantId!.Value)
+                .ToListAsync()
+            : new List<Guid>();
+
+        var validTandas = new List<TandaParticipant>();
+        foreach (var p in tandasInDb)
+        {
+            string? reason = null;
+            if (p.IsDelivered) reason = "Tanda ya entregada";
+            else if (tandasInOtherRoutes.Contains(p.Id)) reason = "Ya en otra ruta activa";
+            if (reason != null)
+                skipped.Add(new SkippedStopDto("Tanda", p.Id.ToString(), p.Client?.Name ?? p.CustomerName ?? "Tanda", reason));
+            else
+                validTandas.Add(p);
+        }
+
+        // Cargar deliveries existentes para split locked vs pending
+        var existingDeliveries = await _db.Deliveries
+            .Include(d => d.Order)
+            .Where(d => d.DeliveryRouteId == id)
+            .ToListAsync();
+
+        var currentPendingDeliveries = existingDeliveries
+            .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.Failed)
+            .ToList();
+
+        using var transaction = await _db.Database.BeginTransactionAsync();
+        try
+        {
+            // Remover pending que ya no están en la nueva lista
+            var newOrderIdSet = new HashSet<int>(validOrders.Select(o => o.Id));
+            var newTandaIdSet = new HashSet<Guid>(validTandas.Select(p => p.Id));
+
+            foreach (var d in currentPendingDeliveries)
+            {
+                bool stillWanted = (d.Kind == DeliveryKind.Order && d.OrderId != null && newOrderIdSet.Contains(d.OrderId.Value))
+                                || (d.Kind == DeliveryKind.Tanda && d.TandaParticipantId != null && newTandaIdSet.Contains(d.TandaParticipantId.Value));
+                if (!stillWanted)
+                {
+                    if (d.Kind == DeliveryKind.Order && d.Order != null)
+                    {
+                        d.Order.DeliveryRouteId = null;
+                        if (d.Order.Status == Models.OrderStatus.InRoute) d.Order.Status = Models.OrderStatus.Pending;
+                    }
+                    _db.Deliveries.Remove(d);
+                }
+            }
+            await _db.SaveChangesAsync();
+
+            // Agregar nuevas paradas no existentes aún
+            var existingOrderIds = currentPendingDeliveries
+                .Where(d => d.Kind == DeliveryKind.Order && d.OrderId != null)
+                .Select(d => d.OrderId!.Value).ToHashSet();
+            var existingTandaIds = currentPendingDeliveries
+                .Where(d => d.Kind == DeliveryKind.Tanda && d.TandaParticipantId != null)
+                .Select(d => d.TandaParticipantId!.Value).ToHashSet();
+
+            foreach (var o in validOrders.Where(o => !existingOrderIds.Contains(o.Id)))
+            {
+                o.DeliveryRouteId = id;
+                o.Status = Models.OrderStatus.InRoute;
+                _db.Deliveries.Add(new Delivery { Order = o, Kind = DeliveryKind.Order, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });
+            }
+            foreach (var p in validTandas.Where(p => !existingTandaIds.Contains(p.Id)))
+                _db.Deliveries.Add(new Delivery { TandaParticipantId = p.Id, Kind = DeliveryKind.Tanda, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });
+
+            await _db.SaveChangesAsync();
+
+            // Recargar y re-optimizar solo pending
+            var allCurrent = await _db.Deliveries
+                .Include(d => d.Order).ThenInclude(o => o!.Client)
+                .Include(d => d.TandaParticipant).ThenInclude(p => p!.Client)
+                .Where(d => d.DeliveryRouteId == id)
+                .ToListAsync();
+
+            var locked = allCurrent
+                .Where(d => d.Status == DeliveryStatus.Delivered || d.Status == DeliveryStatus.Failed)
+                .OrderBy(d => d.SortOrder).ToList();
+            var pendingToOptimize = allCurrent
+                .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.Failed)
+                .ToList();
+
+            for (int i = 0; i < locked.Count; i++) locked[i].SortOrder = i + 1;
+            int offsetForPending = locked.Count + 1;
+
+            if (pendingToOptimize.Count > 0)
+            {
+                var centerLat = _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
+                var centerLng = _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
+                var stops = pendingToOptimize.Select(d =>
+                {
+                    var client = d.Kind == DeliveryKind.Tanda ? d.TandaParticipant?.Client : d.Order?.Client;
+                    return new RouteStop(StopIdFor(d), client?.Latitude, client?.Longitude);
+                }).ToList();
+                var optimized = await _optimizer.OptimizeAsync(stops, centerLat, centerLng);
+                var byStopId = pendingToOptimize.ToDictionary(StopIdFor, d => d);
+                for (int i = 0; i < optimized.OrderedStopIds.Count; i++)
+                    if (byStopId.TryGetValue(optimized.OrderedStopIds[i], out var d)) d.SortOrder = offsetForPending + i;
+            }
+
+            await _db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            try
+            {
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+                await _push.BroadcastToAllDriversAsync("🔄 Ruta actualizada", $"{route.Name} fue recompuesta.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Error notificando recompose"); }
+
+            var routeDto = await MapRouteDto(id);
+            return Ok(new RecomposeRouteResponse(routeDto, skipped));
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            _logger.LogError(ex, "[Recompose] ERROR: {Message} | INNER: {Inner}", ex.Message, ex.InnerException?.Message ?? "");
+            return StatusCode(500, new { message = "Error al recomponer la ruta.", detail = ex.Message });
+        }
+    }
+
+    // ═══════════════════════════════════════════
     //  HELPERS & DELETE
     // ═══════════════════════════════════════════
 
