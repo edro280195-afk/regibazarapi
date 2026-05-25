@@ -194,11 +194,14 @@ namespace EntregasApi.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
-                    b.Property<int>("OrderId")
+                    b.Property<int?>("OrderId")
                         .HasColumnType("integer");
 
                     b.Property<int>("SortOrder")
@@ -207,14 +210,23 @@ namespace EntregasApi.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("TandaParticipantId")
+                        .HasColumnType("uuid");
+
                     b.HasKey("Id");
 
                     b.HasIndex("DeliveryRouteId");
 
                     b.HasIndex("OrderId")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"OrderId\" IS NOT NULL");
 
-                    b.ToTable("Deliveries");
+                    b.HasIndex("TandaParticipantId");
+
+                    b.ToTable("Deliveries", t =>
+                        {
+                            t.HasCheckConstraint("CK_Deliveries_OrderXorTanda", "(\"OrderId\" IS NOT NULL AND \"TandaParticipantId\" IS NULL) OR (\"OrderId\" IS NULL AND \"TandaParticipantId\" IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("EntregasApi.Models.DeliveryEvidence", b =>
@@ -1466,12 +1478,18 @@ namespace EntregasApi.Migrations
                     b.HasOne("EntregasApi.Models.Order", "Order")
                         .WithOne("Delivery")
                         .HasForeignKey("EntregasApi.Models.Delivery", "OrderId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("EntregasApi.Models.TandaParticipant", "TandaParticipant")
+                        .WithMany()
+                        .HasForeignKey("TandaParticipantId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("DeliveryRoute");
 
                     b.Navigation("Order");
+
+                    b.Navigation("TandaParticipant");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.DeliveryEvidence", b =>

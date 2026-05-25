@@ -24,11 +24,72 @@ public class ClientsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IOrderService _orderService;
+    private readonly IGeocodingService _geocoding;
 
-    public ClientsController(AppDbContext db, IOrderService orderService)
+    public ClientsController(AppDbContext db, IOrderService orderService, IGeocodingService geocoding)
     {
         _db = db;
         _orderService = orderService;
+        _geocoding = geocoding;
+    }
+
+    /// <summary>
+    /// POST /api/clients/bulk-geocode - Resuelve lat/lng para los clientes recibidos cuando tienen
+    /// dirección pero faltan coordenadas. Persiste el resultado en BD. Devuelve detalle por cliente.
+    /// </summary>
+    [HttpPost("bulk-geocode")]
+    public async Task<ActionResult<List<BulkGeocodeResultDto>>> BulkGeocode([FromBody] BulkGeocodeRequest req)
+    {
+        if (req.ClientIds == null || req.ClientIds.Count == 0)
+            return Ok(new List<BulkGeocodeResultDto>());
+
+        var ids = req.ClientIds.Distinct().ToList();
+        var clients = await _db.Clients.Where(c => ids.Contains(c.Id)).ToListAsync();
+
+        var results = new List<BulkGeocodeResultDto>();
+        foreach (var c in clients)
+        {
+            if (c.Latitude.HasValue && c.Longitude.HasValue)
+            {
+                results.Add(new BulkGeocodeResultDto(c.Id, true, c.Latitude, c.Longitude, c.Address, null));
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(c.Address))
+            {
+                results.Add(new BulkGeocodeResultDto(c.Id, false, null, null, null, "Sin dirección"));
+                continue;
+            }
+
+            var r = await _geocoding.GeocodeAsync(c.Address);
+            if (r.Success && r.Latitude.HasValue && r.Longitude.HasValue)
+            {
+                c.Latitude = r.Latitude;
+                c.Longitude = r.Longitude;
+                results.Add(new BulkGeocodeResultDto(c.Id, true, r.Latitude, r.Longitude, r.FormattedAddress, null));
+            }
+            else
+            {
+                results.Add(new BulkGeocodeResultDto(c.Id, false, null, null, null, r.Error ?? r.Status));
+            }
+        }
+
+        await _db.SaveChangesAsync();
+        return Ok(results);
+    }
+
+    /// <summary>
+    /// POST /api/clients/{id}/set-coordinates - Guarda lat/lng explícitas (uso del map picker).
+    /// </summary>
+    [HttpPost("{id}/set-coordinates")]
+    public async Task<IActionResult> SetCoordinates(int id, [FromBody] SetClientCoordinatesRequest req)
+    {
+        var c = await _db.Clients.FindAsync(id);
+        if (c == null) return NotFound();
+        c.Latitude = req.Latitude;
+        c.Longitude = req.Longitude;
+        if (!string.IsNullOrWhiteSpace(req.Address)) c.Address = req.Address;
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 
     [HttpGet]
@@ -102,11 +163,14 @@ public class ClientsController : ControllerBase
         bool typeChanged = client.Type != req.Type;
 
         // 2. Actualizamos los datos de la clienta
+        // Los campos opcionales se ignoran si llegan vacíos/null: este endpoint se usa
+        // desde formularios parciales (guardar solo dirección, solo tag, etc.) y antes
+        // borraba los datos previamente capturados.
         client.Name = req.Name;
-        client.Phone = req.Phone;
-        client.Address = req.Address;
+        if (!string.IsNullOrWhiteSpace(req.Phone)) client.Phone = req.Phone;
+        if (!string.IsNullOrWhiteSpace(req.Address)) client.Address = req.Address;
         client.Type = req.Type;
-        client.DeliveryInstructions = req.DeliveryInstructions;
+        if (!string.IsNullOrWhiteSpace(req.DeliveryInstructions)) client.DeliveryInstructions = req.DeliveryInstructions;
 
         if (Enum.TryParse<ClientTag>(req.Tag, true, out var newTag))
         {
