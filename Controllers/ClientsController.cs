@@ -108,7 +108,9 @@ public class ClientsController : ControllerBase
                     .Where(o => o.Status != Models.OrderStatus.Canceled)
                     .Sum(o => o.Total),
                     c.Type,
-                    c.DeliveryInstructions
+                    c.DeliveryInstructions,
+                    c.Latitude,
+                    c.Longitude
             })
             .OrderByDescending(x => x.TotalSpent)
             .ToListAsync();
@@ -122,7 +124,9 @@ public class ClientsController : ControllerBase
             c.OrdersCount,
             c.TotalSpent,
             c.Type,
-            c.DeliveryInstructions
+            c.DeliveryInstructions,
+            Latitude: c.Latitude,
+            Longitude: c.Longitude
         )).ToList();
 
         return Ok(clients);
@@ -144,13 +148,15 @@ public class ClientsController : ControllerBase
                     .Where(o => o.Status != Models.OrderStatus.Canceled)
                     .Sum(o => o.Total),
                 c.Type,
-                c.DeliveryInstructions
+                c.DeliveryInstructions,
+                c.Latitude,
+                c.Longitude
             })
             .FirstOrDefaultAsync(c => c.Id == id);
 
         if (c == null) return NotFound();
 
-        return Ok(new ClientDto(c.Id, c.Name, c.Phone, c.Address, c.Tag.ToString(), c.OrdersCount, c.TotalSpent, c.Type, c.DeliveryInstructions));
+        return Ok(new ClientDto(c.Id, c.Name, c.Phone, c.Address, c.Tag.ToString(), c.OrdersCount, c.TotalSpent, c.Type, c.DeliveryInstructions, Latitude: c.Latitude, Longitude: c.Longitude));
     }
 
     [HttpPut("{id}")]

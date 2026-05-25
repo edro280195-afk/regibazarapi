@@ -76,7 +76,9 @@ public record ClientDto(
     int OrdersCount,
     decimal TotalSpent,
     string Type,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    double? Latitude = null,
+    double? Longitude = null
 );
 
 public record OrderTrackingDto(
