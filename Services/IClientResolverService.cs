@@ -26,4 +26,17 @@ public interface IClientResolverService
     /// Sugerencias de duplicados: pares por teléfono igual o nombre/dirección parecidos.
     /// </summary>
     Task<List<DuplicateSuggestionDto>> GetDuplicateSuggestionsAsync(int limit = 50);
+
+    /// <summary>
+    /// Intenta auto-fusionar al cliente con otro cliente de muy alta confianza
+    /// (mismo teléfono normalizado + similitud de nombre ≥ 0.98). Si encuentra match,
+    /// fusiona (manteniendo el de Id más bajo) y registra el evento en ClientMergeAudits.
+    /// Devuelve null si no hubo auto-merge.
+    /// </summary>
+    Task<EntregasApi.Models.ClientMergeAudit?> TryAutoMergeAsync(int clientId);
+
+    /// <summary>
+    /// Devuelve el historial reciente de auto-merges y merges manuales.
+    /// </summary>
+    Task<List<EntregasApi.Models.ClientMergeAudit>> GetMergeAuditsAsync(int take = 50);
 }

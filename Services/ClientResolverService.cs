@@ -235,6 +235,16 @@ public class ClientResolverService : IClientResolverService
 
     public async Task MergeAsync(int sourceId, int targetId)
     {
+        await MergeInternalAsync(sourceId, targetId, ClientMergeMode.Manual, reason: null, confidence: 0);
+    }
+
+    /// <summary>
+    /// Implementación interna que mueve datos del source al target y deja registro
+    /// en ClientMergeAudits. Si se llama con mode = Auto, el caller suele pasar la
+    /// confianza (similarity) y la razón "auto: same phone + name 0.99".
+    /// </summary>
+    private async Task<ClientMergeAudit> MergeInternalAsync(int sourceId, int targetId, ClientMergeMode mode, string? reason, double confidence)
+    {
         if (sourceId == targetId) throw new ArgumentException("Source y target son la misma clienta");
 
         using var tx = await _db.Database.BeginTransactionAsync();
@@ -248,6 +258,12 @@ public class ClientResolverService : IClientResolverService
             .Include(c => c.Aliases)
             .FirstOrDefaultAsync(c => c.Id == targetId)
             ?? throw new InvalidOperationException($"Cliente target {targetId} no existe");
+
+        // Contamos lo que se va a mover ANTES de mover (para el audit)
+        var ordersMoved = await _db.Orders.CountAsync(o => o.ClientId == sourceId);
+        var aliasesMoved = source.Aliases.Count;
+        var sourceName = source.Name ?? "";
+        var targetName = target.Name ?? "";
 
         // 1. Reasignar todas las órdenes del source al target
         await _db.Orders
@@ -296,8 +312,68 @@ public class ClientResolverService : IClientResolverService
         // 6. Borrar el source (las suscripciones push / chat caen con cascade en sus FKs propios)
         _db.Clients.Remove(source);
 
+        // 7. Audit log de la fusión (sea Manual o Auto)
+        var audit = new ClientMergeAudit
+        {
+            SourceClientId = sourceId,
+            SourceName = sourceName,
+            TargetClientId = targetId,
+            TargetName = targetName,
+            Mode = mode,
+            Reason = reason,
+            Confidence = confidence,
+            OrdersMoved = ordersMoved,
+            AliasesMoved = aliasesMoved,
+            MergedAt = DateTime.UtcNow,
+        };
+        _db.ClientMergeAudits.Add(audit);
+
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
+        return audit;
+    }
+
+    public async Task<ClientMergeAudit?> TryAutoMergeAsync(int clientId)
+    {
+        // Solo intentamos si el cliente tiene un teléfono normalizado no vacío.
+        var subject = await _db.Clients.FindAsync(clientId);
+        if (subject == null || string.IsNullOrWhiteSpace(subject.NormalizedPhone)) return null;
+
+        // Otros clientes con exactamente el mismo teléfono normalizado.
+        var phoneMatches = await _db.Clients
+            .Where(c => c.Id != clientId && c.NormalizedPhone == subject.NormalizedPhone)
+            .ToListAsync();
+
+        foreach (var other in phoneMatches)
+        {
+            // pg_trgm similarity sobre los nombres normalizados.
+            var sim = await _db.Clients
+                .Where(c => c.Id == other.Id)
+                .Select(c => EF.Functions.TrigramsSimilarity(c.NormalizedName, subject.NormalizedName))
+                .FirstOrDefaultAsync();
+
+            if (sim >= 0.98)
+            {
+                // Target = el de Id más bajo (más viejo), Source = el más nuevo.
+                var targetId = Math.Min(subject.Id, other.Id);
+                var sourceId = Math.Max(subject.Id, other.Id);
+
+                var reason = $"auto: same phone + name similarity {sim:F2}";
+                var audit = await MergeInternalAsync(sourceId, targetId, ClientMergeMode.Auto, reason, sim);
+                return audit;
+            }
+        }
+
+        return null;
+    }
+
+    public async Task<List<ClientMergeAudit>> GetMergeAuditsAsync(int take = 50)
+    {
+        var capped = Math.Clamp(take, 1, 500);
+        return await _db.ClientMergeAudits
+            .OrderByDescending(a => a.MergedAt)
+            .Take(capped)
+            .ToListAsync();
     }
 
     public async Task<List<DuplicateSuggestionDto>> GetDuplicateSuggestionsAsync(int limit = 50)

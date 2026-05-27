@@ -11,4 +11,5 @@ public interface ILiveCaptureService
     Task<LiveReviewDto?> GetReviewAsync(int sessionId);
     Task ConfirmCandidateAsync(int candidateId, ConfirmCandidateRequest req);
     Task IgnoreCandidateAsync(int candidateId);
+    Task<(Stream? stream, string? contentType)> GetCandidateClipAsync(int candidateId);
 }

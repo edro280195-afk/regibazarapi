@@ -244,6 +244,87 @@ public class LiveCaptureService : ILiveCaptureService
         await db.SaveChangesAsync();
     }
 
+    public async Task<(Stream? stream, string? contentType)> GetCandidateClipAsync(int candidateId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var candidate = await db.LiveCandidates
+            .Include(c => c.LiveSession)
+            .FirstOrDefaultAsync(c => c.Id == candidateId);
+
+        if (candidate == null) return (null, null);
+        if (candidate.SpokenAtSeconds is not double spokenAt) return (null, null);
+
+        var audioPath = candidate.LiveSession?.LocalAudioPath;
+        if (string.IsNullOrEmpty(audioPath) || !File.Exists(audioPath)) return (null, null);
+
+        // Empezamos 2 segundos antes del momento detectado para dar contexto
+        // y extraemos 5 segundos en total.
+        var startSeconds = Math.Max(0, spokenAt - 2);
+        const int clipDurationSeconds = 5;
+
+        var startArg = startSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+        var psi = new ProcessStartInfo("ffmpeg")
+        {
+            Arguments = $"-ss {startArg} -t {clipDurationSeconds} -i \"{audioPath}\" -f mp3 -acodec libmp3lame -b:a 64k -ac 1 -ar 22050 -",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null) return (null, null);
+
+            var memoryStream = new MemoryStream();
+            var copyTask = process.StandardOutput.BaseStream.CopyToAsync(memoryStream);
+
+            // Drenar stderr para evitar bloqueo por buffer lleno
+            var errorTask = process.StandardError.ReadToEndAsync();
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { /* ignore */ }
+                _logger.LogWarning("ffmpeg timed out generating clip for candidate {Id}", candidateId);
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            await copyTask;
+            await errorTask;
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("ffmpeg exited with code {Code} for candidate {Id}: {Err}",
+                    process.ExitCode, candidateId, errorTask.Result);
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            if (memoryStream.Length == 0)
+            {
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            memoryStream.Position = 0;
+            return (memoryStream, "audio/mpeg");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to extract clip for candidate {Id}", candidateId);
+            return (null, null);
+        }
+    }
+
     // ── Processing pipeline ──
 
     private async Task ProcessAsync(int sessionId)
@@ -263,6 +344,16 @@ public class LiveCaptureService : ILiveCaptureService
 
             var audioFilePath = await DownloadAudioAsync(session.Id, session.FacebookUrl);
 
+            // Persistimos el path del audio para poder recortar clips por candidato
+            // después. Importante: NO borrar este archivo al terminar el procesamiento.
+            if (!string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
+            {
+                session.LocalAudioPath = audioFilePath.Length > 500
+                    ? audioFilePath[..500]
+                    : audioFilePath;
+                await db.SaveChangesAsync();
+            }
+
             // 2. Transcribe
             session.Status = LiveSessionStatus.Transcribing;
             await db.SaveChangesAsync();
@@ -273,13 +364,11 @@ public class LiveCaptureService : ILiveCaptureService
             session.Status = LiveSessionStatus.Parsing;
             await db.SaveChangesAsync();
 
-            var fullText = string.Join(" ", segments.Select(s => s.Text));
-
-            var products = await DetectProductsAsync(gemini, fullText, sessionId);
+            var products = await DetectProductsAsync(gemini, segments, sessionId);
             db.LiveProducts.AddRange(products);
             await db.SaveChangesAsync();
 
-            var spokenOrders = await DetectSpokenOrdersAsync(gemini, fullText, sessionId, products);
+            var spokenOrders = await DetectSpokenOrdersAsync(gemini, segments, sessionId, products);
             db.LiveSpokenOrders.AddRange(spokenOrders);
             await db.SaveChangesAsync();
 
@@ -404,17 +493,29 @@ public class LiveCaptureService : ILiveCaptureService
         }
     }
 
-    private async Task<List<LiveProduct>> DetectProductsAsync(IGeminiService gemini, string fullText, int sessionId)
+    private async Task<List<LiveProduct>> DetectProductsAsync(IGeminiService gemini, List<TranscriptSegment> segments, int sessionId)
     {
-        if (string.IsNullOrWhiteSpace(fullText))
+        if (segments.Count == 0)
             return new List<LiveProduct>();
 
         try
         {
-            var prompt = $@"Eres un asistente que analiza la transcripción de un Facebook Live de ventas en español. Extrae TODOS los productos que la dueña anuncia, cada uno con su PALABRA CLAVE y PRECIO. Formato: responde solo con JSON array: [{{""keyword"":""botones"",""description"":""blusa de botones rosa"",""price"":120}}]. Solo JSON, sin Markdown.
+            var timedLines = segments.Select(s =>
+            {
+                var ts = TimeSpan.FromSeconds(s.StartSeconds);
+                return $"[{ts:hh\\:mm\\:ss}] {s.Text.Trim()}";
+            });
+            var timedTranscript = string.Join("\n", timedLines);
 
-Transcripción:
-{fullText}";
+            var prompt = $@"Eres un asistente que analiza la transcripción timbrada de un Facebook Live de ventas en español.
+Cada línea tiene el formato [HH:MM:SS] texto.
+Extrae TODOS los productos que la dueña anuncia con su palabra clave y precio.
+Para cada uno incluye el segundo exacto (en segundos desde el inicio) en que fue anunciado.
+Responde SOLO con JSON array, sin Markdown:
+[{{""keyword"":""botones"",""description"":""blusa de botones rosa"",""price"":120,""announcedAtSeconds"":45.0}}]
+
+Transcripción timbrada:
+{timedTranscript}";
 
             var json = await gemini.CallGeminiJsonAsync(prompt);
 
@@ -439,6 +540,10 @@ Transcripción:
                         price = p;
                 }
 
+                double? announcedAt = null;
+                if (item.TryGetProperty("announcedAtSeconds", out var aat) && aat.ValueKind == JsonValueKind.Number)
+                    announcedAt = aat.GetDouble();
+
                 products.Add(new LiveProduct
                 {
                     LiveSessionId = sessionId,
@@ -447,6 +552,7 @@ Transcripción:
                         ? (desc.GetString() ?? "")[..Math.Min((desc.GetString() ?? "").Length, 300)]
                         : null,
                     Price = price,
+                    AnnouncedAtSeconds = announcedAt,
                 });
             }
 
@@ -461,20 +567,35 @@ Transcripción:
 
     private async Task<List<LiveSpokenOrder>> DetectSpokenOrdersAsync(
         IGeminiService gemini,
-        string fullText,
+        List<TranscriptSegment> segments,
         int sessionId,
         List<LiveProduct> products)
     {
-        if (string.IsNullOrWhiteSpace(fullText) || products.Count == 0)
+        if (segments.Count == 0 || products.Count == 0)
             return new List<LiveSpokenOrder>();
 
         try
         {
-            var keywords = string.Join(", ", products.Select(p => p.Keyword));
-            var prompt = $@"De esta transcripción de un Facebook Live de ventas, extrae TODAS las asignaciones de pedidos hablados por la dueña (frases como 'botones para Lupe', 'Lupe se lleva botones', etc.). Las keywords disponibles son: {keywords}. Responde solo JSON: [{{""keyword"":""botones"",""clientName"":""Lupe López""}}]. Solo JSON, sin Markdown.
+            // Build a timed transcript: each line prefixed with "[HH:MM:SS]" so Gemini
+            // can return the exact second of each spoken assignment.
+            var timedLines = segments.Select(s =>
+            {
+                var ts = TimeSpan.FromSeconds(s.StartSeconds);
+                return $"[{ts:hh\\:mm\\:ss}] {s.Text.Trim()}";
+            });
+            var timedTranscript = string.Join("\n", timedLines);
 
-Transcripción:
-{fullText}";
+            var keywords = string.Join(", ", products.Select(p => p.Keyword));
+            var prompt = $@"Eres un asistente que analiza la transcripción timbrada de un Facebook Live de ventas en español.
+Cada línea tiene el formato [HH:MM:SS] texto.
+Extrae TODAS las asignaciones de pedidos hablados por la dueña (frases como 'botones para Lupe', 'Lupe se lleva botones', 'apúntame una de azul a Patricia', etc.).
+Las keywords de los productos disponibles son: {keywords}.
+Para cada asignación devuelve el segundo exacto (en segundos desde el inicio del video) en que la dueña lo dijo.
+Responde SOLO con JSON array, sin Markdown:
+[{{""keyword"":""botones"",""clientName"":""Lupe López"",""spokenAtSeconds"":3723.0}}]
+
+Transcripción timbrada:
+{timedTranscript}";
 
             var json = await gemini.CallGeminiJsonAsync(prompt);
 
@@ -491,11 +612,16 @@ Transcripción:
                 var clientName = item.TryGetProperty("clientName", out var cn) ? cn.GetString() ?? "" : "";
                 if (string.IsNullOrWhiteSpace(keyword) || string.IsNullOrWhiteSpace(clientName)) continue;
 
+                double? spokenAt = null;
+                if (item.TryGetProperty("spokenAtSeconds", out var sat) && sat.ValueKind == JsonValueKind.Number)
+                    spokenAt = sat.GetDouble();
+
                 orders.Add(new LiveSpokenOrder
                 {
                     LiveSessionId = sessionId,
                     Keyword = keyword[..Math.Min(keyword.Length, 100)],
                     ClientNameSpoken = clientName[..Math.Min(clientName.Length, 200)],
+                    SpokenAtSeconds = spokenAt,
                 });
             }
 
@@ -528,6 +654,13 @@ Transcripción:
             var matchedProduct = products.FirstOrDefault(p =>
                 p.Keyword.Equals(group.Key.Keyword, StringComparison.OrdinalIgnoreCase));
 
+            // Tomar el primer timestamp disponible dentro de los pedidos hablados
+            // que componen este grupo. Sirve para que el frontend pueda reproducir
+            // un clip de 5 segundos centrado en el momento en que se dijo el pedido.
+            var spokenAtSeconds = group
+                .Select(o => o.SpokenAtSeconds)
+                .FirstOrDefault(s => s.HasValue);
+
             var candidate = new LiveCandidate
             {
                 LiveSessionId = sessionId,
@@ -536,6 +669,7 @@ Transcripción:
                 ClientNameSpoken = group.Key.ClientNameSpoken[..Math.Min(group.Key.ClientNameSpoken.Length, 200)],
                 Source = LiveCandidateSource.Spoken,
                 Status = LiveCandidateStatus.Pending,
+                SpokenAtSeconds = spokenAtSeconds,
             };
 
             db.LiveCandidates.Add(candidate);
@@ -556,5 +690,6 @@ Transcripción:
             c.ClientNameSpoken, c.CommentDisplayName,
             c.ResolvedClientId, c.ResolvedClient?.Name,
             c.ProposedAliasPairJson,
-            c.Source.ToString(), c.Status.ToString());
+            c.Source.ToString(), c.Status.ToString(),
+            c.SpokenAtSeconds);
 }

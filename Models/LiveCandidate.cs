@@ -46,4 +46,8 @@ public class LiveCandidate
     public LiveCandidateStatus Status { get; set; } = LiveCandidateStatus.Pending;
 
     public int? CreatedOrderId { get; set; }
+
+    // Segundo aproximado del audio en el que se habló este pedido.
+    // Permite extraer clips de 5 segundos para revisión rápida.
+    public double? SpokenAtSeconds { get; set; }
 }

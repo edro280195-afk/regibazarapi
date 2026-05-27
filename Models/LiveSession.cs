@@ -35,6 +35,11 @@ public class LiveSession
     public DateTime? ProcessedAt { get; set; }
     public double? DurationSeconds { get; set; }
 
+    // Ruta local en disco (típicamente /tmp/) del audio descargado.
+    // Se mantiene tras procesar para poder extraer clips de cada candidato.
+    [MaxLength(500)]
+    public string? LocalAudioPath { get; set; }
+
     public ICollection<LiveProduct> Products { get; set; } = new List<LiveProduct>();
     public ICollection<LiveCandidate> Candidates { get; set; } = new List<LiveCandidate>();
 }

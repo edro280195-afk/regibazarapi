@@ -23,11 +23,14 @@ public class OrdersController : ControllerBase
     private readonly IGeminiService _geminiService;
     private readonly IOrderService _orderService;
     private readonly IHubContext<DeliveryHub> _hub;
+    private readonly IClientResolverService _clientResolver;
+    private readonly ILogger<OrdersController> _logger;
     private readonly string FrontendUrl;
 
     public OrdersController(AppDbContext db, IExcelService excelService,
         ITokenService tokenService, IConfiguration config, IPushNotificationService pushService,
-        IGeminiService geminiService, IOrderService orderService, IHubContext<DeliveryHub> hub)
+        IGeminiService geminiService, IOrderService orderService, IHubContext<DeliveryHub> hub,
+        IClientResolverService clientResolver, ILogger<OrdersController> logger)
     {
         _db = db;
         _excelService = excelService;
@@ -37,6 +40,8 @@ public class OrdersController : ControllerBase
         _geminiService = geminiService;
         _orderService = orderService;
         _hub = hub;
+        _clientResolver = clientResolver;
+        _logger = logger;
         FrontendUrl = config["App:FrontendUrl"] ?? "https://regibazar.com";
     }
 
@@ -448,6 +453,18 @@ public class OrdersController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
+
+        // 🤝 Auto-merge: si la clienta resultante choca con otra por teléfono+nombre muy parecido,
+        // las fusionamos automáticamente y registramos el evento. No bloqueamos la creación
+        // del pedido si la fusión falla.
+        try
+        {
+            await _clientResolver.TryAutoMergeAsync(client.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Auto-merge attempt failed for client {Id}", client.Id);
+        }
 
         return Ok(ExcelService.MapToSummary(existingOrder, client, FrontendUrl));
     }
