@@ -776,6 +776,16 @@ public record CamiAlert(string Type, string Message, string Icon, int? RelatedId
 public record RouteBriefingResponse(string Text, string? AudioBase64 = null);
 public record DashboardInsightRequest(decimal RevenueToday, decimal RevenueMonth, int PendingOrders, int DeliveredOrders, int ActiveRoutes, decimal PendingAmount, int TotalClients);
 
+// ── C.A.M.I. Proactive Suggestions ──
+public record CamiProactiveSuggestionDto(
+    string Kind,        // "live-pending", "live-stuck", "duplicates"
+    string Icon,
+    string Title,
+    string Detail,
+    string ActionLabel,
+    string ActionRoute,
+    int Priority);
+
 // ── POS ──
 public record OpenSessionRequest(int UserId, decimal InitialCash);
 public record CloseSessionRequest(int SessionId, decimal ActualCash);
@@ -862,65 +872,66 @@ public record ClientAliasDto(
     int TimesSeen,
     DateTime CreatedAt);
 
-// ── Captura asistida por video de lives ──
+// ── Live Capture ──
 
-public record ImportLiveRequest(
-    string FacebookUrl,
-    string? Title = null);
+public record ImportLiveRequest(string FacebookUrl, string? Title = null);
 
 public record LiveSessionDto(
     int Id,
     string FacebookUrl,
-    string? R2Key,
     string? Title,
-    DateTime ImportedAt,
     string Status,
-    double? DurationSeconds,
+    string? StatusDetail,
+    DateTime ImportedAt,
     DateTime? ProcessedAt,
-    string? ErrorMessage,
-    int ProductsCount,
-    int CandidatesCount,
-    int PendingCount,
-    int ConfirmedCount,
-    int IgnoredCount);
+    double? DurationSeconds,
+    int ProductCount,
+    int CandidateCount,
+    int PendingCount);
 
 public record LiveProductDto(
     int Id,
     string Keyword,
-    string Description,
+    string? Description,
     decimal Price,
-    double AnnouncedAtSeconds,
-    double Confidence,
-    int CandidatesCount);
-
-public record ProposedAliasPairDto(
-    string Alias,
-    string CanonicalName);
+    double? AnnouncedAtSeconds,
+    int CandidateCount);
 
 public record LiveCandidateDto(
     int Id,
-    int LiveSessionId,
-    int? LiveProductId,
     string Keyword,
-    string? ProductDescription,
-    decimal? ProductPrice,
+    int? LiveProductId,
     string? ClientNameSpoken,
     string? CommentDisplayName,
     int? ResolvedClientId,
     string? ResolvedClientName,
-    ProposedAliasPairDto? ProposedAliasPair,
-    string Source,
-    string Status,
-    double Confidence,
-    double? SpokenAtSeconds,
-    double? CommentedAtSeconds,
-    int? CreatedOrderId,
-    DateTime CreatedAt,
-    DateTime? ReviewedAt,
-    ResolveClientResponse? Resolution = null);
+    string? ProposedAliasPairJson,
+    string Source,   // "Spoken" | "Comment" | "SpokenAndComment"
+    string Status,   // "Pending" | "Confirmed" | "Ignored"
+    double? SpokenAtSeconds = null);
 
-public record ConfirmLiveCandidateRequest(
-    int? ClientId = null,
+public record LiveReviewDto(
+    LiveSessionDto Session,
+    List<LiveProductDto> Products,
+    Dictionary<int, List<LiveCandidateDto>> CandidatesByProduct,
+    List<LiveCandidateDto> UnmatchedCandidates);
+
+public record ConfirmCandidateRequest(
+    int? ClientId = null,          // null = create new client
+    string? ClientName = null,     // used when creating new client
     string? ProductOverride = null,
     decimal? PriceOverride = null,
-    bool AcceptProposedAlias = true);
+    bool AcceptAlias = false);
+
+public record ClientMergeAuditDto(
+    int Id,
+    int SourceClientId,
+    string SourceName,
+    int TargetClientId,
+    string TargetName,
+    string Mode,        // "Manual" | "Auto"
+    string? Reason,
+    double Confidence,
+    int OrdersMoved,
+    int AliasesMoved,
+    DateTime MergedAt);

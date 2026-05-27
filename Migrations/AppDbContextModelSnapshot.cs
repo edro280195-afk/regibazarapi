@@ -229,6 +229,54 @@ namespace EntregasApi.Migrations
                     b.ToTable("ClientAliases");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.ClientMergeAudit", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AliasesMoved")
+                        .HasColumnType("integer");
+
+                    b.Property<double>("Confidence")
+                        .HasColumnType("double precision");
+
+                    b.Property<DateTime>("MergedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Mode")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("OrdersMoved")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("SourceClientId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SourceName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("TargetClientId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TargetName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ClientMergeAudits");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.Delivery", b =>
                 {
                     b.Property<int>("Id")
@@ -497,334 +545,6 @@ namespace EntregasApi.Migrations
                     b.HasIndex("SupplierId");
 
                     b.ToTable("Investments");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveCandidate", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ClientNameSpoken")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("CommentDisplayName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<double?>("CommentedAtSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<double>("Confidence")
-                        .HasColumnType("double precision");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int?>("CreatedOrderId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Keyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<int?>("LiveProductId")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("LiveSessionId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("NormalizedKeyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("ProposedAlias")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("ProposedCanonicalName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<int?>("ResolvedClientId")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)");
-
-                    b.Property<double?>("SpokenAtSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CreatedOrderId");
-
-                    b.HasIndex("LiveProductId");
-
-                    b.HasIndex("ResolvedClientId");
-
-                    b.HasIndex("LiveSessionId", "NormalizedKeyword");
-
-                    b.HasIndex("LiveSessionId", "Status");
-
-                    b.ToTable("LiveCandidates");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveComment", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("CommentText")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)");
-
-                    b.Property<string>("DisplayName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<int>("LiveSessionId")
-                        .HasColumnType("integer");
-
-                    b.Property<double>("OcrConfidence")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("RawText")
-                        .HasColumnType("text");
-
-                    b.Property<double>("TimestampSeconds")
-                        .HasColumnType("double precision");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("LiveSessionId", "TimestampSeconds");
-
-                    b.ToTable("LiveComments");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveCommentOrder", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("CommentDisplayName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<double>("CommentedAtSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("Keyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<int>("LiveCommentId")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("LiveSessionId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("NormalizedKeyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<double>("OcrConfidence")
-                        .HasColumnType("double precision");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CommentedAtSeconds");
-
-                    b.HasIndex("LiveCommentId");
-
-                    b.HasIndex("LiveSessionId", "NormalizedKeyword");
-
-                    b.ToTable("LiveCommentOrders");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveProduct", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<double>("AnnouncedAtSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<double>("Confidence")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<string>("Keyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<int>("LiveSessionId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("NormalizedKeyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<decimal>("Price")
-                        .HasColumnType("decimal(10,2)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("NormalizedKeyword");
-
-                    b.HasIndex("LiveSessionId", "NormalizedKeyword");
-
-                    b.ToTable("LiveProducts");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveSession", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<double?>("DurationSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.Property<string>("FacebookUrl")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.Property<DateTime>("ImportedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("ProcessedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("R2Key")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)");
-
-                    b.Property<string>("Title")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ImportedAt");
-
-                    b.HasIndex("Status");
-
-                    b.ToTable("LiveSessions");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveSpokenOrder", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ClientNameSpoken")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<double>("Confidence")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("Keyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<int>("LiveSessionId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("NormalizedKeyword")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<double>("SpokenAtSeconds")
-                        .HasColumnType("double precision");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SpokenAtSeconds");
-
-                    b.HasIndex("LiveSessionId", "NormalizedKeyword");
-
-                    b.ToTable("LiveSpokenOrders");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveTranscriptSegment", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<double>("EndSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<int>("LiveSessionId")
-                        .HasColumnType("integer");
-
-                    b.Property<double>("StartSeconds")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("Text")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("LiveSessionId", "StartSeconds");
-
-                    b.ToTable("LiveTranscriptSegments");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.LoyaltyTransaction", b =>
@@ -1927,101 +1647,6 @@ namespace EntregasApi.Migrations
                     b.Navigation("Supplier");
                 });
 
-            modelBuilder.Entity("EntregasApi.Models.LiveCandidate", b =>
-                {
-                    b.HasOne("EntregasApi.Models.Order", "CreatedOrder")
-                        .WithMany()
-                        .HasForeignKey("CreatedOrderId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("EntregasApi.Models.LiveProduct", "LiveProduct")
-                        .WithMany("Candidates")
-                        .HasForeignKey("LiveProductId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("EntregasApi.Models.LiveSession", "LiveSession")
-                        .WithMany("Candidates")
-                        .HasForeignKey("LiveSessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("EntregasApi.Models.Client", "ResolvedClient")
-                        .WithMany()
-                        .HasForeignKey("ResolvedClientId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("CreatedOrder");
-
-                    b.Navigation("LiveProduct");
-
-                    b.Navigation("LiveSession");
-
-                    b.Navigation("ResolvedClient");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveComment", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LiveSession", "LiveSession")
-                        .WithMany("Comments")
-                        .HasForeignKey("LiveSessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("LiveSession");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveCommentOrder", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LiveComment", "LiveComment")
-                        .WithMany()
-                        .HasForeignKey("LiveCommentId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("EntregasApi.Models.LiveSession", "LiveSession")
-                        .WithMany("CommentOrders")
-                        .HasForeignKey("LiveSessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("LiveComment");
-
-                    b.Navigation("LiveSession");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveProduct", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LiveSession", "LiveSession")
-                        .WithMany("Products")
-                        .HasForeignKey("LiveSessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("LiveSession");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveSpokenOrder", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LiveSession", "LiveSession")
-                        .WithMany("SpokenOrders")
-                        .HasForeignKey("LiveSessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("LiveSession");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveTranscriptSegment", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LiveSession", "LiveSession")
-                        .WithMany("TranscriptSegments")
-                        .HasForeignKey("LiveSessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("LiveSession");
-                });
-
             modelBuilder.Entity("EntregasApi.Models.LoyaltyTransaction", b =>
                 {
                     b.HasOne("EntregasApi.Models.Client", "Client")
@@ -2256,26 +1881,6 @@ namespace EntregasApi.Migrations
                     b.Navigation("Deliveries");
 
                     b.Navigation("Orders");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveProduct", b =>
-                {
-                    b.Navigation("Candidates");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LiveSession", b =>
-                {
-                    b.Navigation("Candidates");
-
-                    b.Navigation("CommentOrders");
-
-                    b.Navigation("Comments");
-
-                    b.Navigation("Products");
-
-                    b.Navigation("SpokenOrders");
-
-                    b.Navigation("TranscriptSegments");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.Order", b =>

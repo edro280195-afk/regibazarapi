@@ -182,6 +182,22 @@ public class CamiController : ControllerBase
         }
     }
 
+    /// <summary>Sugerencias proactivas accionables para el panel de CAMI.</summary>
+    [HttpGet("proactive-suggestions")]
+    public async Task<ActionResult<List<CamiProactiveSuggestionDto>>> GetProactiveSuggestions()
+    {
+        try
+        {
+            var list = await _cami.GetProactiveSuggestionsAsync();
+            return Ok(list);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error en /cami/proactive-suggestions");
+            return Ok(new List<CamiProactiveSuggestionDto>());
+        }
+    }
+
     /// <summary>Alertas proactivas del negocio.</summary>
     [HttpGet("alerts")]
     public async Task<ActionResult<List<CamiAlert>>> GetAlerts()

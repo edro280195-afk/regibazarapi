@@ -1,186 +1,462 @@
-using System.Globalization;
-using System.Text.RegularExpressions;
+using System.Diagnostics;
+using System.Net.Http.Headers;
+using System.Text.Json;
 using EntregasApi.Data;
+using EntregasApi.DTOs;
 using EntregasApi.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
-using Tesseract;
 
 namespace EntregasApi.Services;
 
-public interface ILiveCaptureService
-{
-    Task ProcessAsync(int liveSessionId, CancellationToken cancellationToken);
-    Task<LiveClipResult> GetClipAsync(int liveSessionId, double atSeconds, int durationSeconds, CancellationToken cancellationToken);
-}
-
-public record LiveClipResult(byte[] Content, string ContentType, string FileName);
-internal record YtDlpAttempt(string FileName, IReadOnlyList<string> Arguments, string DisplayName);
+public record TranscriptSegment(double StartSeconds, double EndSeconds, string Text);
 
 public class LiveCaptureService : ILiveCaptureService
 {
-    private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
-    private static readonly string[] CommonYtDlpPaths = { "/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp" };
-    private static readonly string[] IgnoredOcrFragments =
-    {
-        "me gusta", "comentar", "compartir", "enviar", "facebook", "live", "reels", "escribe un comentario"
-    };
-
-    private readonly AppDbContext _db;
-    private readonly IExternalProcessRunner _processRunner;
-    private readonly ILiveStorageService _storage;
-    private readonly IOpenAiTranscriptionService _transcriptionService;
-    private readonly IGeminiService _geminiService;
-    private readonly ILiveTimelineBuilder _timelineBuilder;
-    private readonly LiveCaptureOptions _options;
+    private static readonly string[] CommonYtDlpPaths = { "yt-dlp", "/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp" };
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IConfiguration _config;
     private readonly ILogger<LiveCaptureService> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
 
     public LiveCaptureService(
-        AppDbContext db,
-        IExternalProcessRunner processRunner,
-        ILiveStorageService storage,
-        IOpenAiTranscriptionService transcriptionService,
-        IGeminiService geminiService,
-        ILiveTimelineBuilder timelineBuilder,
-        IOptions<LiveCaptureOptions> options,
-        ILogger<LiveCaptureService> logger)
+        IServiceScopeFactory scopeFactory,
+        IConfiguration config,
+        ILogger<LiveCaptureService> logger,
+        IHttpClientFactory httpClientFactory)
     {
-        _db = db;
-        _processRunner = processRunner;
-        _storage = storage;
-        _transcriptionService = transcriptionService;
-        _geminiService = geminiService;
-        _timelineBuilder = timelineBuilder;
-        _options = options.Value;
+        _scopeFactory = scopeFactory;
+        _config = config;
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
-    public async Task ProcessAsync(int liveSessionId, CancellationToken cancellationToken)
+    // ── Public interface ──
+
+    public async Task<LiveSession> ImportAsync(string facebookUrl, string? title)
     {
-        var workDir = CreateWorkDirectory(liveSessionId);
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        try
+        var session = new LiveSession
         {
-            var session = await _db.LiveSessions.FirstOrDefaultAsync(s => s.Id == liveSessionId, cancellationToken)
-                ?? throw new InvalidOperationException($"LiveSession {liveSessionId} no existe.");
-
-            await UpdateStatusAsync(session, LiveSessionStatus.Downloading, cancellationToken);
-            var videoPath = await DownloadVideoAsync(session, workDir, cancellationToken);
-            session.DurationSeconds = await ProbeDurationAsync(videoPath, cancellationToken);
-            session.R2Key = await _storage.UploadVideoAsync(session.Id, videoPath, cancellationToken);
-            await _db.SaveChangesAsync(cancellationToken);
-
-            await UpdateStatusAsync(session, LiveSessionStatus.Transcribing, cancellationToken);
-            var audioChunks = await ExtractAudioChunksAsync(videoPath, workDir, cancellationToken);
-            var transcriptSegments = await _transcriptionService.TranscribeChunksAsync(
-                session.Id,
-                audioChunks,
-                _options.AudioChunkSeconds,
-                cancellationToken);
-
-            await ReplaceTranscriptAsync(session.Id, transcriptSegments, cancellationToken);
-
-            await UpdateStatusAsync(session, LiveSessionStatus.Parsing, cancellationToken);
-            await RunTranscriptDetectorsAsync(session.Id, transcriptSegments, cancellationToken);
-
-            await UpdateStatusAsync(session, LiveSessionStatus.Scanning, cancellationToken);
-            var framePaths = await ExtractFramesAsync(videoPath, workDir, cancellationToken);
-            var comments = RunOcr(framePaths, session.Id);
-            await ReplaceCommentsAsync(session.Id, comments, cancellationToken);
-            await BuildCommentOrdersAsync(session.Id, cancellationToken);
-
-            await UpdateStatusAsync(session, LiveSessionStatus.Combining, cancellationToken);
-            await _timelineBuilder.BuildAsync(session.Id, cancellationToken);
-
-            session.Status = LiveSessionStatus.Ready;
-            session.ProcessedAt = DateTime.UtcNow;
-            session.ErrorMessage = null;
-            await _db.SaveChangesAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Fallo el pipeline de live {LiveSessionId}", liveSessionId);
-            await MarkFailedAsync(liveSessionId, ex.Message, cancellationToken);
-            throw;
-        }
-        finally
-        {
-            TryDeleteDirectory(workDir);
-        }
-    }
-
-    public async Task<LiveClipResult> GetClipAsync(int liveSessionId, double atSeconds, int durationSeconds, CancellationToken cancellationToken)
-    {
-        var session = await _db.LiveSessions.FirstOrDefaultAsync(s => s.Id == liveSessionId, cancellationToken)
-            ?? throw new InvalidOperationException("Live no encontrado.");
-
-        if (string.IsNullOrWhiteSpace(session.R2Key))
-            throw new InvalidOperationException("El live no tiene video en R2 todavia.");
-
-        var workDir = CreateWorkDirectory(liveSessionId);
-        try
-        {
-            var sourcePath = await _storage.DownloadVideoToTempAsync(session.R2Key, workDir, cancellationToken);
-            var outputPath = Path.Combine(workDir, $"clip_{Guid.NewGuid():N}.mp4");
-            var start = Math.Max(0, atSeconds).ToString("0.###", CultureInfo.InvariantCulture);
-            var duration = Math.Clamp(durationSeconds, 1, 30).ToString(CultureInfo.InvariantCulture);
-
-            await _processRunner.RunAsync(_options.FfmpegPath, new[]
-            {
-                "-y",
-                "-ss", start,
-                "-i", sourcePath,
-                "-t", duration,
-                "-c", "copy",
-                "-avoid_negative_ts", "make_zero",
-                outputPath
-            }, cancellationToken);
-
-            var bytes = await File.ReadAllBytesAsync(outputPath, cancellationToken);
-            return new LiveClipResult(bytes, "video/mp4", $"live_{liveSessionId}_{start}s.mp4");
-        }
-        finally
-        {
-            TryDeleteDirectory(workDir);
-        }
-    }
-
-    private async Task<string> DownloadVideoAsync(LiveSession session, string workDir, CancellationToken cancellationToken)
-    {
-        var outputTemplate = Path.Combine(workDir, "live.%(ext)s");
-        var ytDlpArguments = new[]
-        {
-            "--no-playlist",
-            "-f", "best[ext=mp4]/best",
-            "-o", outputTemplate,
-            session.FacebookUrl
+            FacebookUrl = facebookUrl,
+            Title = title,
+            Status = LiveSessionStatus.Queued,
+            ImportedAt = DateTime.UtcNow,
         };
 
-        await RunYtDlpAsync(ytDlpArguments, cancellationToken);
+        db.LiveSessions.Add(session);
+        await db.SaveChangesAsync();
 
-        var downloaded = Directory.GetFiles(workDir, "live.*")
-            .Where(p => !p.EndsWith(".part", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
-
-        return downloaded ?? throw new InvalidOperationException("yt-dlp no genero ningun archivo de video.");
-    }
-
-    private async Task RunYtDlpAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
-    {
-        var errors = new List<string>();
-
-        foreach (var attempt in BuildYtDlpAttempts(arguments))
+        var sessionId = session.Id;
+        _ = Task.Run(async () =>
         {
             try
             {
-                await _processRunner.RunAsync(attempt.FileName, attempt.Arguments, cancellationToken);
+                await ProcessAsync(sessionId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error in ProcessAsync for session {Id}", sessionId);
+            }
+        });
+
+        return session;
+    }
+
+    public async Task<List<LiveSession>> GetAllAsync()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.LiveSessions
+            .OrderByDescending(s => s.ImportedAt)
+            .ToListAsync();
+    }
+
+    public async Task<LiveSession?> GetByIdAsync(int id)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.LiveSessions.FindAsync(id);
+    }
+
+    public async Task<LiveReviewDto?> GetReviewAsync(int sessionId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var session = await db.LiveSessions
+            .Include(s => s.Products)
+            .Include(s => s.Candidates)
+                .ThenInclude(c => c.ResolvedClient)
+            .FirstOrDefaultAsync(s => s.Id == sessionId);
+
+        if (session == null) return null;
+
+        var products = session.Products.ToList();
+        var candidates = session.Candidates.ToList();
+
+        var productDtos = products.Select(p => new LiveProductDto(
+            p.Id,
+            p.Keyword,
+            p.Description,
+            p.Price,
+            p.AnnouncedAtSeconds,
+            candidates.Count(c => c.LiveProductId == p.Id)
+        )).ToList();
+
+        var candidatesByProduct = products.ToDictionary(
+            p => p.Id,
+            p => candidates
+                .Where(c => c.LiveProductId == p.Id)
+                .Select(c => MapCandidateDto(c))
+                .ToList()
+        );
+
+        var unmatched = candidates
+            .Where(c => c.LiveProductId == null)
+            .Select(c => MapCandidateDto(c))
+            .ToList();
+
+        var sessionDto = MapSessionDto(session, products.Count, candidates.Count,
+            candidates.Count(c => c.Status == LiveCandidateStatus.Pending));
+
+        return new LiveReviewDto(sessionDto, productDtos, candidatesByProduct, unmatched);
+    }
+
+    public async Task ConfirmCandidateAsync(int candidateId, ConfirmCandidateRequest req)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var candidate = await db.LiveCandidates
+            .Include(c => c.LiveProduct)
+            .FirstOrDefaultAsync(c => c.Id == candidateId);
+
+        if (candidate == null) throw new InvalidOperationException("Candidate not found");
+
+        // Resolve or create client
+        int clientId;
+        var clientResolver = scope.ServiceProvider.GetRequiredService<IClientResolverService>();
+
+        if (req.ClientId.HasValue)
+        {
+            clientId = req.ClientId.Value;
+        }
+        else if (!string.IsNullOrWhiteSpace(req.ClientName))
+        {
+            var resolved = await clientResolver.ResolveAsync(req.ClientName, null, null);
+            if (resolved.SuggestedAction == "use" && resolved.Candidates.Count > 0)
+            {
+                clientId = resolved.Candidates[0].ClientId;
+            }
+            else
+            {
+                // Create new client
+                var newClient = new Client
+                {
+                    Name = req.ClientName,
+                    NormalizedName = TextNormalizer.NormalizeName(req.ClientName),
+                    CreatedAt = DateTime.UtcNow,
+                    Type = "Nueva",
+                };
+                db.Clients.Add(newClient);
+                await db.SaveChangesAsync();
+                clientId = newClient.Id;
+            }
+        }
+        else
+        {
+            throw new ArgumentException("ClientId or ClientName is required");
+        }
+
+        candidate.ResolvedClientId = clientId;
+
+        // Determine product info
+        var productName = req.ProductOverride
+            ?? (candidate.LiveProduct != null
+                ? $"{candidate.LiveProduct.Keyword} {candidate.LiveProduct.Description}".Trim()
+                : candidate.Keyword);
+        var price = req.PriceOverride
+            ?? candidate.LiveProduct?.Price
+            ?? 0m;
+
+        // Create order directly in DB
+        var clientEntity = await db.Clients.FindAsync(clientId);
+        var orderService = scope.ServiceProvider.GetRequiredService<IOrderService>();
+        var dates = orderService.CalculateOrderDates(clientEntity?.Type ?? "Nueva", DateTime.UtcNow);
+
+        var order = new Order
+        {
+            ClientId = clientId,
+            Status = OrderStatus.Pending,
+            OrderType = OrderType.Delivery,
+            Subtotal = price,
+            ShippingCost = 0m,
+            Total = price,
+            AccessToken = Guid.NewGuid().ToString("N"),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = dates.ExpiresAt,
+            ScheduledDeliveryDate = dates.ScheduledDeliveryDate,
+        };
+
+        order.Items.Add(new OrderItem
+        {
+            ProductName = productName,
+            Quantity = 1,
+            UnitPrice = price,
+            LineTotal = price,
+        });
+
+        db.Orders.Add(order);
+        await db.SaveChangesAsync();
+
+        candidate.Status = LiveCandidateStatus.Confirmed;
+        candidate.CreatedOrderId = order.Id;
+
+        // Accept alias if requested
+        if (req.AcceptAlias
+            && !string.IsNullOrWhiteSpace(candidate.ClientNameSpoken)
+            && !string.IsNullOrWhiteSpace(candidate.CommentDisplayName))
+        {
+            try
+            {
+                await clientResolver.AddAliasAsync(clientId, candidate.ClientNameSpoken, ClientAliasSource.LiveAudio);
+                await clientResolver.AddAliasAsync(clientId, candidate.CommentDisplayName, ClientAliasSource.LiveOcr);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not add aliases for candidate {Id}", candidateId);
+            }
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    public async Task IgnoreCandidateAsync(int candidateId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var candidate = await db.LiveCandidates.FindAsync(candidateId);
+        if (candidate == null) throw new InvalidOperationException("Candidate not found");
+
+        candidate.Status = LiveCandidateStatus.Ignored;
+        await db.SaveChangesAsync();
+    }
+
+    public async Task<(Stream? stream, string? contentType)> GetCandidateClipAsync(int candidateId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var candidate = await db.LiveCandidates
+            .Include(c => c.LiveSession)
+            .FirstOrDefaultAsync(c => c.Id == candidateId);
+
+        if (candidate == null) return (null, null);
+        if (candidate.SpokenAtSeconds is not double spokenAt) return (null, null);
+
+        var audioPath = candidate.LiveSession?.LocalAudioPath;
+        if (string.IsNullOrEmpty(audioPath) || !File.Exists(audioPath)) return (null, null);
+
+        // Empezamos 2 segundos antes del momento detectado para dar contexto
+        // y extraemos 5 segundos en total.
+        var startSeconds = Math.Max(0, spokenAt - 2);
+        const int clipDurationSeconds = 5;
+
+        var startArg = startSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+        var psi = new ProcessStartInfo("ffmpeg")
+        {
+            Arguments = $"-ss {startArg} -t {clipDurationSeconds} -i \"{audioPath}\" -f mp3 -acodec libmp3lame -b:a 64k -ac 1 -ar 22050 -",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null) return (null, null);
+
+            var memoryStream = new MemoryStream();
+            var copyTask = process.StandardOutput.BaseStream.CopyToAsync(memoryStream);
+
+            // Drenar stderr para evitar bloqueo por buffer lleno
+            var errorTask = process.StandardError.ReadToEndAsync();
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { /* ignore */ }
+                _logger.LogWarning("ffmpeg timed out generating clip for candidate {Id}", candidateId);
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            await copyTask;
+            await errorTask;
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("ffmpeg exited with code {Code} for candidate {Id}: {Err}",
+                    process.ExitCode, candidateId, errorTask.Result);
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            if (memoryStream.Length == 0)
+            {
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            memoryStream.Position = 0;
+            return (memoryStream, "audio/mpeg");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to extract clip for candidate {Id}", candidateId);
+            return (null, null);
+        }
+    }
+
+    // ── Processing pipeline ──
+
+    private async Task ProcessAsync(int sessionId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var gemini = scope.ServiceProvider.GetRequiredService<IGeminiService>();
+
+        var session = await db.LiveSessions.FindAsync(sessionId);
+        if (session == null) return;
+
+        try
+        {
+            // 1. Download
+            session.Status = LiveSessionStatus.Downloading;
+            await db.SaveChangesAsync();
+
+            var audioFilePath = await DownloadAudioAsync(session.Id, session.FacebookUrl);
+
+            // Persistimos el path del audio para poder recortar clips por candidato
+            // después. Importante: NO borrar este archivo al terminar el procesamiento.
+            if (!string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
+            {
+                session.LocalAudioPath = audioFilePath.Length > 500
+                    ? audioFilePath[..500]
+                    : audioFilePath;
+                await db.SaveChangesAsync();
+            }
+
+            // 2. Transcribe
+            session.Status = LiveSessionStatus.Transcribing;
+            await db.SaveChangesAsync();
+
+            var segments = await WhisperTranscribeAsync(audioFilePath);
+
+            // 3. Parse
+            session.Status = LiveSessionStatus.Parsing;
+            await db.SaveChangesAsync();
+
+            var products = await DetectProductsAsync(gemini, segments, sessionId);
+            db.LiveProducts.AddRange(products);
+            await db.SaveChangesAsync();
+
+            var spokenOrders = await DetectSpokenOrdersAsync(gemini, segments, sessionId, products);
+            db.LiveSpokenOrders.AddRange(spokenOrders);
+            await db.SaveChangesAsync();
+
+            // 4. Build candidates
+            await BuildCandidatesAsync(db, sessionId);
+
+            // 5. Done
+            session.Status = LiveSessionStatus.Ready;
+            session.ProcessedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+
+            _logger.LogInformation("LiveSession {Id} processed successfully", sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Processing failed for LiveSession {Id}", sessionId);
+            session.Status = LiveSessionStatus.Failed;
+            session.StatusDetail = ex.Message.Length > 490 ? ex.Message[..490] : ex.Message;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    private async Task<string?> DownloadAudioAsync(int sessionId, string url)
+    {
+        var outputTemplate = $"/tmp/live_{sessionId}.%(ext)s";
+
+        // Only try yt-dlp for supported platforms
+        if (!url.Contains("youtube") && !url.Contains("youtu.be") && !url.Contains("facebook.com"))
+        {
+            _logger.LogWarning("URL {Url} is not a supported platform; skipping download", url);
+            return null;
+        }
+
+        try
+        {
+            await RunYtDlpDownloadAsync(outputTemplate, url);
+
+            // Find the downloaded file
+            var files = Directory.GetFiles("/tmp", $"live_{sessionId}.*");
+            return files.FirstOrDefault();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Download failed: {ex.Message}", ex);
+        }
+    }
+
+    private async Task RunYtDlpDownloadAsync(string outputTemplate, string url)
+    {
+        var errors = new List<string>();
+        var configuredPath = _config["LiveCapture:YtDlpPath"];
+        var directPaths = CommonYtDlpPaths
+            .Prepend(string.IsNullOrWhiteSpace(configuredPath) ? "yt-dlp" : configuredPath.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var fileName in directPaths)
+        {
+            try
+            {
+                await RunYtDlpProcessAsync(fileName, new[] { "-f", "bestaudio", "-o", outputTemplate, url }, fileName);
                 return;
             }
-            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex)
             {
-                errors.Add($"{attempt.DisplayName}: {ex.Message}");
-                _logger.LogWarning(ex, "No se pudo ejecutar yt-dlp usando {DisplayName}", attempt.DisplayName);
+                errors.Add($"{fileName}: {ex.Message}");
+                _logger.LogWarning(ex, "No se pudo ejecutar yt-dlp usando {FileName}", fileName);
+            }
+        }
+
+        var pythonPath = string.IsNullOrWhiteSpace(_config["LiveCapture:YtDlpPythonPath"])
+            ? "python3"
+            : _config["LiveCapture:YtDlpPythonPath"]!.Trim();
+
+        foreach (var fileName in new[] { pythonPath, "python" }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await RunYtDlpProcessAsync(
+                    fileName,
+                    new[] { "-m", "yt_dlp", "-f", "bestaudio", "-o", outputTemplate, url },
+                    $"{fileName} -m yt_dlp");
+                return;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{fileName} -m yt_dlp: {ex.Message}");
+                _logger.LogWarning(ex, "No se pudo ejecutar yt-dlp usando {FileName} -m yt_dlp", fileName);
             }
         }
 
@@ -189,463 +465,288 @@ public class LiveCaptureService : ILiveCaptureService
             $"Intentos: {string.Join(" | ", errors)}");
     }
 
-    private IEnumerable<YtDlpAttempt> BuildYtDlpAttempts(IReadOnlyList<string> arguments)
+    private static async Task RunYtDlpProcessAsync(string fileName, IEnumerable<string> arguments, string displayName)
     {
-        var configuredPath = string.IsNullOrWhiteSpace(_options.YtDlpPath) ? "yt-dlp" : _options.YtDlpPath.Trim();
-        yield return new YtDlpAttempt(configuredPath, arguments, configuredPath);
-
-        foreach (var path in CommonYtDlpPaths)
+        var psi = new ProcessStartInfo(fileName)
         {
-            if (!path.Equals(configuredPath, StringComparison.OrdinalIgnoreCase))
-                yield return new YtDlpAttempt(path, arguments, path);
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
         }
 
-        var pythonPath = string.IsNullOrWhiteSpace(_options.YtDlpPythonPath)
-            ? "python3"
-            : _options.YtDlpPythonPath.Trim();
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException($"Could not start {displayName}");
 
-        yield return new YtDlpAttempt(
-            pythonPath,
-            new[] { "-m", "yt_dlp" }.Concat(arguments).ToList(),
-            $"{pythonPath} -m yt_dlp");
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+        await process.WaitForExitAsync(cts.Token);
 
-        if (!pythonPath.Equals("python", StringComparison.OrdinalIgnoreCase))
-        {
-            yield return new YtDlpAttempt(
-                "python",
-                new[] { "-m", "yt_dlp" }.Concat(arguments).ToList(),
-                "python -m yt_dlp");
-        }
+        var stderr = await stderrTask;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"{displayName} exited with code {process.ExitCode}: {stderr}");
     }
 
-    private async Task<double?> ProbeDurationAsync(string videoPath, CancellationToken cancellationToken)
+    private async Task<List<TranscriptSegment>> WhisperTranscribeAsync(string? filePath)
     {
+        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+        {
+            _logger.LogWarning("Audio file not found: {Path}", filePath);
+            return new List<TranscriptSegment> { new(0, 0, "") };
+        }
+
+        var apiKey = _config["OpenAI:ApiKey"];
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            _logger.LogWarning("OpenAI:ApiKey not configured; skipping transcription");
+            return new List<TranscriptSegment> { new(0, 0, "") };
+        }
+
         try
         {
-            var result = await _processRunner.RunAsync(_options.FfprobePath, new[]
-            {
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                videoPath
-            }, cancellationToken);
+            var client = _httpClientFactory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-            return double.TryParse(result.StandardOutput.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var duration)
-                ? duration
-                : null;
+            using var form = new MultipartFormDataContent();
+            await using var fileStream = File.OpenRead(filePath);
+            var fileContent = new StreamContent(fileStream);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/mpeg");
+            form.Add(fileContent, "file", Path.GetFileName(filePath));
+            form.Add(new StringContent("whisper-1"), "model");
+            form.Add(new StringContent("verbose_json"), "response_format");
+
+            var response = await client.PostAsync("https://api.openai.com/v1/audio/transcriptions", form);
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(json);
+
+            var segments = new List<TranscriptSegment>();
+            if (doc.RootElement.TryGetProperty("segments", out var segsEl))
+            {
+                foreach (var seg in segsEl.EnumerateArray())
+                {
+                    var start = seg.TryGetProperty("start", out var s) ? s.GetDouble() : 0;
+                    var end = seg.TryGetProperty("end", out var e) ? e.GetDouble() : 0;
+                    var text = seg.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+                    segments.Add(new TranscriptSegment(start, end, text));
+                }
+            }
+            else if (doc.RootElement.TryGetProperty("text", out var textEl))
+            {
+                segments.Add(new TranscriptSegment(0, 0, textEl.GetString() ?? ""));
+            }
+
+            return segments.Count > 0 ? segments : new List<TranscriptSegment> { new(0, 0, "") };
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "No se pudo leer la duracion del video {VideoPath}", videoPath);
-            return null;
+            _logger.LogError(ex, "Whisper transcription failed");
+            return new List<TranscriptSegment> { new(0, 0, "") };
         }
     }
 
-    private async Task<List<string>> ExtractAudioChunksAsync(string videoPath, string workDir, CancellationToken cancellationToken)
+    private async Task<List<LiveProduct>> DetectProductsAsync(IGeminiService gemini, List<TranscriptSegment> segments, int sessionId)
     {
-        var audioDir = Path.Combine(workDir, "audio");
-        Directory.CreateDirectory(audioDir);
-        var outputPattern = Path.Combine(audioDir, "chunk_%03d.wav");
+        if (segments.Count == 0)
+            return new List<LiveProduct>();
 
-        await _processRunner.RunAsync(_options.FfmpegPath, new[]
+        try
         {
-            "-y",
-            "-i", videoPath,
-            "-vn",
-            "-ac", "1",
-            "-ar", "16000",
-            "-f", "segment",
-            "-segment_time", _options.AudioChunkSeconds.ToString(CultureInfo.InvariantCulture),
-            outputPattern
-        }, cancellationToken);
-
-        return Directory.GetFiles(audioDir, "chunk_*.wav")
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private async Task<List<string>> ExtractFramesAsync(string videoPath, string workDir, CancellationToken cancellationToken)
-    {
-        var framesDir = Path.Combine(workDir, "frames");
-        Directory.CreateDirectory(framesDir);
-        var vf = $"fps=1/{Math.Max(1, _options.FrameEverySeconds)}";
-        if (!string.IsNullOrWhiteSpace(_options.FrameCropFilter))
-        {
-            vf = $"{vf},{_options.FrameCropFilter}";
-        }
-
-        var outputPattern = Path.Combine(framesDir, "frame_%06d.jpg");
-        await _processRunner.RunAsync(_options.FfmpegPath, new[]
-        {
-            "-y",
-            "-i", videoPath,
-            "-vf", vf,
-            "-q:v", "3",
-            outputPattern
-        }, cancellationToken);
-
-        return Directory.GetFiles(framesDir, "frame_*.jpg")
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private List<LiveComment> RunOcr(IReadOnlyList<string> framePaths, int liveSessionId)
-    {
-        if (framePaths.Count == 0) return new List<LiveComment>();
-        if (!Directory.Exists(_options.TesseractDataPath))
-            throw new InvalidOperationException($"No existe TesseractDataPath: {_options.TesseractDataPath}");
-
-        var comments = new List<LiveComment>();
-        var lastSeenByText = new Dictionary<string, double>();
-
-        using var engine = new TesseractEngine(_options.TesseractDataPath, _options.TesseractLanguage, EngineMode.Default);
-
-        for (var i = 0; i < framePaths.Count; i++)
-        {
-            var timestamp = i * Math.Max(1, _options.FrameEverySeconds);
-            using var pix = Pix.LoadFromFile(framePaths[i]);
-            using var page = engine.Process(pix);
-            var rawText = page.GetText() ?? string.Empty;
-            var confidence = Math.Clamp(page.GetMeanConfidence(), 0, 1);
-
-            foreach (var parsed in ParseOcrComments(rawText))
+            var timedLines = segments.Select(s =>
             {
-                var key = $"{TextNormalizer.NormalizeName(parsed.DisplayName)}|{TextNormalizer.NormalizeName(parsed.CommentText)}";
-                if (string.IsNullOrWhiteSpace(key.Replace("|", ""))) continue;
+                var ts = TimeSpan.FromSeconds(s.StartSeconds);
+                return $"[{ts:hh\\:mm\\:ss}] {s.Text.Trim()}";
+            });
+            var timedTranscript = string.Join("\n", timedLines);
 
-                if (lastSeenByText.TryGetValue(key, out var lastSeen) && timestamp - lastSeen < 8)
-                    continue;
+            var prompt = $@"Eres un asistente que analiza la transcripción timbrada de un Facebook Live de ventas en español.
+Cada línea tiene el formato [HH:MM:SS] texto.
+Extrae TODOS los productos que la dueña anuncia con su palabra clave y precio.
+Para cada uno incluye el segundo exacto (en segundos desde el inicio) en que fue anunciado.
+Responde SOLO con JSON array, sin Markdown:
+[{{""keyword"":""botones"",""description"":""blusa de botones rosa"",""price"":120,""announcedAtSeconds"":45.0}}]
 
-                lastSeenByText[key] = timestamp;
-                comments.Add(new LiveComment
+Transcripción timbrada:
+{timedTranscript}";
+
+            var json = await gemini.CallGeminiJsonAsync(prompt);
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var raw = JsonSerializer.Deserialize<List<JsonElement>>(json, options);
+
+            if (raw == null || raw.Count == 0)
+                return new List<LiveProduct>();
+
+            var products = new List<LiveProduct>();
+            foreach (var item in raw)
+            {
+                var keyword = item.TryGetProperty("keyword", out var kw) ? kw.GetString() ?? "" : "";
+                if (string.IsNullOrWhiteSpace(keyword)) continue;
+
+                decimal price = 0;
+                if (item.TryGetProperty("price", out var pr))
                 {
-                    LiveSessionId = liveSessionId,
-                    DisplayName = parsed.DisplayName,
-                    CommentText = parsed.CommentText,
-                    TimestampSeconds = timestamp,
-                    OcrConfidence = confidence,
-                    RawText = rawText
+                    if (pr.ValueKind == JsonValueKind.Number)
+                        price = pr.GetDecimal();
+                    else if (decimal.TryParse(pr.GetString(), out var p))
+                        price = p;
+                }
+
+                double? announcedAt = null;
+                if (item.TryGetProperty("announcedAtSeconds", out var aat) && aat.ValueKind == JsonValueKind.Number)
+                    announcedAt = aat.GetDouble();
+
+                products.Add(new LiveProduct
+                {
+                    LiveSessionId = sessionId,
+                    Keyword = keyword[..Math.Min(keyword.Length, 100)],
+                    Description = item.TryGetProperty("description", out var desc)
+                        ? (desc.GetString() ?? "")[..Math.Min((desc.GetString() ?? "").Length, 300)]
+                        : null,
+                    Price = price,
+                    AnnouncedAtSeconds = announcedAt,
                 });
             }
-        }
 
-        return comments;
-    }
-
-    private async Task RunTranscriptDetectorsAsync(
-        int liveSessionId,
-        List<LiveTranscriptSegment> transcriptSegments,
-        CancellationToken cancellationToken)
-    {
-        await _db.LiveProducts.Where(p => p.LiveSessionId == liveSessionId).ExecuteDeleteAsync(cancellationToken);
-        await _db.LiveSpokenOrders.Where(o => o.LiveSessionId == liveSessionId).ExecuteDeleteAsync(cancellationToken);
-
-        var productDetections = new List<LiveProductDetection>();
-        var spokenDetections = new List<LiveSpokenOrderDetection>();
-
-        foreach (var window in BuildTranscriptWindows(transcriptSegments))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            productDetections.AddRange(await _geminiService.DetectLiveProductsAsync(window));
-            spokenDetections.AddRange(await _geminiService.DetectLiveSpokenOrdersAsync(window));
-        }
-
-        var products = productDetections
-            .Where(p => !string.IsNullOrWhiteSpace(p.Keyword))
-            .Select(p => new
-            {
-                Detection = p,
-                NormalizedKeyword = TextNormalizer.NormalizeName(p.Keyword)
-            })
-            .Where(x => !string.IsNullOrWhiteSpace(x.NormalizedKeyword))
-            .GroupBy(x => x.NormalizedKeyword)
-            .Select(g => g.OrderBy(x => x.Detection.AnnouncedAtSeconds).First())
-            .Select(x => new LiveProduct
-            {
-                LiveSessionId = liveSessionId,
-                Keyword = x.Detection.Keyword.Trim(),
-                NormalizedKeyword = x.NormalizedKeyword,
-                Description = string.IsNullOrWhiteSpace(x.Detection.Description)
-                    ? x.Detection.Keyword.Trim()
-                    : x.Detection.Description.Trim(),
-                Price = Math.Max(0, x.Detection.Price),
-                AnnouncedAtSeconds = Math.Max(0, x.Detection.AnnouncedAtSeconds),
-                Confidence = Math.Clamp(x.Detection.Confidence, 0, 1)
-            })
-            .ToList();
-
-        _db.LiveProducts.AddRange(products);
-        await _db.SaveChangesAsync(cancellationToken);
-
-        var catalog = products.ToDictionary(p => p.NormalizedKeyword, p => p);
-        var spokenOrders = spokenDetections
-            .Where(o => !string.IsNullOrWhiteSpace(o.Keyword) && !string.IsNullOrWhiteSpace(o.ClientNameSpoken))
-            .Select(o => new
-            {
-                Detection = o,
-                Product = FindProductForKeyword(o.Keyword, catalog)
-            })
-            .Where(x => x.Product != null)
-            .GroupBy(x => new
-            {
-                x.Product!.NormalizedKeyword,
-                Client = TextNormalizer.NormalizeName(x.Detection.ClientNameSpoken),
-                Minute = (int)(Math.Max(0, x.Detection.SpokenAtSeconds) / 60)
-            })
-            .Select(g => g.OrderBy(x => x.Detection.SpokenAtSeconds).First())
-            .Select(x => new LiveSpokenOrder
-            {
-                LiveSessionId = liveSessionId,
-                Keyword = x.Product!.Keyword,
-                NormalizedKeyword = x.Product.NormalizedKeyword,
-                ClientNameSpoken = x.Detection.ClientNameSpoken.Trim(),
-                SpokenAtSeconds = Math.Max(0, x.Detection.SpokenAtSeconds),
-                Confidence = Math.Clamp(x.Detection.Confidence, 0, 1)
-            })
-            .ToList();
-
-        _db.LiveSpokenOrders.AddRange(spokenOrders);
-        await _db.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task BuildCommentOrdersAsync(int liveSessionId, CancellationToken cancellationToken)
-    {
-        await _db.LiveCommentOrders.Where(o => o.LiveSessionId == liveSessionId).ExecuteDeleteAsync(cancellationToken);
-
-        var products = await _db.LiveProducts
-            .Where(p => p.LiveSessionId == liveSessionId)
-            .ToListAsync(cancellationToken);
-
-        var comments = await _db.LiveComments
-            .Where(c => c.LiveSessionId == liveSessionId)
-            .ToListAsync(cancellationToken);
-
-        var orders = new List<LiveCommentOrder>();
-
-        foreach (var comment in comments)
-        {
-            var text = TextNormalizer.NormalizeName($"{comment.DisplayName} {comment.CommentText}");
-            if (string.IsNullOrWhiteSpace(text)) continue;
-
-            var match = products
-                .Select(p => new
-                {
-                    Product = p,
-                    Score = KeywordScore(p.NormalizedKeyword, text)
-                })
-                .Where(x => x.Score >= _options.KeywordMatchThreshold)
-                .OrderByDescending(x => x.Score)
-                .FirstOrDefault();
-
-            if (match == null) continue;
-
-            orders.Add(new LiveCommentOrder
-            {
-                LiveSessionId = liveSessionId,
-                LiveCommentId = comment.Id,
-                Keyword = match.Product.Keyword,
-                NormalizedKeyword = match.Product.NormalizedKeyword,
-                CommentDisplayName = comment.DisplayName,
-                CommentedAtSeconds = comment.TimestampSeconds,
-                OcrConfidence = Math.Min(1, Math.Max(comment.OcrConfidence, match.Score * 0.9))
-            });
-        }
-
-        _db.LiveCommentOrders.AddRange(orders);
-        await _db.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task ReplaceTranscriptAsync(int liveSessionId, List<LiveTranscriptSegment> transcriptSegments, CancellationToken cancellationToken)
-    {
-        await _db.LiveTranscriptSegments
-            .Where(s => s.LiveSessionId == liveSessionId)
-            .ExecuteDeleteAsync(cancellationToken);
-
-        _db.LiveTranscriptSegments.AddRange(transcriptSegments);
-        await _db.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task ReplaceCommentsAsync(int liveSessionId, List<LiveComment> comments, CancellationToken cancellationToken)
-    {
-        await _db.LiveComments
-            .Where(c => c.LiveSessionId == liveSessionId)
-            .ExecuteDeleteAsync(cancellationToken);
-
-        _db.LiveComments.AddRange(comments);
-        await _db.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task UpdateStatusAsync(LiveSession session, LiveSessionStatus status, CancellationToken cancellationToken)
-    {
-        session.Status = status;
-        session.ErrorMessage = null;
-        await _db.SaveChangesAsync(cancellationToken);
-    }
-
-    private async Task MarkFailedAsync(int liveSessionId, string errorMessage, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var session = await _db.LiveSessions.FirstOrDefaultAsync(s => s.Id == liveSessionId, cancellationToken);
-            if (session == null) return;
-
-            session.Status = LiveSessionStatus.Failed;
-            session.ErrorMessage = errorMessage.Length <= 2000 ? errorMessage : errorMessage[..2000];
-            await _db.SaveChangesAsync(CancellationToken.None);
+            return products;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "No se pudo marcar Failed para live {LiveSessionId}", liveSessionId);
+            _logger.LogError(ex, "DetectProductsAsync failed");
+            return new List<LiveProduct>();
         }
     }
 
-    private IEnumerable<List<LiveTranscriptSegment>> BuildTranscriptWindows(List<LiveTranscriptSegment> segments)
+    private async Task<List<LiveSpokenOrder>> DetectSpokenOrdersAsync(
+        IGeminiService gemini,
+        List<TranscriptSegment> segments,
+        int sessionId,
+        List<LiveProduct> products)
     {
-        if (segments.Count == 0) yield break;
+        if (segments.Count == 0 || products.Count == 0)
+            return new List<LiveSpokenOrder>();
 
-        var maxEnd = segments.Max(s => s.EndSeconds);
-        var step = Math.Max(30, _options.TranscriptWindowSeconds - _options.TranscriptOverlapSeconds);
-
-        for (var start = 0d; start <= maxEnd; start += step)
-        {
-            var end = start + _options.TranscriptWindowSeconds;
-            var window = segments
-                .Where(s => s.StartSeconds < end && s.EndSeconds >= start)
-                .OrderBy(s => s.StartSeconds)
-                .ToList();
-
-            if (window.Count > 0) yield return window;
-        }
-    }
-
-    private static LiveProduct? FindProductForKeyword(string keyword, Dictionary<string, LiveProduct> catalog)
-    {
-        var normalized = TextNormalizer.NormalizeName(keyword);
-        if (catalog.TryGetValue(normalized, out var exact)) return exact;
-
-        return catalog.Values
-            .Select(p => new { Product = p, Score = TrigramJaccard(p.NormalizedKeyword, normalized) })
-            .Where(x => x.Score >= 0.62)
-            .OrderByDescending(x => x.Score)
-            .Select(x => x.Product)
-            .FirstOrDefault();
-    }
-
-    private static double KeywordScore(string normalizedKeyword, string normalizedText)
-    {
-        if (string.IsNullOrWhiteSpace(normalizedKeyword) || string.IsNullOrWhiteSpace(normalizedText))
-            return 0;
-
-        var words = normalizedText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Contains(normalizedKeyword)) return 1;
-        if (normalizedText.Contains($" {normalizedKeyword} ") ||
-            normalizedText.StartsWith($"{normalizedKeyword} ") ||
-            normalizedText.EndsWith($" {normalizedKeyword}"))
-        {
-            return 1;
-        }
-
-        if (normalizedKeyword.Length <= 2) return 0;
-
-        return words
-            .Select(w => TrigramJaccard(normalizedKeyword, w))
-            .Append(TrigramJaccard(normalizedKeyword, normalizedText))
-            .Max();
-    }
-
-    private static double TrigramJaccard(string a, string b)
-    {
-        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return 0;
-        var setA = Trigrams(a);
-        var setB = Trigrams(b);
-        if (setA.Count == 0 || setB.Count == 0) return 0;
-        var intersect = setA.Intersect(setB).Count();
-        var union = setA.Union(setB).Count();
-        return union == 0 ? 0 : (double)intersect / union;
-    }
-
-    private static HashSet<string> Trigrams(string value)
-    {
-        var padded = $"  {value} ";
-        var set = new HashSet<string>();
-        for (var i = 0; i <= padded.Length - 3; i++)
-        {
-            set.Add(padded.Substring(i, 3));
-        }
-        return set;
-    }
-
-    private static IEnumerable<(string? DisplayName, string CommentText)> ParseOcrComments(string rawText)
-    {
-        var lines = rawText
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(CleanOcrLine)
-            .Where(line => line.Length >= 3)
-            .Where(line => !IgnoredOcrFragments.Any(fragment => TextNormalizer.NormalizeName(line).Contains(fragment)))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var line in lines)
-        {
-            var colonIndex = line.IndexOf(':');
-            if (colonIndex > 0 && colonIndex < line.Length - 1)
-            {
-                var displayName = line[..colonIndex].Trim();
-                var commentText = line[(colonIndex + 1)..].Trim();
-                if (!string.IsNullOrWhiteSpace(commentText))
-                    yield return (displayName, commentText);
-                continue;
-            }
-
-            var dashIndex = line.IndexOf(" - ", StringComparison.Ordinal);
-            if (dashIndex > 0 && dashIndex < line.Length - 3)
-            {
-                var displayName = line[..dashIndex].Trim();
-                var commentText = line[(dashIndex + 3)..].Trim();
-                if (!string.IsNullOrWhiteSpace(commentText))
-                    yield return (displayName, commentText);
-                continue;
-            }
-
-            var tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (tokens.Length < 2) continue;
-
-            var nameTokenCount = tokens.Length >= 3 ? 2 : 1;
-            var name = string.Join(' ', tokens.Take(nameTokenCount));
-            var comment = string.Join(' ', tokens.Skip(nameTokenCount));
-            if (!string.IsNullOrWhiteSpace(comment))
-                yield return (name, comment);
-        }
-    }
-
-    private static string CleanOcrLine(string value)
-    {
-        var cleaned = value
-            .Replace("|", " ")
-            .Replace("•", " ")
-            .Replace("·", " ")
-            .Trim();
-
-        return WhitespaceRegex.Replace(cleaned, " ");
-    }
-    private string CreateWorkDirectory(int liveSessionId)
-    {
-        var root = _options.TempDirectory;
-        if (string.IsNullOrWhiteSpace(root)) root = Path.GetTempPath();
-
-        var dir = Path.Combine(root, $"live_{liveSessionId}_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
-
-    private static void TryDeleteDirectory(string directory)
-    {
         try
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            // Build a timed transcript: each line prefixed with "[HH:MM:SS]" so Gemini
+            // can return the exact second of each spoken assignment.
+            var timedLines = segments.Select(s =>
+            {
+                var ts = TimeSpan.FromSeconds(s.StartSeconds);
+                return $"[{ts:hh\\:mm\\:ss}] {s.Text.Trim()}";
+            });
+            var timedTranscript = string.Join("\n", timedLines);
+
+            var keywords = string.Join(", ", products.Select(p => p.Keyword));
+            var prompt = $@"Eres un asistente que analiza la transcripción timbrada de un Facebook Live de ventas en español.
+Cada línea tiene el formato [HH:MM:SS] texto.
+Extrae TODAS las asignaciones de pedidos hablados por la dueña (frases como 'botones para Lupe', 'Lupe se lleva botones', 'apúntame una de azul a Patricia', etc.).
+Las keywords de los productos disponibles son: {keywords}.
+Para cada asignación devuelve el segundo exacto (en segundos desde el inicio del video) en que la dueña lo dijo.
+Responde SOLO con JSON array, sin Markdown:
+[{{""keyword"":""botones"",""clientName"":""Lupe López"",""spokenAtSeconds"":3723.0}}]
+
+Transcripción timbrada:
+{timedTranscript}";
+
+            var json = await gemini.CallGeminiJsonAsync(prompt);
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var raw = JsonSerializer.Deserialize<List<JsonElement>>(json, options);
+
+            if (raw == null || raw.Count == 0)
+                return new List<LiveSpokenOrder>();
+
+            var orders = new List<LiveSpokenOrder>();
+            foreach (var item in raw)
+            {
+                var keyword = item.TryGetProperty("keyword", out var kw) ? kw.GetString() ?? "" : "";
+                var clientName = item.TryGetProperty("clientName", out var cn) ? cn.GetString() ?? "" : "";
+                if (string.IsNullOrWhiteSpace(keyword) || string.IsNullOrWhiteSpace(clientName)) continue;
+
+                double? spokenAt = null;
+                if (item.TryGetProperty("spokenAtSeconds", out var sat) && sat.ValueKind == JsonValueKind.Number)
+                    spokenAt = sat.GetDouble();
+
+                orders.Add(new LiveSpokenOrder
+                {
+                    LiveSessionId = sessionId,
+                    Keyword = keyword[..Math.Min(keyword.Length, 100)],
+                    ClientNameSpoken = clientName[..Math.Min(clientName.Length, 200)],
+                    SpokenAtSeconds = spokenAt,
+                });
+            }
+
+            return orders;
         }
-        catch
+        catch (Exception ex)
         {
-            // La limpieza de temporales no debe ocultar el resultado del pipeline.
+            _logger.LogError(ex, "DetectSpokenOrdersAsync failed");
+            return new List<LiveSpokenOrder>();
         }
     }
+
+    private async Task BuildCandidatesAsync(AppDbContext db, int sessionId)
+    {
+        var products = await db.LiveProducts
+            .Where(p => p.LiveSessionId == sessionId)
+            .ToListAsync();
+
+        var spokenOrders = await db.LiveSpokenOrders
+            .Where(o => o.LiveSessionId == sessionId)
+            .ToListAsync();
+
+        // Group by (keyword, clientName), match to products
+        var groups = spokenOrders
+            .GroupBy(o => new { Keyword = o.Keyword.ToLowerInvariant(), o.ClientNameSpoken })
+            .ToList();
+
+        foreach (var group in groups)
+        {
+            var matchedProduct = products.FirstOrDefault(p =>
+                p.Keyword.Equals(group.Key.Keyword, StringComparison.OrdinalIgnoreCase));
+
+            // Tomar el primer timestamp disponible dentro de los pedidos hablados
+            // que componen este grupo. Sirve para que el frontend pueda reproducir
+            // un clip de 5 segundos centrado en el momento en que se dijo el pedido.
+            var spokenAtSeconds = group
+                .Select(o => o.SpokenAtSeconds)
+                .FirstOrDefault(s => s.HasValue);
+
+            var candidate = new LiveCandidate
+            {
+                LiveSessionId = sessionId,
+                LiveProductId = matchedProduct?.Id,
+                Keyword = group.Key.Keyword[..Math.Min(group.Key.Keyword.Length, 100)],
+                ClientNameSpoken = group.Key.ClientNameSpoken[..Math.Min(group.Key.ClientNameSpoken.Length, 200)],
+                Source = LiveCandidateSource.Spoken,
+                Status = LiveCandidateStatus.Pending,
+                SpokenAtSeconds = spokenAtSeconds,
+            };
+
+            db.LiveCandidates.Add(candidate);
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    // ── Helpers ──
+
+    private static LiveSessionDto MapSessionDto(LiveSession s, int productCount, int candidateCount, int pendingCount) =>
+        new(s.Id, s.FacebookUrl, s.Title, s.Status.ToString(), s.StatusDetail,
+            s.ImportedAt, s.ProcessedAt, s.DurationSeconds,
+            productCount, candidateCount, pendingCount);
+
+    private static LiveCandidateDto MapCandidateDto(LiveCandidate c) =>
+        new(c.Id, c.Keyword, c.LiveProductId,
+            c.ClientNameSpoken, c.CommentDisplayName,
+            c.ResolvedClientId, c.ResolvedClient?.Name,
+            c.ProposedAliasPairJson,
+            c.Source.ToString(), c.Status.ToString(),
+            c.SpokenAtSeconds);
 }
