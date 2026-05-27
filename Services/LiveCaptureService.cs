@@ -44,6 +44,7 @@ public class LiveCaptureService : ILiveCaptureService
             FacebookUrl = normalizedUrl,
             Title = title,
             Status = LiveSessionStatus.Queued,
+            StatusDetail = "En cola. En unos segundos empieza la descarga.",
             ImportedAt = DateTime.UtcNow,
         };
 
@@ -343,44 +344,62 @@ public class LiveCaptureService : ILiveCaptureService
         {
             // 1. Download
             session.Status = LiveSessionStatus.Downloading;
+            session.StatusDetail = "Descargando audio del live con yt-dlp...";
             await db.SaveChangesAsync();
 
             var audioFilePath = await DownloadAudioAsync(session.Id, session.FacebookUrl);
+            if (string.IsNullOrEmpty(audioFilePath) || !File.Exists(audioFilePath))
+                throw new InvalidOperationException("yt-dlp no genero un archivo de audio para este live.");
+
+            var audioInfo = new FileInfo(audioFilePath);
+            session.StatusDetail = $"Audio descargado ({FormatBytes(audioInfo.Length)}). Preparando transcripcion...";
+            await db.SaveChangesAsync();
 
             // Persistimos el path del audio para poder recortar clips por candidato
             // después. Importante: NO borrar este archivo al terminar el procesamiento.
-            if (!string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
-            {
-                session.LocalAudioPath = audioFilePath.Length > 500
-                    ? audioFilePath[..500]
-                    : audioFilePath;
-                await db.SaveChangesAsync();
-            }
+            session.LocalAudioPath = audioFilePath.Length > 500
+                ? audioFilePath[..500]
+                : audioFilePath;
+            await db.SaveChangesAsync();
 
             // 2. Transcribe
             session.Status = LiveSessionStatus.Transcribing;
+            session.StatusDetail = "Transcribiendo audio con Whisper...";
             await db.SaveChangesAsync();
 
             var segments = await WhisperTranscribeAsync(audioFilePath);
+            var transcriptTextLength = segments.Sum(s => s.Text?.Length ?? 0);
+            if (segments.Count == 0 || transcriptTextLength < 20)
+                throw new InvalidOperationException("Whisper no devolvio texto suficiente para analizar el live.");
 
             // 3. Parse
             session.Status = LiveSessionStatus.Parsing;
+            session.StatusDetail = $"Transcripcion lista: {segments.Count} segmentos. Detectando productos...";
             await db.SaveChangesAsync();
 
             var products = await DetectProductsAsync(gemini, segments, sessionId);
             db.LiveProducts.AddRange(products);
             await db.SaveChangesAsync();
 
+            session.StatusDetail = $"Productos detectados: {products.Count}. Detectando pedidos leidos en voz alta...";
+            await db.SaveChangesAsync();
+
             var spokenOrders = await DetectSpokenOrdersAsync(gemini, segments, sessionId, products);
             db.LiveSpokenOrders.AddRange(spokenOrders);
             await db.SaveChangesAsync();
 
+            session.StatusDetail = $"Pedidos hablados detectados: {spokenOrders.Count}. Armando candidatos...";
+            await db.SaveChangesAsync();
+
             // 4. Build candidates
-            await BuildCandidatesAsync(db, sessionId);
+            var candidateCount = await BuildCandidatesAsync(db, sessionId);
 
             // 5. Done
             session.Status = LiveSessionStatus.Ready;
             session.ProcessedAt = DateTime.UtcNow;
+            session.StatusDetail = candidateCount > 0
+                ? $"Listo: {products.Count} productos y {candidateCount} candidatos detectados."
+                : $"Termino sin candidatos: {products.Count} productos detectados, {spokenOrders.Count} pedidos hablados. Revisa si el audio se entendio o si la duena no leyo pedidos en voz alta.";
             await db.SaveChangesAsync();
 
             _logger.LogInformation("LiveSession {Id} processed successfully", sessionId);
@@ -531,15 +550,13 @@ public class LiveCaptureService : ILiveCaptureService
     {
         if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
         {
-            _logger.LogWarning("Audio file not found: {Path}", filePath);
-            return new List<TranscriptSegment> { new(0, 0, "") };
+            throw new InvalidOperationException($"No se encontro el audio descargado: {filePath}");
         }
 
         var apiKey = _config["OpenAI:ApiKey"];
         if (string.IsNullOrEmpty(apiKey))
         {
-            _logger.LogWarning("OpenAI:ApiKey not configured; skipping transcription");
-            return new List<TranscriptSegment> { new(0, 0, "") };
+            throw new InvalidOperationException("Falta configurar OpenAI:ApiKey para transcribir el live.");
         }
 
         try
@@ -582,7 +599,7 @@ public class LiveCaptureService : ILiveCaptureService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Whisper transcription failed");
-            return new List<TranscriptSegment> { new(0, 0, "") };
+            throw new InvalidOperationException($"Whisper no pudo transcribir el audio: {ex.Message}", ex);
         }
     }
 
@@ -654,7 +671,7 @@ Transcripción timbrada:
         catch (Exception ex)
         {
             _logger.LogError(ex, "DetectProductsAsync failed");
-            return new List<LiveProduct>();
+            throw new InvalidOperationException($"Gemini no pudo detectar productos: {ex.Message}", ex);
         }
     }
 
@@ -723,11 +740,11 @@ Transcripción timbrada:
         catch (Exception ex)
         {
             _logger.LogError(ex, "DetectSpokenOrdersAsync failed");
-            return new List<LiveSpokenOrder>();
+            throw new InvalidOperationException($"Gemini no pudo detectar pedidos hablados: {ex.Message}", ex);
         }
     }
 
-    private async Task BuildCandidatesAsync(AppDbContext db, int sessionId)
+    private async Task<int> BuildCandidatesAsync(AppDbContext db, int sessionId)
     {
         var products = await db.LiveProducts
             .Where(p => p.LiveSessionId == sessionId)
@@ -768,10 +785,18 @@ Transcripción timbrada:
             db.LiveCandidates.Add(candidate);
         }
 
-        await db.SaveChangesAsync();
+        return await db.SaveChangesAsync();
     }
 
     // ── Helpers ──
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024d:0.0} KB";
+        if (bytes < 1024L * 1024L * 1024L) return $"{bytes / 1024d / 1024d:0.0} MB";
+        return $"{bytes / 1024d / 1024d / 1024d:0.0} GB";
+    }
 
     private static LiveSessionDto MapSessionDto(LiveSession s, int productCount, int candidateCount, int pendingCount) =>
         new(s.Id, s.FacebookUrl, s.Title, s.Status.ToString(), s.StatusDetail,
