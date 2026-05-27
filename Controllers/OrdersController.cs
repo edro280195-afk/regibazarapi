@@ -279,19 +279,35 @@ public class OrdersController : ControllerBase
     public async Task<ActionResult<OrderSummaryDto>> CreateManual(ManualOrderRequest req)
     {
         var settings = await _db.AppSettings.FirstAsync();
+        var typedName = req.ClientName?.Trim() ?? string.Empty;
 
-        // 1. Buscamos o Creamos al Cliente
-        var client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == req.ClientName.Trim().ToLower());
+        // 1. Resolución de clienta:
+        //    a) Si el frontend ya identificó a la clienta vía el resolver multi-señal,
+        //       viene ClientId y se usa directo (saltamos el lookup por nombre).
+        //    b) Si no, fallback al match exact-lower-trim por nombre o creación nueva.
+        Client? client = null;
+        if (req.ClientId is int forcedId)
+        {
+            client = await _db.Clients.FirstOrDefaultAsync(c => c.Id == forcedId);
+            if (client == null) return BadRequest($"ClientId {forcedId} no existe");
+        }
+        else
+        {
+            client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == typedName.ToLower());
+        }
 
         if (client == null)
         {
             client = new Client
             {
-                Name = req.ClientName.Trim(),
+                Name = typedName,
                 Phone = req.ClientPhone,
                 Address = req.ClientAddress,
                 Type = req.Type ?? "Nueva",
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                NormalizedName = TextNormalizer.NormalizeName(typedName),
+                NormalizedPhone = TextNormalizer.NormalizePhone(req.ClientPhone),
+                NormalizedAddress = TextNormalizer.NormalizeAddress(req.ClientAddress),
             };
             _db.Clients.Add(client);
             await _db.SaveChangesAsync(); // Guardamos para tener el ID
@@ -302,9 +318,41 @@ public class OrdersController : ControllerBase
             bool typeChanged = !string.IsNullOrEmpty(req.Type) && client.Type != req.Type;
 
             // Actualizamos datos de contacto si vienen nuevos
-            if (!string.IsNullOrEmpty(req.ClientPhone)) client.Phone = req.ClientPhone;
-            if (!string.IsNullOrEmpty(req.ClientAddress)) client.Address = req.ClientAddress;
+            if (!string.IsNullOrEmpty(req.ClientPhone))
+            {
+                client.Phone = req.ClientPhone;
+                client.NormalizedPhone = TextNormalizer.NormalizePhone(req.ClientPhone);
+            }
+            if (!string.IsNullOrEmpty(req.ClientAddress))
+            {
+                client.Address = req.ClientAddress;
+                client.NormalizedAddress = TextNormalizer.NormalizeAddress(req.ClientAddress);
+            }
             if (!string.IsNullOrEmpty(req.Type)) client.Type = req.Type;
+
+            // Si la clienta vino forzada por ClientId y el nombre tecleado difiere del nombre
+            // canónico (y no es un alias ya conocido), lo agregamos como alias automáticamente.
+            // Esto es el alias learning del resolver multi-señal.
+            if (req.ClientId is int && !string.IsNullOrEmpty(typedName))
+            {
+                var normalizedTyped = TextNormalizer.NormalizeName(typedName);
+                if (!string.IsNullOrEmpty(normalizedTyped) && normalizedTyped != client.NormalizedName)
+                {
+                    var aliasExists = await _db.ClientAliases.AnyAsync(a => a.NormalizedAlias == normalizedTyped);
+                    if (!aliasExists)
+                    {
+                        _db.ClientAliases.Add(new ClientAlias
+                        {
+                            ClientId = client.Id,
+                            Alias = typedName,
+                            NormalizedAlias = normalizedTyped,
+                            CreatedAt = DateTime.UtcNow,
+                            Source = ClientAliasSource.ManualConfirm,
+                            TimesSeen = 1,
+                        });
+                    }
+                }
+            }
 
             // Si el tipo cambió, sincronizamos las caducidades
             if (typeChanged)

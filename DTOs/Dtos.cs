@@ -78,7 +78,8 @@ public record ClientDto(
     string Type,
     string? DeliveryInstructions = null,
     double? Latitude = null,
-    double? Longitude = null
+    double? Longitude = null,
+    List<string>? Aliases = null
 );
 
 public record OrderTrackingDto(
@@ -113,7 +114,11 @@ public record ManualOrderRequest(
     string Status = "Pending",
     string? DeliveryInstructions = null,
     string? AlternativeAddress = null,
-    DateTime? ScheduledDeliveryDate = null
+    DateTime? ScheduledDeliveryDate = null,
+    // Si viene un ClientId resuelto desde el frontend, se usa directo y se salta el
+    // lookup por nombre. Útil cuando el resolver multi-señal ya identificó a la
+    // clienta y el `ClientName` tecleado debe quedar como alias.
+    int? ClientId = null
 );
 public record ManualOrderItem(
     string ProductName,
@@ -796,3 +801,63 @@ public record CardPaymentResultDto(
     decimal Amount,
     string Message,
     long? PaymentId = null);
+
+// ── Identidad multi-señal de clientas ──
+
+/// <summary>
+/// Request al resolver: pide al backend que identifique a qué clienta corresponde
+/// el nombre tecleado/dictado, opcionalmente con teléfono y dirección.
+/// </summary>
+public record ResolveClientRequest(
+    string Name,
+    string? Phone = null,
+    string? Address = null);
+
+/// <summary>
+/// Una candidata propuesta por el resolver con su score y por qué señal hizo match.
+/// </summary>
+public record ResolveCandidateDto(
+    int ClientId,
+    string Name,
+    string? Phone,
+    string? Address,
+    string Tag,
+    string Type,
+    int OrdersCount,
+    decimal TotalSpent,
+    List<string> Aliases,
+    decimal BalanceDue,
+    double Score,
+    string MatchedBy); // "alias" | "phone" | "name-fuzzy" | "address-fuzzy"
+
+/// <summary>
+/// Respuesta del resolver con los top-N candidatos y una acción sugerida para la UI.
+/// </summary>
+public record ResolveClientResponse(
+    List<ResolveCandidateDto> Candidates,
+    string SuggestedAction); // "use" (top muy claro), "choose" (ambiguo), "create" (no hay match)
+
+public record AddAliasRequest(
+    string Alias,
+    string? Source = null); // ClientAliasSource serializado o null para ManualConfirm
+
+public record MergeClientsRequest(
+    int SourceId,
+    int TargetId);
+
+public record DuplicateSuggestionDto(
+    int LeftClientId,
+    string LeftName,
+    int LeftOrdersCount,
+    int RightClientId,
+    string RightName,
+    int RightOrdersCount,
+    string Reason, // "same-phone", "similar-name", "similar-address"
+    double Confidence);
+
+public record ClientAliasDto(
+    int Id,
+    string Alias,
+    string Source,
+    int TimesSeen,
+    DateTime CreatedAt);

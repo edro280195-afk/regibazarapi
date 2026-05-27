@@ -100,7 +100,12 @@ public class ExcelService : IExcelService
             var client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == clientName.ToLower());
             if (client == null)
             {
-                client = new Client { Name = clientName, Type = clientType };
+                client = new Client
+                {
+                    Name = clientName,
+                    Type = clientType,
+                    NormalizedName = TextNormalizer.NormalizeName(clientName),
+                };
                 _db.Clients.Add(client);
                 await _db.SaveChangesAsync();
                 clientsCreated++;
