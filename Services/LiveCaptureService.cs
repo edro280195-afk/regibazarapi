@@ -617,11 +617,19 @@ public class LiveCaptureService : ILiveCaptureService
 
         var psi = new ProcessStartInfo("ffmpeg")
         {
-            Arguments = $"-i \"{filePath}\" -f segment -segment_time {chunkSeconds} -c copy \"{chunkPattern}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(filePath);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("segment");
+        psi.ArgumentList.Add("-segment_time");
+        psi.ArgumentList.Add(chunkSeconds.ToString());
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add("copy");
+        psi.ArgumentList.Add(chunkPattern);
 
         using var process = Process.Start(psi) ?? throw new InvalidOperationException("No se pudo iniciar ffmpeg para segmentar el audio.");
         
