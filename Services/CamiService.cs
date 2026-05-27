@@ -65,6 +65,7 @@ REGLAS DE OPERACIÓN Y NEGOCIO (MEMORÍZALAS):
 - Al entregar un pedido, se otorgan puntos de lealtad: Total / 10 (redondeado hacia abajo).
 - Los envíos a domicilio tienen costo de 60 MXN por defecto. PickUp es gratis. El cargo por envío se puede personalizar.
 - Para hablar de dinero que nos deben en la calle, SIEMPRE usa el 'saldo_pendiente_global_historico' (o saldoPorCobrar), nunca uses el balance del periodo.
+- COBRANZA — REGLA CRÍTICA: cuando Miel te pida 'detalle', 'desglose', 'lista' o 'a quién le debemos cobrar', usa OBLIGATORIAMENTE la herramienta 'consultar_pedidos_con_saldo'. NUNCA uses 'buscar_pedidos' con estado Pending para esto, porque ese filtro pierde los pedidos en Confirmed, InRoute o Postponed que también tienen saldo. La nueva herramienta devuelve la lista completa y su campo 'suma_total_saldos' debe coincidir EXACTAMENTE con el 'saldo_pendiente_global_historico'. Si no coinciden, hay un bug que reportar — no inventes la diferencia.
 - El sistema usa la zona horaria de Nuevo Laredo / Matamoros (CST con horario fronterizo).
 ";
 
@@ -173,6 +174,20 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                             { "fecha_fin", new Schema { Type = "STRING", Description = "YYYY-MM-DD" } }
                         },
                         Required = new List<string> { "fecha_inicio", "fecha_fin" }
+                    }
+                },
+                new FunctionDeclaration
+                {
+                    Name = "consultar_pedidos_con_saldo",
+                    Description = "Devuelve TODOS los pedidos con saldo pendiente (BalanceDue > 0) sin importar su estado (Pending, Confirmed, InRoute, Postponed). Suma exacta coincide con el saldo_pendiente_global_historico. USA ESTA HERRAMIENTA cuando Miel te pida el detalle o desglose de lo que se tiene por cobrar.",
+                    Parameters = new Schema
+                    {
+                        Type = "OBJECT",
+                        Properties = new Dictionary<string, Schema>
+                        {
+                            { "limite", new Schema { Type = "INTEGER", Description = "Máximo de pedidos a devolver (default 200, máx 500)." } },
+                            { "ordenar_por", new Schema { Type = "STRING", Description = "Criterio de orden: 'saldo' (mayor saldo primero, default), 'fecha' (más reciente), 'cliente' (alfabético)." } }
+                        }
                     }
                 },
                 new FunctionDeclaration
@@ -479,9 +494,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             return "No encontré tu ruta activa. Por favor, verifica tu conexión.";
 
         // 2. Obtener IDs de pedidos asignados a esta ruta para inyectar contexto
+        // (Las deliveries de tanda no tienen OrderId; se excluyen para el contexto del chofer.)
         var orderIds = await _db.Deliveries
-            .Where(d => d.DeliveryRouteId == route.Id)
-            .Select(d => d.OrderId)
+            .Where(d => d.DeliveryRouteId == route.Id && d.OrderId != null)
+            .Select(d => d.OrderId!.Value)
             .ToListAsync();
 
         var contextMessage = $"Solo puedes modificar o consultar los pedidos con IDs: {string.Join(", ", orderIds)}.";
@@ -684,6 +700,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             "obtener_clienta"           => await ObtenerClientaAsync(args),
             "listar_rutas"              => await ListarRutasAsync(args),
             "consultar_finanzas"        => await ConsultarFinanzasAsync(args),
+            "consultar_pedidos_con_saldo" => await ConsultarPedidosConSaldoAsync(args),
             "listar_proveedores"        => await ListarProveedoresAsync(),
             "consultar_lealtad"         => await ConsultarLealtadAsync(args),
             "crear_pedido"              => await CrearPedidoAsync(args),
@@ -732,9 +749,14 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         var totalClientes    = await _db.Clients.CountAsync();
         var rutasActivas     = await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active || r.Status == RouteStatus.Pending);
 
-        // saldoPorCobrar: proyectamos directo en SQL — EF Core lo traduce a subquery
+        // saldoPorCobrar: mismo filtro que ConsultarPedidosConSaldoAsync para que las cifras
+        // coincidan cuando Miel pida el desglose detallado.
         var porCobrar = await _db.Orders
-            .Where(o => o.Status == OrderStatus.Pending || o.Status == OrderStatus.Confirmed || o.Status == OrderStatus.InRoute)
+            .Where(o => o.Status == OrderStatus.Pending
+                     || o.Status == OrderStatus.Confirmed
+                     || o.Status == OrderStatus.InRoute
+                     || o.Status == OrderStatus.Postponed)
+            .Where(o => (o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment) > 0)
             .SumAsync(o => (decimal?)(o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment)) ?? 0;
 
         return ToJson(new
@@ -1037,7 +1059,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     {
         var limite = GetInt(args, "limite", 5);
         var rutas = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.TandaParticipant).ThenInclude(p => p!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.TandaParticipant).ThenInclude(p => p!.Tanda)
             .OrderByDescending(r => r.CreatedAt)
             .Take(Math.Clamp(limite, 1, 20))
             .Select(r => new
@@ -1050,8 +1074,15 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                 entregas = r.Deliveries.Select(d => new
                 {
                     orderId  = d.OrderId,
-                    clienta  = d.Order.Client.Name,
-                    estadoEntrega = d.Order.Status.ToSpanishString()
+                    tipo     = d.Kind.ToString(),
+                    clienta  = d.Kind == DeliveryKind.Tanda
+                        ? (d.TandaParticipant != null && d.TandaParticipant.Client != null
+                            ? d.TandaParticipant.Client.Name
+                            : "Tanda")
+                        : (d.Order != null ? d.Order.Client.Name : "—"),
+                    estadoEntrega = d.Order != null
+                        ? d.Order.Status.ToSpanishString()
+                        : d.Status.ToString()
                 })
             })
             .ToListAsync();
@@ -1107,9 +1138,15 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             .Where(e => e.Date >= startUtc && e.Date <= endUtc)
             .SumAsync(e => (decimal?)e.Amount) ?? 0;
 
-        // --- CALCULAMOS LA DEUDA HISTÓRICA REAL DIRECTO EN SQL ---
+        // --- DEUDA HISTÓRICA REAL: pedidos sin entregar/cancelar con saldo pendiente. ---
+        // Mantén este filtro IDÉNTICO al de ConsultarPedidosConSaldoAsync para que la suma
+        // coincida con el desglose que devuelve esa herramienta.
         var deudaGlobalReal = await _db.Orders
-            .Where(o => o.Status == OrderStatus.Pending || o.Status == OrderStatus.Confirmed || o.Status == OrderStatus.InRoute)
+            .Where(o => o.Status == OrderStatus.Pending
+                     || o.Status == OrderStatus.Confirmed
+                     || o.Status == OrderStatus.InRoute
+                     || o.Status == OrderStatus.Postponed)
+            .Where(o => (o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment) > 0)
             .SumAsync(o => (decimal?)(o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment)) ?? 0;
 
         return ToJson(new
@@ -1124,6 +1161,79 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
 
             // C.A.M.I. leerá esto cuando le pregunten por la deuda en la calle
             saldo_pendiente_global_historico = deudaGlobalReal
+        });
+    }
+
+    /// <summary>
+    /// Lista TODOS los pedidos con saldo pendiente, sin importar estado (Pending, Confirmed,
+    /// InRoute, Postponed). La suma de los saldos coincide con saldo_pendiente_global_historico.
+    /// </summary>
+    private async Task<JsonElement> ConsultarPedidosConSaldoAsync(JsonElement? args)
+    {
+        var limite = GetInt(args, "limite", 200);
+        if (limite < 1) limite = 1;
+        if (limite > 500) limite = 500;
+        var ordenarPor = (GetStr(args, "ordenar_por") ?? "saldo").ToLowerInvariant();
+
+        // Mismo filtro que el "saldo_pendiente_global_historico" en ConsultarFinanzas.
+        var baseQuery = _db.Orders
+            .Where(o => o.Status == OrderStatus.Pending
+                     || o.Status == OrderStatus.Confirmed
+                     || o.Status == OrderStatus.InRoute
+                     || o.Status == OrderStatus.Postponed)
+            .Where(o => (o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment) > 0);
+
+        // Suma EXACTA antes de paginar (la verdad de oro)
+        var sumaTotalSaldos = await baseQuery
+            .SumAsync(o => (decimal?)(o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment)) ?? 0;
+        var totalRegistros = await baseQuery.CountAsync();
+
+        // Proyección para listado
+        var proyeccion = baseQuery.Select(o => new
+        {
+            id = o.Id,
+            clienta = o.Client.Name,
+            telefono = o.Client.Phone,
+            estado = o.Status.ToSpanishString(),
+            tipo = o.OrderType.ToSpanishString(),
+            total = o.Total,
+            pagado = o.Payments.Sum(p => p.Amount) + o.AdvancePayment,
+            saldo = o.Total - o.Payments.Sum(p => p.Amount) - o.AdvancePayment,
+            creado = o.CreatedAt,
+            items = o.Items.Count
+        });
+
+        proyeccion = ordenarPor switch
+        {
+            "fecha"   => proyeccion.OrderByDescending(x => x.creado),
+            "cliente" => proyeccion.OrderBy(x => x.clienta),
+            _         => proyeccion.OrderByDescending(x => x.saldo)
+        };
+
+        var lista = await proyeccion.Take(limite).ToListAsync();
+
+        return ToJson(new
+        {
+            pedidos = lista.Select(x => new
+            {
+                x.id,
+                x.clienta,
+                x.telefono,
+                x.estado,
+                x.tipo,
+                x.total,
+                x.pagado,
+                x.saldo,
+                x.items,
+                creado = x.creado.ToString("dd/MM/yyyy")
+            }),
+            total_en_pantalla = lista.Count,
+            total_registros_bd = totalRegistros,
+            // Esta es la cifra que CAMI debe usar para reportar a Miel.
+            suma_total_saldos = sumaTotalSaldos,
+            advertencia = lista.Count < totalRegistros
+                ? $"Se devolvieron {lista.Count} de {totalRegistros} pedidos. Sube el límite si necesitas todos."
+                : null
         });
     }
 
@@ -1521,6 +1631,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             _db.Deliveries.Add(new Delivery
             {
                 OrderId         = order.Id,
+                Kind            = DeliveryKind.Order,
                 DeliveryRouteId = route.Id,
                 SortOrder       = sort++,
                 Status          = DeliveryStatus.Pending
@@ -1541,7 +1652,8 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     {
         var rutaId = GetInt(args, "ruta_id");
         var route  = await _db.DeliveryRoutes
-            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.TandaParticipant)
             .FirstOrDefaultAsync(r => r.Id == rutaId);
 
         if (route == null)
@@ -1551,13 +1663,31 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         route.CompletedAt = DateTime.UtcNow;
 
         var entregados = 0;
+        var entregadosTanda = 0;
+        var now = DateTime.UtcNow;
         foreach (var delivery in route.Deliveries)
         {
-            if (delivery.Order.Status == OrderStatus.InRoute)
+            if (delivery.Kind == DeliveryKind.Tanda)
+            {
+                if (delivery.Status == DeliveryStatus.Pending)
+                {
+                    delivery.Status = DeliveryStatus.Delivered;
+                    delivery.DeliveredAt = now;
+                    if (delivery.TandaParticipant != null)
+                    {
+                        delivery.TandaParticipant.IsDelivered = true;
+                        delivery.TandaParticipant.DeliveryDate = now;
+                    }
+                    entregadosTanda++;
+                }
+                continue;
+            }
+
+            if (delivery.Order != null && delivery.Order.Status == OrderStatus.InRoute)
             {
                 delivery.Order.Status = OrderStatus.Delivered;
                 delivery.Status       = DeliveryStatus.Delivered;
-                delivery.DeliveredAt  = DateTime.UtcNow;
+                delivery.DeliveredAt  = now;
                 entregados++;
 
                 // Puntos de lealtad
@@ -1571,7 +1701,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                         ClientId = delivery.Order.ClientId,
                         Points   = puntos,
                         Reason   = $"Pedido #{delivery.OrderId} entregada (ruta #{rutaId})",
-                        Date     = DateTime.UtcNow
+                        Date     = now
                     });
                 }
             }
@@ -1581,9 +1711,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
 
         return ToJson(new
         {
-            mensaje   = $"Ruta #{rutaId} liquidada. {entregados} pedidos marcados como entregados.",
+            mensaje   = $"Ruta #{rutaId} liquidada. {entregados} pedidos y {entregadosTanda} tandas marcadas como entregadas.",
             rutaId    = rutaId,
-            entregados = entregados
+            entregados = entregados,
+            tandas = entregadosTanda
         });
     }
 

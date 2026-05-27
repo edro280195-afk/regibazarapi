@@ -196,7 +196,12 @@ public class PosService : IPosService
         var client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == clientName.ToLower());
         if (client == null)
         {
-            client = new Client { Name = clientName, Tag = ClientTag.None };
+            client = new Client
+            {
+                Name = clientName,
+                Tag = ClientTag.None,
+                NormalizedName = TextNormalizer.NormalizeName(clientName),
+            };
             _db.Clients.Add(client);
             await _db.SaveChangesAsync();
         }

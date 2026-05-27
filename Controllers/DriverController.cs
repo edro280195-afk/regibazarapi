@@ -43,10 +43,12 @@ public class DriverController : ControllerBase
         if (route == null) return NotFound("Ruta no encontrada.");
 
         var deliveries = await _db.Deliveries
-            .Include(d => d.Order).ThenInclude(o => o.Client)
-            .Include(d => d.Order).ThenInclude(o => o.Payments)
-            .Include(d => d.Order).ThenInclude(o => o.Items)
-            .Include(d => d.Order).ThenInclude(o => o.Packages)
+            .Include(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(d => d.Order).ThenInclude(o => o!.Payments)
+            .Include(d => d.Order).ThenInclude(o => o!.Items)
+            .Include(d => d.Order).ThenInclude(o => o!.Packages)
+            .Include(d => d.TandaParticipant).ThenInclude(p => p!.Client)
+            .Include(d => d.TandaParticipant).ThenInclude(p => p!.Tanda).ThenInclude(t => t!.Product)
             .Include(d => d.Evidences)
             .Where(d => d.DeliveryRouteId == route.Id)
             .OrderBy(d => d.SortOrder)
@@ -58,40 +60,96 @@ public class DriverController : ControllerBase
             route.Name,
             Status = route.Status.ToString(),
             route.StartedAt,
-            Deliveries = deliveries.Select(d => new RouteDeliveryDto(
+            Deliveries = deliveries.Select(MapDeliveryToDto).ToList()
+        });
+    }
+
+    private RouteDeliveryDto MapDeliveryToDto(Delivery d)
+    {
+        if (d.Kind == DeliveryKind.Tanda && d.TandaParticipant != null)
+        {
+            var participant = d.TandaParticipant;
+            var tanda = participant.Tanda;
+            var client = participant.Client;
+
+            int? currentWeek = null;
+            if (tanda != null)
+            {
+                var days = (int)(DateTime.UtcNow.Date - tanda.StartDate.Date).TotalDays;
+                currentWeek = days <= 0 ? 1 : ((days - 1) / 7) + 1;
+            }
+
+            return new RouteDeliveryDto(
                 DeliveryId: d.Id,
-                OrderId: d.OrderId,
+                OrderId: null,
                 SortOrder: d.SortOrder,
-                ClientName: d.Order.Client.Name,
-                ClientAddress: d.Order.Client.Address,
-                Latitude: d.Order.Client.Latitude,
-                Longitude: d.Order.Client.Longitude,
+                ClientName: client?.Name ?? participant.CustomerName ?? "Tanda",
+                ClientAddress: client?.Address,
+                Latitude: client?.Latitude,
+                Longitude: client?.Longitude,
                 Status: d.Status.ToString(),
-                Total: d.Order.Total,
+                Total: 0m,
                 DeliveredAt: d.DeliveredAt,
                 Notes: d.Notes,
                 FailureReason: d.FailureReason,
                 EvidenceUrls: d.Evidences.Select(e => e.ImagePath).ToList(),
-                ClientPhone: d.Order.Client.Phone,
-                PaymentMethod: d.Order.PaymentMethod,
-                Payments: (d.Order.Payments ?? new List<OrderPayment>())
-                    .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
-                Items: (d.Order.Items ?? new List<OrderItem>())
-                    .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
-                AmountPaid: d.Order.AmountPaid,
-                BalanceDue: d.Order.BalanceDue,
-                DeliveryInstructions: d.Order.Client.DeliveryInstructions,
+                ClientPhone: client?.Phone,
+                PaymentMethod: null,
+                Payments: new List<OrderPaymentDto>(),
+                Items: new List<OrderItemDto>(),
+                AmountPaid: 0m,
+                BalanceDue: 0m,
+                DeliveryInstructions: client?.DeliveryInstructions,
                 ArrivedAt: d.ArrivedAt,
-                Packages: (d.Order.Packages ?? new List<OrderPackage>()).Any()
-                    ? (d.Order.Packages ?? new List<OrderPackage>())
-                        .Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList()
-                    : null,
-                AlternativeAddress: d.Order.AlternativeAddress,
-                // Feature #5 — Etiqueta y tipo de cliente para el chofer
-                ClientTag: d.Order.Client.Tag.ToString() == "None" ? null : d.Order.Client.Tag.ToString(),
-                ClientType: d.Order.Client.Type
-            )).ToList()
-        });
+                Packages: null,
+                AlternativeAddress: null,
+                ClientTag: client?.Tag.ToString() == "None" ? null : client?.Tag.ToString(),
+                ClientType: client?.Type,
+                Kind: "Tanda",
+                TandaParticipantId: participant.Id,
+                TandaId: participant.TandaId,
+                TandaName: tanda?.Name,
+                TandaProductName: tanda?.Product?.Name,
+                TandaWeek: currentWeek,
+                TandaTotalWeeks: tanda?.TotalWeeks,
+                TandaVariant: participant.Variant
+            );
+        }
+
+        var order = d.Order!;
+        return new RouteDeliveryDto(
+            DeliveryId: d.Id,
+            OrderId: d.OrderId,
+            SortOrder: d.SortOrder,
+            ClientName: order.Client.Name,
+            ClientAddress: order.Client.Address,
+            Latitude: order.Client.Latitude,
+            Longitude: order.Client.Longitude,
+            Status: d.Status.ToString(),
+            Total: order.Total,
+            DeliveredAt: d.DeliveredAt,
+            Notes: d.Notes,
+            FailureReason: d.FailureReason,
+            EvidenceUrls: d.Evidences.Select(e => e.ImagePath).ToList(),
+            ClientPhone: order.Client.Phone,
+            PaymentMethod: order.PaymentMethod,
+            Payments: (order.Payments ?? new List<OrderPayment>())
+                .Select(p => new OrderPaymentDto(p.Id, p.OrderId, p.Amount, p.Method, p.Date, p.RegisteredBy, p.Notes)).ToList(),
+            Items: (order.Items ?? new List<OrderItem>())
+                .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
+            AmountPaid: order.AmountPaid,
+            BalanceDue: order.BalanceDue,
+            DeliveryInstructions: order.Client.DeliveryInstructions,
+            ArrivedAt: d.ArrivedAt,
+            Packages: (order.Packages ?? new List<OrderPackage>()).Any()
+                ? (order.Packages ?? new List<OrderPackage>())
+                    .Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList()
+                : null,
+            AlternativeAddress: order.AlternativeAddress,
+            ClientTag: order.Client.Tag.ToString() == "None" ? null : order.Client.Tag.ToString(),
+            ClientType: order.Client.Type,
+            Kind: "Order"
+        );
     }
 
 
@@ -121,12 +179,15 @@ public class DriverController : ControllerBase
         if (firstDelivery != null)
         {
             firstDelivery.Status = DeliveryStatus.InTransit;
-            // Notificar clienta
-            await _hub.Clients.Group($"Order_{firstDelivery.Order.AccessToken}")
-                .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
-            
-            if (firstDelivery.Order.ClientId > 0)
-                await _push.NotifyClientDriverEnRouteAsync(firstDelivery.Order.ClientId);
+            // Notificar clienta — solo aplica si es una Order regular (las tandas no tienen access token público).
+            if (firstDelivery.Order != null)
+            {
+                await _hub.Clients.Group($"Order_{firstDelivery.Order.AccessToken}")
+                    .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
+
+                if (firstDelivery.Order.ClientId > 0)
+                    await _push.NotifyClientDriverEnRouteAsync(firstDelivery.Order.ClientId);
+            }
         }
 
         await _db.SaveChangesAsync();
@@ -156,44 +217,43 @@ public class DriverController : ControllerBase
         foreach (var prev in previousInTransit) prev.Status = DeliveryStatus.Pending;
 
         delivery.Status = DeliveryStatus.InTransit;
-        // Registrar momento de llegada (solo la primera vez)
         if (delivery.ArrivedAt == null)
             delivery.ArrivedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
-        // Notificaciones
-        await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
-            .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
-
-        if (delivery.Order.ClientId > 0)
-            await _push.NotifyClientDriverEnRouteAsync(delivery.Order.ClientId);
-
-        // Admin
+        // Admin siempre se entera
         await _hub.Clients.Group($"Route_{driverToken}")
              .SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "InTransit" });
 
-        // Feature #9 — Saludo proactivo de CAMI a la clienta (fire-and-forget)
-        // Pre-cargar la orden aquí (dentro del scope del request) para evitar usar _db
-        // después de que el DbContext haya sido eliminado al finalizar la solicitud HTTP.
-        var orderForCami = await _db.Orders
-            .Include(o => o.Items)
-            .Include(o => o.Client)
-            .FirstOrDefaultAsync(o => o.Id == delivery.OrderId);
-        var camiAccessToken = delivery.Order.AccessToken;
-
-        _ = Task.Run(async () =>
+        // Notificaciones a clienta y greeting de CAMI sólo aplican a Orders regulares.
+        if (delivery.Order != null)
         {
-            try
+            await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
+                .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡El repartidor va en camino hacia ti!" });
+
+            if (delivery.Order.ClientId > 0)
+                await _push.NotifyClientDriverEnRouteAsync(delivery.Order.ClientId);
+
+            var orderForCami = await _db.Orders
+                .Include(o => o.Items)
+                .Include(o => o.Client)
+                .FirstOrDefaultAsync(o => o.Id == delivery.OrderId);
+            var camiAccessToken = delivery.Order.AccessToken;
+
+            _ = Task.Run(async () =>
             {
-                if (orderForCami != null)
+                try
                 {
-                    var greeting = await _cami.GetProactiveGreetingAsync(orderForCami);
-                    await _hub.Clients.Group($"Order_{camiAccessToken}")
-                        .SendAsync("CamiGreeting", new { greeting.Message, greeting.AudioBase64 });
+                    if (orderForCami != null)
+                    {
+                        var greeting = await _cami.GetProactiveGreetingAsync(orderForCami);
+                        await _hub.Clients.Group($"Order_{camiAccessToken}")
+                            .SendAsync("CamiGreeting", new { greeting.Message, greeting.AudioBase64 });
+                    }
                 }
-            }
-            catch { /* No bloquea el flujo principal */ }
-        });
+                catch { /* No bloquea el flujo principal */ }
+            });
+        }
 
         return Ok(new { message = "Entrega marcada en tránsito." });
     }
@@ -365,14 +425,21 @@ public class DriverController : ControllerBase
 
         var delivery = await _db.Deliveries
             .Include(d => d.Order)
-                .ThenInclude(o => o.Client)
+                .ThenInclude(o => o!.Client)
+            .Include(d => d.TandaParticipant)
+                .ThenInclude(p => p!.Client)
             .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
 
-        if (delivery == null || delivery.Order.Client == null)
-            return NotFound("Entrega o cliente no encontrado.");
+        if (delivery == null) return NotFound("Entrega no encontrada.");
 
-        delivery.Order.Client.Latitude = req.Latitude;
-        delivery.Order.Client.Longitude = req.Longitude;
+        var client = delivery.Kind == DeliveryKind.Tanda
+            ? delivery.TandaParticipant?.Client
+            : delivery.Order?.Client;
+
+        if (client == null) return NotFound("Cliente no encontrado.");
+
+        client.Latitude = req.Latitude;
+        client.Longitude = req.Longitude;
 
         await _db.SaveChangesAsync();
 
@@ -394,13 +461,51 @@ public class DriverController : ControllerBase
         // IMPORTANTE: Incluimos al Cliente para poder sumarle los puntos
         var delivery = await _db.Deliveries
             .Include(d => d.Order)
-                .ThenInclude(o => o.Client)
+                .ThenInclude(o => o!.Client)
             .Include(d => d.Order)
-                .ThenInclude(o => o.Payments)
+                .ThenInclude(o => o!.Payments)
+            .Include(d => d.TandaParticipant)
+                .ThenInclude(p => p!.Client)
             .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
 
         if (delivery == null) return NotFound("Entrega no encontrada.");
 
+        // ── Flujo tanda: sin pagos, sin puntos, sin Order ──
+        if (delivery.Kind == DeliveryKind.Tanda)
+        {
+            if (delivery.Status != DeliveryStatus.Delivered)
+            {
+                delivery.Status = DeliveryStatus.Delivered;
+                delivery.DeliveredAt = DateTime.UtcNow;
+                delivery.Notes = req.Notes;
+                if (delivery.TandaParticipant != null)
+                {
+                    delivery.TandaParticipant.IsDelivered = true;
+                    delivery.TandaParticipant.DeliveryDate = DateTime.UtcNow;
+                }
+            }
+
+            if (photos != null) await SavePhotos(delivery, photos, EvidenceType.DeliveryProof);
+            await _db.SaveChangesAsync();
+
+            await _hub.Clients.Group($"Route_{driverToken}")
+                .SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "Delivered" });
+            await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+            {
+                DeliveryId = delivery.Id,
+                Status = "Delivered",
+                Kind = "Tanda",
+                TandaParticipantId = delivery.TandaParticipantId,
+                ClientName = delivery.TandaParticipant?.Client?.Name
+            });
+
+            var nextIdT = await AutoAdvanceToNext(route.Id, delivery.SortOrder);
+            await CheckRouteCompletion(route.Id);
+
+            return Ok(new { message = "Entrega de tanda registrada.", nextDeliveryId = nextIdT });
+        }
+
+        // ── Flujo orden regular ──
         // Solo procesamos si no estaba ya entregado (para evitar doble suma de puntos si le pican dos veces)
         List<PaymentInputDto>? parsedPayments = null;
         if (delivery.Status != DeliveryStatus.Delivered)
@@ -408,7 +513,7 @@ public class DriverController : ControllerBase
             delivery.Status = DeliveryStatus.Delivered;
             delivery.DeliveredAt = DateTime.UtcNow;
             delivery.Notes = req.Notes;
-            delivery.Order.Status = Models.OrderStatus.Delivered;
+            delivery.Order!.Status = Models.OrderStatus.Delivered;
             if (!string.IsNullOrWhiteSpace(req.PaymentsJson))
             {
                 try
@@ -428,7 +533,7 @@ public class DriverController : ControllerBase
                 {
                     _db.OrderPayments.Add(new OrderPayment
                     {
-                        OrderId = delivery.OrderId,
+                        OrderId = delivery.OrderId!.Value,
                         Amount = p.Amount,
                         Method = p.Method,
                         Date = DateTime.UtcNow,
@@ -436,13 +541,13 @@ public class DriverController : ControllerBase
                         Notes = p.Notes
                     });
                 }
-                
+
                 var amountCollected = parsedPayments.Sum(x => x.Amount);
                 if (amountCollected > 0)
                 {
                     await _push.SendNotificationToAdminsAsync(
                         "💰 Pago Registrado por Repartidor",
-                        $"Se ingresaron {amountCollected:C} del pedido #{delivery.Order.Id} ({delivery.Order.Client?.Name})",
+                        $"Se ingresaron {amountCollected:C} del pedido #{delivery.Order!.Id} ({delivery.Order.Client?.Name})",
                         tag: "payment-received"
                     );
                 }
@@ -451,7 +556,7 @@ public class DriverController : ControllerBase
             // -----------------------------------------------------------
             // 🎀 LÓGICA DE REGIPUNTOS (10 pts por cada $100)
             // -----------------------------------------------------------
-            int puntosGanados = (int)(delivery.Order.Total / 10m);
+            int puntosGanados = (int)(delivery.Order!.Total / 10m);
             if (puntosGanados > 0 && delivery.Order.Client != null)
             {
                 var transaccion = new LoyaltyTransaction
@@ -473,17 +578,17 @@ public class DriverController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        if (delivery.Order.ClientId > 0)
+        if (delivery.Order!.ClientId > 0)
             await _push.NotifyClientDeliveredAsync(delivery.Order.ClientId);
 
         // Notificar en tiempo real
         await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}").SendAsync("DeliveryUpdate", new { Status = "Delivered" });
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "Delivered" });
-        
+
         // ✨ PROPAGACIÓN MAGISTRAL ADEMÁS AL GRUPO DE ADMINS
-        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
-            OrderId = delivery.Order.Id, 
-            Status = "Delivered", 
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
+            OrderId = delivery.Order.Id,
+            Status = "Delivered",
             ClientName = delivery.Order.Client?.Name,
             AmountReceived = parsedPayments?.Sum(p => p.Amount) ?? 0
         });
@@ -506,29 +611,39 @@ public class DriverController : ControllerBase
         var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
         if (route == null) return NotFound();
 
-        var delivery = await _db.Deliveries.Include(d => d.Order)
+        var delivery = await _db.Deliveries
+            .Include(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(d => d.TandaParticipant).ThenInclude(p => p!.Client)
             .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
         if (delivery == null) return NotFound();
 
         delivery.Status = DeliveryStatus.NotDelivered;
         delivery.FailureReason = req.Reason;
         delivery.Notes = req.Notes;
-        delivery.Order.Status = Models.OrderStatus.NotDelivered;
+        // En orden regular: marcamos también la Order. En tanda no tocamos IsDelivered (sigue false).
+        if (delivery.Order != null)
+            delivery.Order.Status = Models.OrderStatus.NotDelivered;
 
         if (photos != null) await SavePhotos(delivery, photos, EvidenceType.NonDeliveryProof);
 
         await _db.SaveChangesAsync();
-        
+
+        var clientName = delivery.Order?.Client?.Name
+            ?? delivery.TandaParticipant?.Client?.Name
+            ?? "Cliente";
         await _push.SendNotificationToAdminsAsync(
             "⚠️ Entrega Fallida",
-            $"{delivery.Order.Client?.Name ?? "Cliente"} no recibió el pedido: {req.Reason}",
+            $"{clientName} no recibió el pedido: {req.Reason}",
             tag: "delivery-failed"
         );
 
         // Notificar Admin Dashboard
         await _hub.Clients.Group($"Route_{driverToken}").SendAsync("DeliveryStatusUpdate", new { delivery.Id, Status = "NotDelivered" });
-        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { 
-            OrderId = delivery.Order.Id, 
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
+            DeliveryId = delivery.Id,
+            OrderId = delivery.OrderId,
+            TandaParticipantId = delivery.TandaParticipantId,
+            Kind = delivery.Kind.ToString(),
             Status = "NotDelivered",
             Reason = req.Reason
         });
@@ -552,11 +667,16 @@ public class DriverController : ControllerBase
         {
             nextDelivery.Status = DeliveryStatus.InTransit;
             await _db.SaveChangesAsync();
-            await _hub.Clients.Group($"Order_{nextDelivery.Order.AccessToken}")
-                .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡Tu turno! El repartidor va hacia ti." });
-                
-            if (nextDelivery.Order.ClientId > 0)
-                await _push.NotifyClientDriverEnRouteAsync(nextDelivery.Order.ClientId);
+
+            // Notificación a la clienta sólo si la siguiente parada es una Order regular.
+            if (nextDelivery.Order != null)
+            {
+                await _hub.Clients.Group($"Order_{nextDelivery.Order.AccessToken}")
+                    .SendAsync("DeliveryUpdate", new { Status = "InTransit", Message = "¡Tu turno! El repartidor va hacia ti." });
+
+                if (nextDelivery.Order.ClientId > 0)
+                    await _push.NotifyClientDriverEnRouteAsync(nextDelivery.Order.ClientId);
+            }
 
             return nextDelivery.Id;
         }
@@ -748,6 +868,10 @@ public class DriverController : ControllerBase
             .FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == route.Id);
 
         if (delivery == null) return NotFound("Entrega no encontrada.");
+
+        // Las entregas de tanda no tienen canal público de chat con la clienta.
+        if (delivery.Order == null)
+            return BadRequest("Esta entrega es una tanda y no admite chat con la clienta.");
 
         var msg = new ChatMessage
         {

@@ -76,7 +76,10 @@ public record ClientDto(
     int OrdersCount,
     decimal TotalSpent,
     string Type,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    double? Latitude = null,
+    double? Longitude = null,
+    List<string>? Aliases = null
 );
 
 public record OrderTrackingDto(
@@ -111,7 +114,11 @@ public record ManualOrderRequest(
     string Status = "Pending",
     string? DeliveryInstructions = null,
     string? AlternativeAddress = null,
-    DateTime? ScheduledDeliveryDate = null
+    DateTime? ScheduledDeliveryDate = null,
+    // Si viene un ClientId resuelto desde el frontend, se usa directo y se salta el
+    // lookup por nombre. Útil cuando el resolver multi-señal ya identificó a la
+    // clienta y el `ClientName` tecleado debe quedar como alias.
+    int? ClientId = null
 );
 public record ManualOrderItem(
     string ProductName,
@@ -128,7 +135,84 @@ public record ManualOrderItemRequest(
 public record ParseLiveRequest(string Text, List<AiParsedOrder>? CurrentState);
 
 // ── Delivery Route ──
-public record CreateRouteRequest(List<int> OrderIds);
+public record CreateRouteRequest(
+    List<int> OrderIds,
+    bool Force = false,
+    List<Guid>? TandaParticipantIds = null,
+    /// <summary>
+    /// Si es true, OrderIds y TandaParticipantIds vienen en el orden óptimo deseado
+    /// (típicamente desde un preview del frontend) y se respeta sin re-optimizar.
+    /// Si es false (default), el backend re-optimiza usando Google Routes API.
+    /// </summary>
+    bool PreOptimized = false
+);
+
+public record SkippedStopDto(
+    string Kind,         // "Order" | "Tanda"
+    string Id,           // int como string o Guid como string
+    string Name,         // nombre del cliente
+    string Reason
+);
+
+public record CreateRouteResponse(
+    RouteDto Route,
+    List<SkippedStopDto> Skipped
+);
+
+public record PreviewRouteRequest(
+    List<int>? OrderIds,
+    List<Guid>? TandaParticipantIds,
+    double? StartLat,
+    double? StartLng
+);
+
+public record PreviewStopDto(
+    string Kind,                 // "Order" | "Tanda"
+    int? OrderId,
+    Guid? TandaParticipantId,
+    int SortOrder,
+    string ClientName,
+    string? ClientAddress,
+    double? Latitude,
+    double? Longitude,
+    decimal Total,
+    bool HasCoords,
+    string? TandaName,
+    int? TandaWeek
+);
+
+public record PreviewRouteResponse(
+    List<PreviewStopDto> Stops,
+    int TotalDistanceMeters,
+    int TotalDurationSeconds,
+    string OptimizerSource,
+    List<SkippedStopDto> Skipped,
+    int StopsWithoutCoords,
+    string? PolylineEncoded = null,
+    double? DepotLatitude = null,
+    double? DepotLongitude = null
+);
+
+public record RecomposeRouteRequest(
+    List<int> OrderIds,
+    List<Guid>? TandaParticipantIds = null
+);
+
+public record RecomposeRouteResponse(
+    RouteDto Route,
+    List<SkippedStopDto> Skipped
+);
+
+public record BulkGeocodeRequest(List<int> ClientIds);
+public record SetClientCoordinatesRequest(double Latitude, double Longitude, string? Address);
+public record BulkGeocodeResultDto(
+    int ClientId,
+    bool Success,
+    double? Latitude,
+    double? Longitude,
+    string? FormattedAddress,
+    string? Error
+);
 
 public record RouteDto(
     int Id,
@@ -143,7 +227,7 @@ public record RouteDto(
 
 public record RouteDeliveryDto(
     int DeliveryId,
-    int OrderId,
+    int? OrderId,
     int SortOrder,
     string ClientName,
     string? ClientAddress,
@@ -167,12 +251,39 @@ public record RouteDeliveryDto(
     string? AlternativeAddress = null,
     // Feature #5 — Etiqueta y tipo de cliente para el chofer
     string? ClientTag = null,
-    string? ClientType = null
+    string? ClientType = null,
+    // ── Tanda fields (cuando Kind == "Tanda") ──
+    string Kind = "Order",
+    Guid? TandaParticipantId = null,
+    Guid? TandaId = null,
+    string? TandaName = null,
+    string? TandaProductName = null,
+    int? TandaWeek = null,
+    int? TandaTotalWeeks = null,
+    string? TandaVariant = null
 )
 {
     public int Id => DeliveryId;
     public string? Address => ClientAddress;
 }
+
+// Tandas listas para incluirse en una ruta dominical
+public record AvailableTandaDto(
+    Guid TandaParticipantId,
+    Guid TandaId,
+    string TandaName,
+    string? TandaProductName,
+    int Week,
+    int TotalWeeks,
+    string? Variant,
+    int ClientId,
+    string ClientName,
+    string? ClientAddress,
+    string? ClientPhone,
+    double? ClientLatitude,
+    double? ClientLongitude,
+    string? DeliveryInstructions
+);
 
 // ── AI Voice Routes ──
 public record AiRouteSelectionRequest(
@@ -579,6 +690,8 @@ public record UpdateOrderItemRequest(
 );
 
 public record SendMessageRequest(string Text);
+public record UpdateInstructionsRequest(string Instructions);
+
 
 // ── SalesPeriods (Cortes de Venta) ──
 public record SalesPeriodDto(
@@ -674,3 +787,77 @@ public record CreatePosOrderRequest(string ClientName);
 public record PosVoiceRequest(string Text, int? OrderId = null);
 public record PosVoiceResponse(string Message, string? AudioBase64, List<PosVoiceAction> Actions);
 public record PosVoiceAction(string Type, string? ClientName = null, string? ProductName = null, decimal? Price = null, int? Quantity = null);
+
+// ── Pago con Tarjeta (Mercado Pago) ──
+public record CardPaymentRequest(
+    string CardToken,
+    string PaymentMethodId,
+    string? IssuerId,
+    int Installments);
+
+public record CardPaymentResultDto(
+    string Status,
+    string StatusDetail,
+    decimal Amount,
+    string Message,
+    long? PaymentId = null);
+
+// ── Identidad multi-señal de clientas ──
+
+/// <summary>
+/// Request al resolver: pide al backend que identifique a qué clienta corresponde
+/// el nombre tecleado/dictado, opcionalmente con teléfono y dirección.
+/// </summary>
+public record ResolveClientRequest(
+    string Name,
+    string? Phone = null,
+    string? Address = null);
+
+/// <summary>
+/// Una candidata propuesta por el resolver con su score y por qué señal hizo match.
+/// </summary>
+public record ResolveCandidateDto(
+    int ClientId,
+    string Name,
+    string? Phone,
+    string? Address,
+    string Tag,
+    string Type,
+    int OrdersCount,
+    decimal TotalSpent,
+    List<string> Aliases,
+    decimal BalanceDue,
+    double Score,
+    string MatchedBy); // "alias" | "phone" | "name-fuzzy" | "address-fuzzy"
+
+/// <summary>
+/// Respuesta del resolver con los top-N candidatos y una acción sugerida para la UI.
+/// </summary>
+public record ResolveClientResponse(
+    List<ResolveCandidateDto> Candidates,
+    string SuggestedAction); // "use" (top muy claro), "choose" (ambiguo), "create" (no hay match)
+
+public record AddAliasRequest(
+    string Alias,
+    string? Source = null); // ClientAliasSource serializado o null para ManualConfirm
+
+public record MergeClientsRequest(
+    int SourceId,
+    int TargetId);
+
+public record DuplicateSuggestionDto(
+    int LeftClientId,
+    string LeftName,
+    int LeftOrdersCount,
+    int RightClientId,
+    string RightName,
+    int RightOrdersCount,
+    string Reason, // "same-phone", "similar-name", "similar-address"
+    double Confidence);
+
+public record ClientAliasDto(
+    int Id,
+    string Alias,
+    string Source,
+    int TimesSeen,
+    DateTime CreatedAt);

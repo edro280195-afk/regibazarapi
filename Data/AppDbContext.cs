@@ -35,6 +35,15 @@ public class AppDbContext : DbContext
     public DbSet<OrderPackage> OrderPackages => Set<OrderPackage>();
     public DbSet<FcmToken> FcmTokens => Set<FcmToken>();
 
+    // Sorteos
+    public DbSet<Raffle> Raffles => Set<Raffle>();
+    public DbSet<RaffleParticipant> RaffleParticipants => Set<RaffleParticipant>();
+    public DbSet<RaffleEntry> RaffleEntries => Set<RaffleEntry>();
+    public DbSet<RaffleDraw> RaffleDraws => Set<RaffleDraw>();
+
+    // Identidad multi-señal de clientas
+    public DbSet<ClientAlias> ClientAliases => Set<ClientAlias>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -56,6 +65,32 @@ public class AppDbContext : DbContext
             .HasIndex(c => c.Name)
             .IsUnique();
 
+        // Identidad multi-señal: campos normalizados + alias
+        modelBuilder.Entity<Client>(entity =>
+        {
+            entity.Property(c => c.NormalizedName)
+                  .IsRequired()
+                  .HasDefaultValue(string.Empty);
+
+            entity.HasIndex(c => c.NormalizedPhone)
+                  .HasDatabaseName("IX_Clients_NormalizedPhone");
+
+            entity.HasMany(c => c.Aliases)
+                  .WithOne(a => a.Client!)
+                  .HasForeignKey(a => a.ClientId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClientAlias>(entity =>
+        {
+            entity.HasIndex(a => a.NormalizedAlias)
+                  .IsUnique()
+                  .HasDatabaseName("IX_ClientAliases_NormalizedAlias");
+
+            entity.HasIndex(a => a.ClientId)
+                  .HasDatabaseName("IX_ClientAliases_ClientId");
+        });
+
         modelBuilder.Entity<TandaParticipant>()
             .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })
             .IsUnique()
@@ -63,11 +98,29 @@ public class AppDbContext : DbContext
 
         // --- RELACIONES & CONFIGURACIONES ---
 
-        // One-to-one: Order -> Delivery
+        // One-to-one: Order -> Delivery (OrderId es nullable para soportar deliveries de tanda)
         modelBuilder.Entity<Order>()
             .HasOne(o => o.Delivery)
             .WithOne(d => d.Order)
-            .HasForeignKey<Delivery>(d => d.OrderId);
+            .HasForeignKey<Delivery>(d => d.OrderId)
+            .IsRequired(false);
+
+        // Delivery -> TandaParticipant (many-to-one opcional; XOR con OrderId)
+        modelBuilder.Entity<Delivery>(entity =>
+        {
+            entity.HasOne(d => d.TandaParticipant)
+                  .WithMany()
+                  .HasForeignKey(d => d.TandaParticipantId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(d => d.TandaParticipantId);
+
+            // Garantiza el XOR: exactamente uno de OrderId / TandaParticipantId debe estar presente.
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_Deliveries_OrderXorTanda",
+                "(\"OrderId\" IS NOT NULL AND \"TandaParticipantId\" IS NULL) OR " +
+                "(\"OrderId\" IS NULL AND \"TandaParticipantId\" IS NOT NULL)"));
+        });
 
         // Order -> Payments (1:N)
         modelBuilder.Entity<Order>()
@@ -205,6 +258,83 @@ public class AppDbContext : DbContext
 
             entity.Property(e => e.CreatedAt)
                   .HasDefaultValueSql("NOW()");
+        });
+
+        // Sorteos
+        modelBuilder.Entity<Raffle>(entity =>
+        {
+            entity.HasIndex(r => r.Status);
+            entity.HasIndex(r => r.RaffleDate);
+            entity.HasIndex(r => r.TandaId);
+
+            entity.HasOne(r => r.Winner)
+                  .WithMany()
+                  .HasForeignKey(r => r.WinnerId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(r => r.Tanda)
+                  .WithMany()
+                  .HasForeignKey(r => r.TandaId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(r => r.PrizeProduct)
+                  .WithMany()
+                  .HasForeignKey(r => r.PrizeProductId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasMany(r => r.Participants)
+                  .WithOne(p => p.Raffle)
+                  .HasForeignKey(p => p.RaffleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasMany(r => r.Entries)
+                  .WithOne(e => e.Raffle)
+                  .HasForeignKey(e => e.RaffleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasMany(r => r.Draws)
+                  .WithOne(d => d.Raffle)
+                  .HasForeignKey(d => d.RaffleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RaffleParticipant>(entity =>
+        {
+            entity.HasIndex(p => new { p.RaffleId, p.ClientId })
+                  .IsUnique()
+                  .HasDatabaseName("IX_RaffleParticipant_Raffle_Client");
+
+            entity.HasOne(p => p.Client)
+                  .WithMany()
+                  .HasForeignKey(p => p.ClientId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RaffleEntry>(entity =>
+        {
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => new { e.RaffleId, e.ClientId });
+
+            entity.HasOne(e => e.Client)
+                  .WithMany()
+                  .HasForeignKey(e => e.ClientId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Order)
+                  .WithMany()
+                  .HasForeignKey(e => e.OrderId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RaffleDraw>(entity =>
+        {
+            entity.HasIndex(d => d.RaffleId);
+            entity.HasIndex(d => d.DrawDate);
+
+            entity.HasOne(d => d.Winner)
+                  .WithMany()
+                  .HasForeignKey(d => d.WinnerId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

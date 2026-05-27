@@ -4,6 +4,7 @@ using EntregasApi.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
@@ -11,9 +12,10 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EntregasApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260524120000_AddTandaSupportToDelivery")]
+    partial class AddTandaSupportToDelivery
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -154,18 +156,6 @@ namespace EntregasApi.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
-                    b.Property<string>("NormalizedAddress")
-                        .HasColumnType("text");
-
-                    b.Property<string>("NormalizedName")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("text")
-                        .HasDefaultValue("");
-
-                    b.Property<string>("NormalizedPhone")
-                        .HasColumnType("text");
-
                     b.Property<string>("Phone")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
@@ -182,51 +172,7 @@ namespace EntregasApi.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.HasIndex("NormalizedPhone")
-                        .HasDatabaseName("IX_Clients_NormalizedPhone");
-
                     b.ToTable("Clients");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.ClientAlias", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Alias")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<int>("ClientId")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("NormalizedAlias")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<int>("Source")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("TimesSeen")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ClientId")
-                        .HasDatabaseName("IX_ClientAliases_ClientId");
-
-                    b.HasIndex("NormalizedAlias")
-                        .IsUnique()
-                        .HasDatabaseName("IX_ClientAliases_NormalizedAlias");
-
-                    b.ToTable("ClientAliases");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.Delivery", b =>
@@ -1523,17 +1469,6 @@ namespace EntregasApi.Migrations
                     b.Navigation("DeliveryRoute");
                 });
 
-            modelBuilder.Entity("EntregasApi.Models.ClientAlias", b =>
-                {
-                    b.HasOne("EntregasApi.Models.Client", "Client")
-                        .WithMany("Aliases")
-                        .HasForeignKey("ClientId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Client");
-                });
-
             modelBuilder.Entity("EntregasApi.Models.Delivery", b =>
                 {
                     b.HasOne("EntregasApi.Models.DeliveryRoute", "DeliveryRoute")
@@ -1816,8 +1751,6 @@ namespace EntregasApi.Migrations
 
             modelBuilder.Entity("EntregasApi.Models.Client", b =>
                 {
-                    b.Navigation("Aliases");
-
                     b.Navigation("Orders");
                 });
 

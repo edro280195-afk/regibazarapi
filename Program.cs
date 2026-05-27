@@ -65,6 +65,9 @@ catch (Exception ex)
 // EPPlus license (NonCommercial)
 ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
+// ── HTTP Client (Mercado Pago y otras llamadas externas) ──
+builder.Services.AddHttpClient();
+
 // ── Database ──
 var connectionString = builder.Configuration.GetConnectionString("Default");
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -117,10 +120,13 @@ builder.Services.AddScoped<IGeminiService, GeminiService>();
 builder.Services.AddScoped<ICamiService, CamiService>();
 builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
 builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
+builder.Services.AddScoped<IGeocodingService, GeocodingService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPosService, PosService>();
 builder.Services.AddScoped<ITandaService, TandaService>();
+builder.Services.AddScoped<IRaffleService, RaffleService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
+builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();
@@ -183,11 +189,31 @@ builder.Services.AddDirectoryBrowser();
 var app = builder.Build();
 
 // ── Migrate DB on startup ──
-//using (var scope = app.Services.CreateScope())
-//{
-//    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-//    await db.Database.MigrateAsync();
-//}
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+
+    // Backfill de los campos normalizados de Client para clientas existentes que se
+    // crearon antes de la migración AddClientAliasesAndFuzzy. La normalización vive
+    // en C# (sin diacríticos, lowercase, etc.) y replicarla en SQL puro dejaría
+    // resultados distintos, así que se hace acá una sola vez.
+    var pending = await db.Clients
+        .Where(c => c.NormalizedName == "" || c.NormalizedName == null)
+        .ToListAsync();
+    if (pending.Count > 0)
+    {
+        Console.WriteLine($"⚙️  Backfill de NormalizedName/Phone/Address para {pending.Count} clientas...");
+        foreach (var c in pending)
+        {
+            c.NormalizedName = TextNormalizer.NormalizeName(c.Name);
+            c.NormalizedPhone = TextNormalizer.NormalizePhone(c.Phone);
+            c.NormalizedAddress = TextNormalizer.NormalizeAddress(c.Address);
+        }
+        await db.SaveChangesAsync();
+        Console.WriteLine("✅ Backfill de clientas completado.");
+    }
+}
 
 // ── Middleware pipeline ──
 if (app.Environment.IsDevelopment())
