@@ -15,10 +15,12 @@ public interface ILiveCaptureService
 }
 
 public record LiveClipResult(byte[] Content, string ContentType, string FileName);
+internal record YtDlpAttempt(string FileName, IReadOnlyList<string> Arguments, string DisplayName);
 
 public class LiveCaptureService : ILiveCaptureService
 {
     private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+    private static readonly string[] CommonYtDlpPaths = { "/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp" };
     private static readonly string[] IgnoredOcrFragments =
     {
         "me gusta", "comentar", "compartir", "enviar", "facebook", "live", "reels", "escribe un comentario"
@@ -146,13 +148,15 @@ public class LiveCaptureService : ILiveCaptureService
     private async Task<string> DownloadVideoAsync(LiveSession session, string workDir, CancellationToken cancellationToken)
     {
         var outputTemplate = Path.Combine(workDir, "live.%(ext)s");
-        await _processRunner.RunAsync(_options.YtDlpPath, new[]
+        var ytDlpArguments = new[]
         {
             "--no-playlist",
             "-f", "best[ext=mp4]/best",
             "-o", outputTemplate,
             session.FacebookUrl
-        }, cancellationToken);
+        };
+
+        await RunYtDlpAsync(ytDlpArguments, cancellationToken);
 
         var downloaded = Directory.GetFiles(workDir, "live.*")
             .Where(p => !p.EndsWith(".part", StringComparison.OrdinalIgnoreCase))
@@ -160,6 +164,58 @@ public class LiveCaptureService : ILiveCaptureService
             .FirstOrDefault();
 
         return downloaded ?? throw new InvalidOperationException("yt-dlp no genero ningun archivo de video.");
+    }
+
+    private async Task RunYtDlpAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        var errors = new List<string>();
+
+        foreach (var attempt in BuildYtDlpAttempts(arguments))
+        {
+            try
+            {
+                await _processRunner.RunAsync(attempt.FileName, attempt.Arguments, cancellationToken);
+                return;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                errors.Add($"{attempt.DisplayName}: {ex.Message}");
+                _logger.LogWarning(ex, "No se pudo ejecutar yt-dlp usando {DisplayName}", attempt.DisplayName);
+            }
+        }
+
+        throw new InvalidOperationException(
+            "No se pudo ejecutar yt-dlp. Verifica que Render este usando el Dockerfile del API o configura LiveCapture__YtDlpPath con la ruta absoluta del ejecutable. " +
+            $"Intentos: {string.Join(" | ", errors)}");
+    }
+
+    private IEnumerable<YtDlpAttempt> BuildYtDlpAttempts(IReadOnlyList<string> arguments)
+    {
+        var configuredPath = string.IsNullOrWhiteSpace(_options.YtDlpPath) ? "yt-dlp" : _options.YtDlpPath.Trim();
+        yield return new YtDlpAttempt(configuredPath, arguments, configuredPath);
+
+        foreach (var path in CommonYtDlpPaths)
+        {
+            if (!path.Equals(configuredPath, StringComparison.OrdinalIgnoreCase))
+                yield return new YtDlpAttempt(path, arguments, path);
+        }
+
+        var pythonPath = string.IsNullOrWhiteSpace(_options.YtDlpPythonPath)
+            ? "python3"
+            : _options.YtDlpPythonPath.Trim();
+
+        yield return new YtDlpAttempt(
+            pythonPath,
+            new[] { "-m", "yt_dlp" }.Concat(arguments).ToList(),
+            $"{pythonPath} -m yt_dlp");
+
+        if (!pythonPath.Equals("python", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return new YtDlpAttempt(
+                "python",
+                new[] { "-m", "yt_dlp" }.Concat(arguments).ToList(),
+                "python -m yt_dlp");
+        }
     }
 
     private async Task<double?> ProbeDurationAsync(string videoPath, CancellationToken cancellationToken)

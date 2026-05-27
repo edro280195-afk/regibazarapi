@@ -3,6 +3,7 @@ namespace EntregasApi.Services;
 public class LiveCaptureOptions
 {
     public string YtDlpPath { get; set; } = "yt-dlp";
+    public string YtDlpPythonPath { get; set; } = "python3";
     public string FfmpegPath { get; set; } = "ffmpeg";
     public string FfprobePath { get; set; } = "ffprobe";
     public string TempDirectory { get; set; } = "/tmp/regibazar-live";
