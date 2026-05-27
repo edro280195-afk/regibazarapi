@@ -102,6 +102,18 @@ public class LiveCaptureController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// GET /api/live/candidates/{id}/clip - Devuelve un clip de 5s del audio
+    /// con el momento en que se habló este pedido en la transmisión.
+    /// </summary>
+    [HttpGet("candidates/{id:int}/clip")]
+    public async Task<IActionResult> GetClip(int id)
+    {
+        var (stream, contentType) = await _svc.GetCandidateClipAsync(id);
+        if (stream == null || contentType == null) return NotFound();
+        return File(stream, contentType, $"candidate_{id}.mp3");
+    }
+
     private static LiveSessionDto ToDto(LiveSession s, int productCount, int candidateCount, int pendingCount) =>
         new(s.Id, s.FacebookUrl, s.Title, s.Status.ToString(), s.StatusDetail,
             s.ImportedAt, s.ProcessedAt, s.DurationSeconds,

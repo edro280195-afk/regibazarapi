@@ -776,6 +776,16 @@ public record CamiAlert(string Type, string Message, string Icon, int? RelatedId
 public record RouteBriefingResponse(string Text, string? AudioBase64 = null);
 public record DashboardInsightRequest(decimal RevenueToday, decimal RevenueMonth, int PendingOrders, int DeliveredOrders, int ActiveRoutes, decimal PendingAmount, int TotalClients);
 
+// ── C.A.M.I. Proactive Suggestions ──
+public record CamiProactiveSuggestionDto(
+    string Kind,        // "live-pending", "live-stuck", "duplicates"
+    string Icon,
+    string Title,
+    string Detail,
+    string ActionLabel,
+    string ActionRoute,
+    int Priority);
+
 // ── POS ──
 public record OpenSessionRequest(int UserId, decimal InitialCash);
 public record CloseSessionRequest(int SessionId, decimal ActualCash);
@@ -897,7 +907,8 @@ public record LiveCandidateDto(
     string? ResolvedClientName,
     string? ProposedAliasPairJson,
     string Source,   // "Spoken" | "Comment" | "SpokenAndComment"
-    string Status);  // "Pending" | "Confirmed" | "Ignored"
+    string Status,   // "Pending" | "Confirmed" | "Ignored"
+    double? SpokenAtSeconds = null);
 
 public record LiveReviewDto(
     LiveSessionDto Session,
@@ -911,3 +922,16 @@ public record ConfirmCandidateRequest(
     string? ProductOverride = null,
     decimal? PriceOverride = null,
     bool AcceptAlias = false);
+
+public record ClientMergeAuditDto(
+    int Id,
+    int SourceClientId,
+    string SourceName,
+    int TargetClientId,
+    string TargetName,
+    string Mode,        // "Manual" | "Auto"
+    string? Reason,
+    double Confidence,
+    int OrdersMoved,
+    int AliasesMoved,
+    DateTime MergedAt);

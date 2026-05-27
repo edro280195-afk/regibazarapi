@@ -244,6 +244,87 @@ public class LiveCaptureService : ILiveCaptureService
         await db.SaveChangesAsync();
     }
 
+    public async Task<(Stream? stream, string? contentType)> GetCandidateClipAsync(int candidateId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var candidate = await db.LiveCandidates
+            .Include(c => c.LiveSession)
+            .FirstOrDefaultAsync(c => c.Id == candidateId);
+
+        if (candidate == null) return (null, null);
+        if (candidate.SpokenAtSeconds is not double spokenAt) return (null, null);
+
+        var audioPath = candidate.LiveSession?.LocalAudioPath;
+        if (string.IsNullOrEmpty(audioPath) || !File.Exists(audioPath)) return (null, null);
+
+        // Empezamos 2 segundos antes del momento detectado para dar contexto
+        // y extraemos 5 segundos en total.
+        var startSeconds = Math.Max(0, spokenAt - 2);
+        const int clipDurationSeconds = 5;
+
+        var startArg = startSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+        var psi = new ProcessStartInfo("ffmpeg")
+        {
+            Arguments = $"-ss {startArg} -t {clipDurationSeconds} -i \"{audioPath}\" -f mp3 -acodec libmp3lame -b:a 64k -ac 1 -ar 22050 -",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null) return (null, null);
+
+            var memoryStream = new MemoryStream();
+            var copyTask = process.StandardOutput.BaseStream.CopyToAsync(memoryStream);
+
+            // Drenar stderr para evitar bloqueo por buffer lleno
+            var errorTask = process.StandardError.ReadToEndAsync();
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { /* ignore */ }
+                _logger.LogWarning("ffmpeg timed out generating clip for candidate {Id}", candidateId);
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            await copyTask;
+            await errorTask;
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("ffmpeg exited with code {Code} for candidate {Id}: {Err}",
+                    process.ExitCode, candidateId, errorTask.Result);
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            if (memoryStream.Length == 0)
+            {
+                memoryStream.Dispose();
+                return (null, null);
+            }
+
+            memoryStream.Position = 0;
+            return (memoryStream, "audio/mpeg");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to extract clip for candidate {Id}", candidateId);
+            return (null, null);
+        }
+    }
+
     // ── Processing pipeline ──
 
     private async Task ProcessAsync(int sessionId)
@@ -262,6 +343,16 @@ public class LiveCaptureService : ILiveCaptureService
             await db.SaveChangesAsync();
 
             var audioFilePath = await DownloadAudioAsync(session.Id, session.FacebookUrl);
+
+            // Persistimos el path del audio para poder recortar clips por candidato
+            // después. Importante: NO borrar este archivo al terminar el procesamiento.
+            if (!string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
+            {
+                session.LocalAudioPath = audioFilePath.Length > 500
+                    ? audioFilePath[..500]
+                    : audioFilePath;
+                await db.SaveChangesAsync();
+            }
 
             // 2. Transcribe
             session.Status = LiveSessionStatus.Transcribing;
@@ -528,6 +619,13 @@ Transcripción:
             var matchedProduct = products.FirstOrDefault(p =>
                 p.Keyword.Equals(group.Key.Keyword, StringComparison.OrdinalIgnoreCase));
 
+            // Tomar el primer timestamp disponible dentro de los pedidos hablados
+            // que componen este grupo. Sirve para que el frontend pueda reproducir
+            // un clip de 5 segundos centrado en el momento en que se dijo el pedido.
+            var spokenAtSeconds = group
+                .Select(o => o.SpokenAtSeconds)
+                .FirstOrDefault(s => s.HasValue);
+
             var candidate = new LiveCandidate
             {
                 LiveSessionId = sessionId,
@@ -536,6 +634,7 @@ Transcripción:
                 ClientNameSpoken = group.Key.ClientNameSpoken[..Math.Min(group.Key.ClientNameSpoken.Length, 200)],
                 Source = LiveCandidateSource.Spoken,
                 Status = LiveCandidateStatus.Pending,
+                SpokenAtSeconds = spokenAtSeconds,
             };
 
             db.LiveCandidates.Add(candidate);
@@ -556,5 +655,6 @@ Transcripción:
             c.ClientNameSpoken, c.CommentDisplayName,
             c.ResolvedClientId, c.ResolvedClient?.Name,
             c.ProposedAliasPairJson,
-            c.Source.ToString(), c.Status.ToString());
+            c.Source.ToString(), c.Status.ToString(),
+            c.SpokenAtSeconds);
 }
