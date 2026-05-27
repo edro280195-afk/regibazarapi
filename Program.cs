@@ -127,6 +127,7 @@ builder.Services.AddScoped<ITandaService, TandaService>();
 builder.Services.AddScoped<IRaffleService, RaffleService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
+builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();

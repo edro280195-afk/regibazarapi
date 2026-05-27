@@ -861,3 +861,53 @@ public record ClientAliasDto(
     string Source,
     int TimesSeen,
     DateTime CreatedAt);
+
+// ── Live Capture ──
+
+public record ImportLiveRequest(string FacebookUrl, string? Title = null);
+
+public record LiveSessionDto(
+    int Id,
+    string FacebookUrl,
+    string? Title,
+    string Status,
+    string? StatusDetail,
+    DateTime ImportedAt,
+    DateTime? ProcessedAt,
+    double? DurationSeconds,
+    int ProductCount,
+    int CandidateCount,
+    int PendingCount);
+
+public record LiveProductDto(
+    int Id,
+    string Keyword,
+    string? Description,
+    decimal Price,
+    double? AnnouncedAtSeconds,
+    int CandidateCount);
+
+public record LiveCandidateDto(
+    int Id,
+    string Keyword,
+    int? LiveProductId,
+    string? ClientNameSpoken,
+    string? CommentDisplayName,
+    int? ResolvedClientId,
+    string? ResolvedClientName,
+    string? ProposedAliasPairJson,
+    string Source,   // "Spoken" | "Comment" | "SpokenAndComment"
+    string Status);  // "Pending" | "Confirmed" | "Ignored"
+
+public record LiveReviewDto(
+    LiveSessionDto Session,
+    List<LiveProductDto> Products,
+    Dictionary<int, List<LiveCandidateDto>> CandidatesByProduct,
+    List<LiveCandidateDto> UnmatchedCandidates);
+
+public record ConfirmCandidateRequest(
+    int? ClientId = null,          // null = create new client
+    string? ClientName = null,     // used when creating new client
+    string? ProductOverride = null,
+    decimal? PriceOverride = null,
+    bool AcceptAlias = false);

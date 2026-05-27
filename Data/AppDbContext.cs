@@ -44,6 +44,13 @@ public class AppDbContext : DbContext
     // Identidad multi-señal de clientas
     public DbSet<ClientAlias> ClientAliases => Set<ClientAlias>();
 
+    // Live Capture pipeline
+    public DbSet<LiveSession> LiveSessions => Set<LiveSession>();
+    public DbSet<LiveProduct> LiveProducts => Set<LiveProduct>();
+    public DbSet<LiveSpokenOrder> LiveSpokenOrders => Set<LiveSpokenOrder>();
+    public DbSet<LiveCommentOrder> LiveCommentOrders => Set<LiveCommentOrder>();
+    public DbSet<LiveCandidate> LiveCandidates => Set<LiveCandidate>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -90,6 +97,19 @@ public class AppDbContext : DbContext
             entity.HasIndex(a => a.ClientId)
                   .HasDatabaseName("IX_ClientAliases_ClientId");
         });
+
+        // Live Capture pipeline
+        modelBuilder.Entity<LiveCandidate>()
+            .HasOne(c => c.LiveSession)
+            .WithMany(s => s.Candidates)
+            .HasForeignKey(c => c.LiveSessionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<LiveCandidate>()
+            .HasOne(c => c.LiveProduct)
+            .WithMany(p => p.Candidates)
+            .HasForeignKey(c => c.LiveProductId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         modelBuilder.Entity<TandaParticipant>()
             .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })

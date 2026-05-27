@@ -16,6 +16,7 @@ public interface IGeminiService
     Task<string> GetClientInsightAsync(object clientData);
     Task<string> GetRouteBriefingAsync(object routeData);
     Task<PosVoiceResponse> ParsePosVoiceAsync(string text, object? currentState = null);
+    Task<string> CallGeminiJsonAsync(string prompt);
 }
 
 public class GeminiService : IGeminiService
@@ -285,6 +286,26 @@ Datos de ruta: {json}";
         var response = await _client.Models.GenerateContentAsync("gemini-1.5-flash", contents, config);
         return response.Text?.Trim() ?? "Ruta lista. Revisa las paradas en tu pantalla.";
     }
+    public async Task<string> CallGeminiJsonAsync(string prompt)
+    {
+        try
+        {
+            var config = new GenerateContentConfig
+            {
+                Temperature = 0.1f,
+                ResponseMimeType = "application/json"
+            };
+
+            var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", prompt, config);
+            return response?.Text ?? "[]";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error en CallGeminiJsonAsync");
+            return "[]";
+        }
+    }
+
     public async Task<PosVoiceResponse> ParsePosVoiceAsync(string text, object? currentState = null)
     {
         try
