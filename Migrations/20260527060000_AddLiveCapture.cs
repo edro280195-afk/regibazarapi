@@ -1,3 +1,5 @@
+using EntregasApi.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -5,6 +7,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace EntregasApi.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(AppDbContext))]
+    [Migration("20260527060000_AddLiveCapture")]
     public partial class AddLiveCapture : Migration
     {
         /// <inheritdoc />
