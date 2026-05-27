@@ -376,6 +376,14 @@ public class LiveCaptureService : ILiveCaptureService
             // 3. Parse
             session.Status = LiveSessionStatus.Parsing;
             session.StatusDetail = $"Transcripcion lista: {segments.Count} segmentos. Detectando productos...";
+            
+            var timedLines = segments.Select(s =>
+            {
+                var ts = TimeSpan.FromSeconds(s.StartSeconds);
+                return $"[{ts:hh\\:mm\\:ss}] {s.Text.Trim()}";
+            });
+            session.Transcript = string.Join("\n", timedLines);
+            
             await db.SaveChangesAsync();
 
             var products = await DetectProductsAsync(gemini, segments, sessionId);
@@ -665,9 +673,10 @@ public class LiveCaptureService : ILiveCaptureService
             var chunkFile = chunkFiles[i];
             var timeOffset = i * chunkSeconds;
 
-            _logger.LogInformation("Transcribiendo fragmento {Index}/{Total}: {File}", i + 1, chunkFiles.Count, chunkFile);
-
             var chunkSegments = await WhisperTranscribeAsync(chunkFile);
+
+            var chunkText = string.Join(" ", chunkSegments.Select(s => s.Text?.Trim()).Where(t => !string.IsNullOrEmpty(t)));
+            _logger.LogInformation("Fragmento {Index}/{Total} transcrito. Texto extraido: {Text}", i + 1, chunkFiles.Count, chunkText);
 
             foreach (var seg in chunkSegments)
             {
@@ -880,7 +889,8 @@ Transcripción timbrada:
     private static LiveSessionDto MapSessionDto(LiveSession s, int productCount, int candidateCount, int pendingCount) =>
         new(s.Id, s.FacebookUrl, s.Title, s.Status.ToString(), s.StatusDetail,
             s.ImportedAt, s.ProcessedAt, s.DurationSeconds,
-            productCount, candidateCount, pendingCount);
+            productCount, candidateCount, pendingCount,
+            s.Transcript);
 
     private static LiveCandidateDto MapCandidateDto(LiveCandidate c) =>
         new(c.Id, c.Keyword, c.LiveProductId,

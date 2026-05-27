@@ -887,7 +887,8 @@ public record LiveSessionDto(
     double? DurationSeconds,
     int ProductCount,
     int CandidateCount,
-    int PendingCount);
+    int PendingCount,
+    string? Transcript = null);
 
 public record LiveProductDto(
     int Id,
