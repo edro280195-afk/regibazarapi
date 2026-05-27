@@ -623,12 +623,19 @@ public class LiveCaptureService : ILiveCaptureService
         };
         psi.ArgumentList.Add("-i");
         psi.ArgumentList.Add(filePath);
+        psi.ArgumentList.Add("-vn");
         psi.ArgumentList.Add("-f");
         psi.ArgumentList.Add("segment");
         psi.ArgumentList.Add("-segment_time");
         psi.ArgumentList.Add(chunkSeconds.ToString());
-        psi.ArgumentList.Add("-c");
-        psi.ArgumentList.Add("copy");
+        psi.ArgumentList.Add("-c:a");
+        psi.ArgumentList.Add("libmp3lame");
+        psi.ArgumentList.Add("-b:a");
+        psi.ArgumentList.Add("64k");
+        psi.ArgumentList.Add("-ac");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-ar");
+        psi.ArgumentList.Add("22050");
         psi.ArgumentList.Add(chunkPattern);
 
         using var process = Process.Start(psi) ?? throw new InvalidOperationException("No se pudo iniciar ffmpeg para segmentar el audio.");
