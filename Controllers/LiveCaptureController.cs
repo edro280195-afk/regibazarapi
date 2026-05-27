@@ -27,8 +27,15 @@ public class LiveCaptureController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.FacebookUrl))
             return BadRequest("FacebookUrl es requerida");
 
-        var session = await _svc.ImportAsync(req.FacebookUrl, req.Title);
-        return Ok(ToDto(session, 0, 0, 0));
+        try
+        {
+            var session = await _svc.ImportAsync(req.FacebookUrl, req.Title);
+            return Ok(ToDto(session, 0, 0, 0));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
     }
 
     /// <summary>

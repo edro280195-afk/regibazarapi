@@ -36,10 +36,12 @@ public class LiveCaptureService : ILiveCaptureService
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var normalizedUrl = NormalizeLiveUrl(facebookUrl);
+        EnsureSupportedLiveUrl(normalizedUrl);
 
         var session = new LiveSession
         {
-            FacebookUrl = facebookUrl,
+            FacebookUrl = normalizedUrl,
             Title = title,
             Status = LiveSessionStatus.Queued,
             ImportedAt = DateTime.UtcNow,
@@ -395,17 +397,13 @@ public class LiveCaptureService : ILiveCaptureService
     private async Task<string?> DownloadAudioAsync(int sessionId, string url)
     {
         var outputTemplate = $"/tmp/live_{sessionId}.%(ext)s";
+        var normalizedUrl = NormalizeLiveUrl(url);
 
-        // Only try yt-dlp for supported platforms
-        if (!url.Contains("youtube") && !url.Contains("youtu.be") && !url.Contains("facebook.com"))
-        {
-            _logger.LogWarning("URL {Url} is not a supported platform; skipping download", url);
-            return null;
-        }
+        EnsureSupportedLiveUrl(normalizedUrl);
 
         try
         {
-            await RunYtDlpDownloadAsync(outputTemplate, url);
+            await RunYtDlpDownloadAsync(outputTemplate, normalizedUrl);
 
             // Find the downloaded file
             var files = Directory.GetFiles("/tmp", $"live_{sessionId}.*");
@@ -415,6 +413,44 @@ public class LiveCaptureService : ILiveCaptureService
         {
             throw new InvalidOperationException($"Download failed: {ex.Message}", ex);
         }
+    }
+
+    private static string NormalizeLiveUrl(string url)
+    {
+        var normalized = (url ?? string.Empty).Trim().Trim('"', '\'');
+
+        if (normalized.StartsWith("hhttps://", StringComparison.OrdinalIgnoreCase))
+            normalized = "https://" + normalized["hhttps://".Length..];
+
+        if (normalized.StartsWith("hhttp://", StringComparison.OrdinalIgnoreCase))
+            normalized = "http://" + normalized["hhttp://".Length..];
+
+        if (normalized.StartsWith("ttps://", StringComparison.OrdinalIgnoreCase))
+            normalized = "h" + normalized;
+
+        if (normalized.StartsWith("ttp://", StringComparison.OrdinalIgnoreCase))
+            normalized = "h" + normalized;
+
+        return normalized;
+    }
+
+    private static void EnsureSupportedLiveUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            throw new ArgumentException("Pega un URL valido que empiece con https://");
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        var supported =
+            host == "fb.watch" ||
+            host.EndsWith("facebook.com") ||
+            host.EndsWith("youtube.com") ||
+            host == "youtu.be";
+
+        if (!supported)
+            throw new ArgumentException("El URL debe ser de Facebook o YouTube.");
     }
 
     private async Task RunYtDlpDownloadAsync(string outputTemplate, string url)
