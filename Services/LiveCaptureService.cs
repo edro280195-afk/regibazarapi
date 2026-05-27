@@ -367,7 +367,8 @@ public class LiveCaptureService : ILiveCaptureService
             session.StatusDetail = "Transcribiendo audio con Whisper...";
             await db.SaveChangesAsync();
 
-            var segments = await WhisperTranscribeAsync(audioFilePath);
+            var chunkSeconds = _config.GetValue<int>("LiveCapture:AudioChunkSeconds", 600);
+            var segments = await TranscribeInChunksAsync(audioFilePath, sessionId, chunkSeconds);
             var transcriptTextLength = segments.Sum(s => s.Text?.Length ?? 0);
             if (segments.Count == 0 || transcriptTextLength < 20)
                 throw new InvalidOperationException("Whisper no devolvio texto suficiente para analizar el live.");
@@ -601,6 +602,65 @@ public class LiveCaptureService : ILiveCaptureService
             _logger.LogError(ex, "Whisper transcription failed");
             throw new InvalidOperationException($"Whisper no pudo transcribir el audio: {ex.Message}", ex);
         }
+    }
+
+    private async Task<List<TranscriptSegment>> TranscribeInChunksAsync(string filePath, int sessionId, int chunkSeconds)
+    {
+        var allSegments = new List<TranscriptSegment>();
+        var chunkPattern = $"/tmp/live_{sessionId}_chunk_%03d.mp3";
+
+        // Limpiar fragmentos viejos si los hubiera
+        foreach (var file in Directory.GetFiles("/tmp", $"live_{sessionId}_chunk_*"))
+        {
+            try { File.Delete(file); } catch { }
+        }
+
+        var psi = new ProcessStartInfo("ffmpeg")
+        {
+            Arguments = $"-i \"{filePath}\" -f segment -segment_time {chunkSeconds} -c copy \"{chunkPattern}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("No se pudo iniciar ffmpeg para segmentar el audio.");
+        
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        await process.WaitForExitAsync(cts.Token);
+        
+        if (process.ExitCode != 0)
+        {
+            var err = await process.StandardError.ReadToEndAsync();
+            throw new InvalidOperationException($"ffmpeg fallo al segmentar: {err}");
+        }
+
+        var chunkFiles = Directory.GetFiles("/tmp", $"live_{sessionId}_chunk_*").OrderBy(f => f).ToList();
+        
+        if (chunkFiles.Count == 0)
+        {
+            throw new InvalidOperationException("ffmpeg no genero ningun fragmento de audio.");
+        }
+
+        for (int i = 0; i < chunkFiles.Count; i++)
+        {
+            var chunkFile = chunkFiles[i];
+            var timeOffset = i * chunkSeconds;
+
+            _logger.LogInformation("Transcribiendo fragmento {Index}/{Total}: {File}", i + 1, chunkFiles.Count, chunkFile);
+
+            var chunkSegments = await WhisperTranscribeAsync(chunkFile);
+
+            foreach (var seg in chunkSegments)
+            {
+                var start = seg.StartSeconds + timeOffset;
+                var end = seg.EndSeconds + timeOffset;
+                allSegments.Add(new TranscriptSegment(start, end, seg.Text));
+            }
+
+            try { File.Delete(chunkFile); } catch { }
+        }
+
+        return allSegments;
     }
 
     private async Task<List<LiveProduct>> DetectProductsAsync(IGeminiService gemini, List<TranscriptSegment> segments, int sessionId)
