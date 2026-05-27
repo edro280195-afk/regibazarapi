@@ -621,6 +621,9 @@ public class LiveCaptureService : ILiveCaptureService
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("error");
         psi.ArgumentList.Add("-i");
         psi.ArgumentList.Add(filePath);
         psi.ArgumentList.Add("-vn");
@@ -646,6 +649,7 @@ public class LiveCaptureService : ILiveCaptureService
         if (process.ExitCode != 0)
         {
             var err = await process.StandardError.ReadToEndAsync();
+            _logger.LogError("ffmpeg segmenting failed. ExitCode={Code}, Stderr={Stderr}", process.ExitCode, err);
             throw new InvalidOperationException($"ffmpeg fallo al segmentar: {err}");
         }
 
