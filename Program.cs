@@ -67,6 +67,12 @@ ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
 // ── HTTP Client (Mercado Pago y otras llamadas externas) ──
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient<IOpenAiTranscriptionService, OpenAiTranscriptionService>();
+
+// Captura asistida por video de lives
+builder.Services.Configure<LiveCaptureOptions>(builder.Configuration.GetSection("LiveCapture"));
+builder.Services.Configure<OpenAiOptions>(builder.Configuration.GetSection("OpenAI"));
+builder.Services.Configure<CloudflareR2Options>(builder.Configuration.GetSection("CloudflareR2"));
 
 // ── Database ──
 var connectionString = builder.Configuration.GetConnectionString("Default");
@@ -127,6 +133,12 @@ builder.Services.AddScoped<ITandaService, TandaService>();
 builder.Services.AddScoped<IRaffleService, RaffleService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
+builder.Services.AddSingleton<IExternalProcessRunner, ExternalProcessRunner>();
+builder.Services.AddScoped<ILiveStorageService, LiveStorageService>();
+builder.Services.AddScoped<ILiveTimelineBuilder, LiveTimelineBuilder>();
+builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
+builder.Services.AddSingleton<ILiveCaptureQueue, LiveCaptureQueue>();
+builder.Services.AddHostedService<LiveCaptureBackgroundService>();
 
 // ── SignalR ──
 builder.Services.AddSignalR();

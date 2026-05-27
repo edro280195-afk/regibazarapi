@@ -861,3 +861,66 @@ public record ClientAliasDto(
     string Source,
     int TimesSeen,
     DateTime CreatedAt);
+
+// ── Captura asistida por video de lives ──
+
+public record ImportLiveRequest(
+    string FacebookUrl,
+    string? Title = null);
+
+public record LiveSessionDto(
+    int Id,
+    string FacebookUrl,
+    string? R2Key,
+    string? Title,
+    DateTime ImportedAt,
+    string Status,
+    double? DurationSeconds,
+    DateTime? ProcessedAt,
+    string? ErrorMessage,
+    int ProductsCount,
+    int CandidatesCount,
+    int PendingCount,
+    int ConfirmedCount,
+    int IgnoredCount);
+
+public record LiveProductDto(
+    int Id,
+    string Keyword,
+    string Description,
+    decimal Price,
+    double AnnouncedAtSeconds,
+    double Confidence,
+    int CandidatesCount);
+
+public record ProposedAliasPairDto(
+    string Alias,
+    string CanonicalName);
+
+public record LiveCandidateDto(
+    int Id,
+    int LiveSessionId,
+    int? LiveProductId,
+    string Keyword,
+    string? ProductDescription,
+    decimal? ProductPrice,
+    string? ClientNameSpoken,
+    string? CommentDisplayName,
+    int? ResolvedClientId,
+    string? ResolvedClientName,
+    ProposedAliasPairDto? ProposedAliasPair,
+    string Source,
+    string Status,
+    double Confidence,
+    double? SpokenAtSeconds,
+    double? CommentedAtSeconds,
+    int? CreatedOrderId,
+    DateTime CreatedAt,
+    DateTime? ReviewedAt,
+    ResolveClientResponse? Resolution = null);
+
+public record ConfirmLiveCandidateRequest(
+    int? ClientId = null,
+    string? ProductOverride = null,
+    decimal? PriceOverride = null,
+    bool AcceptProposedAlias = true);

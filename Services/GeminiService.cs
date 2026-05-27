@@ -2,14 +2,19 @@ using System.Text.Json;
 using Google.GenAI;
 using Google.GenAI.Types;
 using EntregasApi.DTOs;
+using EntregasApi.Models;
 
 namespace EntregasApi.Services;
 
 public record AiParsedOrder(string ClientName, string ProductName, int Quantity, decimal UnitPrice);
+public record LiveProductDetection(string Keyword, string Description, decimal Price, double AnnouncedAtSeconds, double Confidence = 0.8);
+public record LiveSpokenOrderDetection(string Keyword, string ClientNameSpoken, double SpokenAtSeconds, double Confidence = 0.8);
 
 public interface IGeminiService
 {
     Task<List<AiParsedOrder>> ParseLiveTextAsync(string text, List<AiParsedOrder>? currentState = null);
+    Task<List<LiveProductDetection>> DetectLiveProductsAsync(IReadOnlyList<LiveTranscriptSegment> transcriptWindow);
+    Task<List<LiveSpokenOrderDetection>> DetectLiveSpokenOrdersAsync(IReadOnlyList<LiveTranscriptSegment> transcriptWindow);
     Task<List<AiInsightDto>> AnalyzeReportAsync(JsonElement report);
     Task<AiRouteSelectionResponse> SelectOrdersForRouteAsync(AiRouteSelectionRequest request);
     Task<string> GetDashboardInsightAsync(object dashboardData);
@@ -99,6 +104,79 @@ Reglas Vitales:
             _logger.LogError(ex, "Se cayó la conexión con Google API.");
             throw; // Mantenemos la alerta para el Frontend
         }
+    }
+
+    public async Task<List<LiveProductDetection>> DetectLiveProductsAsync(IReadOnlyList<LiveTranscriptSegment> transcriptWindow)
+    {
+        if (transcriptWindow.Count == 0) return new List<LiveProductDetection>();
+
+        var transcriptText = BuildTimedTranscript(transcriptWindow);
+        var systemInstruction = @"Eres el detector de catalogo para lives de Regi Bazar.
+Tu tarea es encontrar SOLO frases donde la vendedora anuncia un producto con palabra-clave y precio.
+
+Ejemplos validos:
+- esta es de 100, me la piden con la palabra botones
+- la azul sale en 120 y la clave es azul
+- esta toalla roja de 80, comenten toalla
+
+No extraigas pedidos, chistes, saludos, ni conversaciones sin precio o sin palabra-clave.
+Devuelve JSON puro con esta forma:
+[
+  { ""keyword"": ""botones"", ""description"": ""blusa de botones"", ""price"": 100, ""announcedAtSeconds"": 123.4, ""confidence"": 0.91 }
+]
+Reglas:
+1. keyword debe ser corta, como la palabra que la clienta comenta.
+2. description debe describir el producto, no el nombre de la clienta.
+3. price es decimal en pesos mexicanos.
+4. announcedAtSeconds debe salir del timestamp mas cercano del transcript.
+5. Si no hay anuncios claros, devuelve [].";
+
+        var config = new GenerateContentConfig
+        {
+            SystemInstruction = new Content { Role = "system", Parts = new List<Part> { new Part { Text = systemInstruction } } },
+            ResponseMimeType = "application/json",
+            Temperature = 0.1f
+        };
+
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", transcriptText, config);
+        return ParseJsonList<LiveProductDetection>(response?.Text);
+    }
+
+    public async Task<List<LiveSpokenOrderDetection>> DetectLiveSpokenOrdersAsync(IReadOnlyList<LiveTranscriptSegment> transcriptWindow)
+    {
+        if (transcriptWindow.Count == 0) return new List<LiveSpokenOrderDetection>();
+
+        var transcriptText = BuildTimedTranscript(transcriptWindow);
+        var systemInstruction = @"Eres el detector de lectura de pedidos para lives de Regi Bazar.
+Tu tarea es encontrar SOLO frases donde la vendedora asigna una palabra-clave/producto a una clienta.
+
+Ejemplos validos:
+- botones para YG YG
+- Lupe se lleva azul
+- apuntame una de rosa a Blanca Ruiz
+- azul para Blanca, botones para YG YG
+
+Ignora anuncios de producto, saludos, bromas y conversacion normal.
+Devuelve JSON puro con esta forma:
+[
+  { ""keyword"": ""botones"", ""clientNameSpoken"": ""YG YG"", ""spokenAtSeconds"": 456.2, ""confidence"": 0.88 }
+]
+Reglas:
+1. keyword es la palabra-clave o producto mencionado.
+2. clientNameSpoken es el nombre tal como se dijo, aunque sea raro.
+3. Si una frase contiene varios pedidos, devuelve un objeto por pedido.
+4. spokenAtSeconds debe salir del timestamp mas cercano del transcript.
+5. Si no hay pedidos claros, devuelve [].";
+
+        var config = new GenerateContentConfig
+        {
+            SystemInstruction = new Content { Role = "system", Parts = new List<Part> { new Part { Text = systemInstruction } } },
+            ResponseMimeType = "application/json",
+            Temperature = 0.1f
+        };
+
+        var response = await _client.Models.GenerateContentAsync("gemini-2.5-flash", transcriptText, config);
+        return ParseJsonList<LiveSpokenOrderDetection>(response?.Text);
     }
 
     public async Task<List<AiInsightDto>> AnalyzeReportAsync(JsonElement report)
@@ -339,6 +417,33 @@ NUNCA devuelvas Markdown (```json), solo el JSON crudo.";
         {
             _logger.LogError(ex, "Error en ParsePosVoiceAsync");
             return new PosVoiceResponse("Tuve un pequeño tropiezo con la señal, ¿me dices de nuevo? ✨", null, new List<PosVoiceAction>());
+        }
+    }
+
+    private static string BuildTimedTranscript(IReadOnlyList<LiveTranscriptSegment> segments)
+    {
+        return string.Join("\n", segments.Select(s => $"[{s.StartSeconds:0.0}s] {s.Text}"));
+    }
+
+    private static List<T> ParseJsonList<T>(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText)) return new List<T>();
+
+        var cleanJson = rawText
+            .Replace("```json", "")
+            .Replace("```", "")
+            .Trim();
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<T>>(cleanJson, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            }) ?? new List<T>();
+        }
+        catch
+        {
+            return new List<T>();
         }
     }
 }

@@ -44,6 +44,15 @@ public class AppDbContext : DbContext
     // Identidad multi-señal de clientas
     public DbSet<ClientAlias> ClientAliases => Set<ClientAlias>();
 
+    // Captura asistida por video de lives
+    public DbSet<LiveSession> LiveSessions => Set<LiveSession>();
+    public DbSet<LiveTranscriptSegment> LiveTranscriptSegments => Set<LiveTranscriptSegment>();
+    public DbSet<LiveProduct> LiveProducts => Set<LiveProduct>();
+    public DbSet<LiveSpokenOrder> LiveSpokenOrders => Set<LiveSpokenOrder>();
+    public DbSet<LiveComment> LiveComments => Set<LiveComment>();
+    public DbSet<LiveCommentOrder> LiveCommentOrders => Set<LiveCommentOrder>();
+    public DbSet<LiveCandidate> LiveCandidates => Set<LiveCandidate>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -91,6 +100,110 @@ public class AppDbContext : DbContext
                   .HasDatabaseName("IX_ClientAliases_ClientId");
         });
 
+        // Captura asistida por video de lives
+        modelBuilder.Entity<LiveSession>(entity =>
+        {
+            entity.HasIndex(s => s.Status);
+            entity.HasIndex(s => s.ImportedAt);
+
+            entity.Property(s => s.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(40);
+        });
+
+        modelBuilder.Entity<LiveTranscriptSegment>(entity =>
+        {
+            entity.HasIndex(s => new { s.LiveSessionId, s.StartSeconds });
+
+            entity.HasOne(s => s.LiveSession)
+                  .WithMany(l => l.TranscriptSegments)
+                  .HasForeignKey(s => s.LiveSessionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LiveProduct>(entity =>
+        {
+            entity.HasIndex(p => new { p.LiveSessionId, p.NormalizedKeyword });
+            entity.HasIndex(p => p.NormalizedKeyword);
+
+            entity.HasOne(p => p.LiveSession)
+                  .WithMany(l => l.Products)
+                  .HasForeignKey(p => p.LiveSessionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LiveSpokenOrder>(entity =>
+        {
+            entity.HasIndex(o => new { o.LiveSessionId, o.NormalizedKeyword });
+            entity.HasIndex(o => o.SpokenAtSeconds);
+
+            entity.HasOne(o => o.LiveSession)
+                  .WithMany(l => l.SpokenOrders)
+                  .HasForeignKey(o => o.LiveSessionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LiveComment>(entity =>
+        {
+            entity.HasIndex(c => new { c.LiveSessionId, c.TimestampSeconds });
+
+            entity.HasOne(c => c.LiveSession)
+                  .WithMany(l => l.Comments)
+                  .HasForeignKey(c => c.LiveSessionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LiveCommentOrder>(entity =>
+        {
+            entity.HasIndex(o => new { o.LiveSessionId, o.NormalizedKeyword });
+            entity.HasIndex(o => o.CommentedAtSeconds);
+
+            entity.HasOne(o => o.LiveSession)
+                  .WithMany(l => l.CommentOrders)
+                  .HasForeignKey(o => o.LiveSessionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(o => o.LiveComment)
+                  .WithMany()
+                  .HasForeignKey(o => o.LiveCommentId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LiveCandidate>(entity =>
+        {
+            entity.HasIndex(c => new { c.LiveSessionId, c.Status });
+            entity.HasIndex(c => new { c.LiveSessionId, c.NormalizedKeyword });
+            entity.HasIndex(c => c.ResolvedClientId);
+
+            entity.Property(c => c.Source)
+                  .HasConversion<string>()
+                  .HasMaxLength(40);
+
+            entity.Property(c => c.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(40);
+
+            entity.HasOne(c => c.LiveSession)
+                  .WithMany(l => l.Candidates)
+                  .HasForeignKey(c => c.LiveSessionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(c => c.LiveProduct)
+                  .WithMany(p => p.Candidates)
+                  .HasForeignKey(c => c.LiveProductId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(c => c.ResolvedClient)
+                  .WithMany()
+                  .HasForeignKey(c => c.ResolvedClientId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(c => c.CreatedOrder)
+                  .WithMany()
+                  .HasForeignKey(c => c.CreatedOrderId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
         modelBuilder.Entity<TandaParticipant>()
             .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })
             .IsUnique()
@@ -103,7 +216,8 @@ public class AppDbContext : DbContext
             .HasOne(o => o.Delivery)
             .WithOne(d => d.Order)
             .HasForeignKey<Delivery>(d => d.OrderId)
-            .IsRequired(false);
+            .IsRequired(false)
+            .OnDelete(DeleteBehavior.Cascade);
 
         // Delivery -> TandaParticipant (many-to-one opcional; XOR con OrderId)
         modelBuilder.Entity<Delivery>(entity =>
@@ -114,6 +228,10 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Restrict);
 
             entity.HasIndex(d => d.TandaParticipantId);
+
+            entity.HasIndex(d => d.OrderId)
+                  .IsUnique()
+                  .HasFilter("\"OrderId\" IS NOT NULL");
 
             // Garantiza el XOR: exactamente uno de OrderId / TandaParticipantId debe estar presente.
             entity.ToTable(t => t.HasCheckConstraint(
