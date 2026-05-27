@@ -80,7 +80,7 @@ public class ClientsController : ControllerBase
     /// <summary>
     /// POST /api/clients/{id}/set-coordinates - Guarda lat/lng explícitas (uso del map picker).
     /// </summary>
-    [HttpPost("{id}/set-coordinates")]
+    [HttpPost("{id:int}/set-coordinates")]
     public async Task<IActionResult> SetCoordinates(int id, [FromBody] SetClientCoordinatesRequest req)
     {
         var c = await _db.Clients.FindAsync(id);
@@ -132,7 +132,7 @@ public class ClientsController : ControllerBase
         return Ok(clients);
     }
 
-    [HttpGet("{id}")]
+    [HttpGet("{id:int}")]
     public async Task<ActionResult<ClientDto>> GetById(int id)
     {
         var c = await _db.Clients
@@ -159,7 +159,7 @@ public class ClientsController : ControllerBase
         return Ok(new ClientDto(c.Id, c.Name, c.Phone, c.Address, c.Tag.ToString(), c.OrdersCount, c.TotalSpent, c.Type, c.DeliveryInstructions, Latitude: c.Latitude, Longitude: c.Longitude));
     }
 
-    [HttpPut("{id}")]
+    [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(int id, [FromBody] UpdateClientRequest req)
     {
         var client = await _db.Clients.FindAsync(id);
@@ -173,8 +173,17 @@ public class ClientsController : ControllerBase
         // desde formularios parciales (guardar solo dirección, solo tag, etc.) y antes
         // borraba los datos previamente capturados.
         client.Name = req.Name;
-        if (!string.IsNullOrWhiteSpace(req.Phone)) client.Phone = req.Phone;
-        if (!string.IsNullOrWhiteSpace(req.Address)) client.Address = req.Address;
+        client.NormalizedName = TextNormalizer.NormalizeName(req.Name);
+        if (!string.IsNullOrWhiteSpace(req.Phone))
+        {
+            client.Phone = req.Phone;
+            client.NormalizedPhone = TextNormalizer.NormalizePhone(req.Phone);
+        }
+        if (!string.IsNullOrWhiteSpace(req.Address))
+        {
+            client.Address = req.Address;
+            client.NormalizedAddress = TextNormalizer.NormalizeAddress(req.Address);
+        }
         client.Type = req.Type;
         if (!string.IsNullOrWhiteSpace(req.DeliveryInstructions)) client.DeliveryInstructions = req.DeliveryInstructions;
 
@@ -193,7 +202,7 @@ public class ClientsController : ControllerBase
         return NoContent();
     }
 
-    [HttpDelete("{id}")]
+    [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
         var client = await _db.Clients.FindAsync(id);
@@ -219,6 +228,7 @@ public class ClientsController : ControllerBase
         await _db.OrderItems.ExecuteDeleteAsync();
         await _db.Deliveries.ExecuteDeleteAsync();
         await _db.Orders.ExecuteDeleteAsync();
+        await _db.ClientAliases.ExecuteDeleteAsync();
 
         await _db.Clients.ExecuteDeleteAsync();
 

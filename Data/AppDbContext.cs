@@ -41,6 +41,9 @@ public class AppDbContext : DbContext
     public DbSet<RaffleEntry> RaffleEntries => Set<RaffleEntry>();
     public DbSet<RaffleDraw> RaffleDraws => Set<RaffleDraw>();
 
+    // Identidad multi-señal de clientas
+    public DbSet<ClientAlias> ClientAliases => Set<ClientAlias>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -61,6 +64,32 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Client>()
             .HasIndex(c => c.Name)
             .IsUnique();
+
+        // Identidad multi-señal: campos normalizados + alias
+        modelBuilder.Entity<Client>(entity =>
+        {
+            entity.Property(c => c.NormalizedName)
+                  .IsRequired()
+                  .HasDefaultValue(string.Empty);
+
+            entity.HasIndex(c => c.NormalizedPhone)
+                  .HasDatabaseName("IX_Clients_NormalizedPhone");
+
+            entity.HasMany(c => c.Aliases)
+                  .WithOne(a => a.Client!)
+                  .HasForeignKey(a => a.ClientId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClientAlias>(entity =>
+        {
+            entity.HasIndex(a => a.NormalizedAlias)
+                  .IsUnique()
+                  .HasDatabaseName("IX_ClientAliases_NormalizedAlias");
+
+            entity.HasIndex(a => a.ClientId)
+                  .HasDatabaseName("IX_ClientAliases_ClientId");
+        });
 
         modelBuilder.Entity<TandaParticipant>()
             .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })

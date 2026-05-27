@@ -26,5 +26,12 @@ public class Client
     public int CurrentPoints { get; set; } = 0;
     public int LifetimePoints { get; set; } = 0;
     public string? DeliveryInstructions { get; set; }
+
+    // Identidad normalizada para fuzzy matching y resolución multi-señal
+    public string NormalizedName { get; set; } = string.Empty;
+    public string? NormalizedPhone { get; set; }
+    public string? NormalizedAddress { get; set; }
+
     public ICollection<Order> Orders { get; set; } = new List<Order>();
+    public ICollection<ClientAlias> Aliases { get; set; } = new List<ClientAlias>();
 }
