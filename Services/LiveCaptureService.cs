@@ -705,14 +705,19 @@ public class LiveCaptureService : ILiveCaptureService
             });
             var timedTranscript = string.Join("\n", timedLines);
 
-            var prompt = $@"Eres un asistente que analiza la transcripción timbrada de un Facebook Live de ventas en español.
+            var prompt = $@"Eres un asistente experto en analizar transcripciones de ventas en vivo en Facebook de tiendas mexicanas (Live mode).
 Cada línea tiene el formato [HH:MM:SS] texto.
-Extrae TODOS los productos que la dueña anuncia con su palabra clave y precio.
-Para cada uno incluye el segundo exacto (en segundos desde el inicio) en que fue anunciado.
-Responde SOLO con JSON array, sin Markdown:
-[{{""keyword"":""botones"",""description"":""blusa de botones rosa"",""price"":120,""announcedAtSeconds"":45.0}}]
+Tu tarea es extraer TODOS los productos que la vendedora anuncia para vender. 
+Normalmente anuncia un producto diciendo su nombre (ej. 'cortinas de baño', 'sábanas', 'blusa'), su palabra clave (keyword) para pedirlo (usando frases como: 'me la pides con la palabra X', 'apúntame X', 'pídemelo como X', 'palabra clave X'), y su precio en pesos mexicanos (que a veces se dice en palabras como 'ciento treinta', 'noventa', 'cincuenta').
 
-Transcripción timbrada:
+Instrucciones:
+1. Convierte los precios en palabras a números (ej. 'ciento treinta' -> 130, 'noventa' -> 90).
+2. La keyword suele ser una palabra corta (colores como 'azul', 'blanca', 'uva', o descripciones como 'palo', 'argollas').
+3. Identifica en qué segundo exacto (announcedAtSeconds) se menciona por primera vez el producto y su keyword.
+4. Responde ÚNICAMENTE con un arreglo JSON, sin bloques de código Markdown ni explicaciones:
+[{{""keyword"":""palo"",""description"":""cortina de baño rosa palo"",""price"":130,""announcedAtSeconds"":10442.0}},{{""keyword"":""azul"",""description"":""cortina de baño azul"",""price"":130,""announcedAtSeconds"":10454.0}}]
+
+Transcripción del Live:
 {timedTranscript}";
 
             var json = await gemini.CallGeminiJsonAsync(prompt);
@@ -784,15 +789,22 @@ Transcripción timbrada:
             var timedTranscript = string.Join("\n", timedLines);
 
             var keywords = string.Join(", ", products.Select(p => p.Keyword));
-            var prompt = $@"Eres un asistente que analiza la transcripción timbrada de un Facebook Live de ventas en español.
+            var prompt = $@"Eres un asistente experto en analizar transcripciones de ventas en vivo de Facebook de tiendas mexicanas.
 Cada línea tiene el formato [HH:MM:SS] texto.
-Extrae TODAS las asignaciones de pedidos hablados por la dueña (frases como 'botones para Lupe', 'Lupe se lleva botones', 'apúntame una de azul a Patricia', etc.).
-Las keywords de los productos disponibles son: {keywords}.
-Para cada asignación devuelve el segundo exacto (en segundos desde el inicio del video) en que la dueña lo dijo.
-Responde SOLO con JSON array, sin Markdown:
-[{{""keyword"":""botones"",""clientName"":""Lupe López"",""spokenAtSeconds"":3723.0}}]
+Tu tarea es extraer TODAS las asignaciones de pedidos habladas por la vendedora. La dueña del live asigna productos a las clientas usando frases coloquiales como:
+- 'palo nos vamos con palo Wendy Nayeli' (asigna 'palo' a 'Wendy Nayeli')
+- 'el azul con alma esparza' o 'se fue el azul con alma esparza' (asigna 'azul' a 'Alma Esparza')
+- 'argollas Liz te pongo argollas' (asigna 'argollas' a 'Liz')
+- 'blanca Samantha G se te pongo' (asigna 'blanca' a 'Samantha G')
 
-Transcripción timbrada:
+Las palabras clave de los productos disponibles son únicamente: {keywords}.
+Busca cuándo la vendedora menciona que le asigna/pone ese producto a una clienta.
+
+Para cada asignación, devuelve el segundo exacto (spokenAtSeconds) en que se dijo.
+Responde ÚNICAMENTE con un arreglo JSON, sin bloques de código Markdown ni explicaciones:
+[{{""keyword"":""palo"",""clientName"":""Wendy Nayeli"",""spokenAtSeconds"":10538.0}},{{""keyword"":""azul"",""clientName"":""Alma Esparza"",""spokenAtSeconds"":10560.0}}]
+
+Transcripción del Live:
 {timedTranscript}";
 
             var json = await gemini.CallGeminiJsonAsync(prompt);
