@@ -12,6 +12,7 @@ public record TranscriptSegment(double StartSeconds, double EndSeconds, string T
 
 public class LiveCaptureService : ILiveCaptureService
 {
+    private static readonly string[] CommonYtDlpPaths = { "yt-dlp", "/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp" };
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _config;
     private readonly ILogger<LiveCaptureService> _logger;
@@ -404,25 +405,7 @@ public class LiveCaptureService : ILiveCaptureService
 
         try
         {
-            var psi = new ProcessStartInfo("yt-dlp")
-            {
-                Arguments = $"-f bestaudio -o \"{outputTemplate}\" {url}",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-
-            using var process = Process.Start(psi)
-                ?? throw new InvalidOperationException("Could not start yt-dlp");
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
-            await process.WaitForExitAsync(cts.Token);
-
-            if (process.ExitCode != 0)
-            {
-                var stderr = await process.StandardError.ReadToEndAsync();
-                throw new InvalidOperationException($"yt-dlp exited with code {process.ExitCode}: {stderr}");
-            }
+            await RunYtDlpDownloadAsync(outputTemplate, url);
 
             // Find the downloaded file
             var files = Directory.GetFiles("/tmp", $"live_{sessionId}.*");
@@ -432,6 +415,80 @@ public class LiveCaptureService : ILiveCaptureService
         {
             throw new InvalidOperationException($"Download failed: {ex.Message}", ex);
         }
+    }
+
+    private async Task RunYtDlpDownloadAsync(string outputTemplate, string url)
+    {
+        var errors = new List<string>();
+        var configuredPath = _config["LiveCapture:YtDlpPath"];
+        var directPaths = CommonYtDlpPaths
+            .Prepend(string.IsNullOrWhiteSpace(configuredPath) ? "yt-dlp" : configuredPath.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var fileName in directPaths)
+        {
+            try
+            {
+                await RunYtDlpProcessAsync(fileName, new[] { "-f", "bestaudio", "-o", outputTemplate, url }, fileName);
+                return;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{fileName}: {ex.Message}");
+                _logger.LogWarning(ex, "No se pudo ejecutar yt-dlp usando {FileName}", fileName);
+            }
+        }
+
+        var pythonPath = string.IsNullOrWhiteSpace(_config["LiveCapture:YtDlpPythonPath"])
+            ? "python3"
+            : _config["LiveCapture:YtDlpPythonPath"]!.Trim();
+
+        foreach (var fileName in new[] { pythonPath, "python" }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await RunYtDlpProcessAsync(
+                    fileName,
+                    new[] { "-m", "yt_dlp", "-f", "bestaudio", "-o", outputTemplate, url },
+                    $"{fileName} -m yt_dlp");
+                return;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{fileName} -m yt_dlp: {ex.Message}");
+                _logger.LogWarning(ex, "No se pudo ejecutar yt-dlp usando {FileName} -m yt_dlp", fileName);
+            }
+        }
+
+        throw new InvalidOperationException(
+            "No se pudo ejecutar yt-dlp. Verifica que Render este usando el Dockerfile del API o configura LiveCapture__YtDlpPath con la ruta absoluta del ejecutable. " +
+            $"Intentos: {string.Join(" | ", errors)}");
+    }
+
+    private static async Task RunYtDlpProcessAsync(string fileName, IEnumerable<string> arguments, string displayName)
+    {
+        var psi = new ProcessStartInfo(fileName)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException($"Could not start {displayName}");
+
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+        await process.WaitForExitAsync(cts.Token);
+
+        var stderr = await stderrTask;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"{displayName} exited with code {process.ExitCode}: {stderr}");
     }
 
     private async Task<List<TranscriptSegment>> WhisperTranscribeAsync(string? filePath)
