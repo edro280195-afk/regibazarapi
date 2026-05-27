@@ -127,4 +127,17 @@ public class ClientResolutionController : ControllerBase
         var suggestions = await _resolver.GetDuplicateSuggestionsAsync(capped);
         return Ok(suggestions);
     }
+
+    /// <summary>
+    /// GET /api/clients/merge-audits - Historial reciente de fusiones (automáticas y manuales).
+    /// </summary>
+    [HttpGet("merge-audits")]
+    public async Task<ActionResult<List<ClientMergeAuditDto>>> GetMergeAudits([FromQuery] int take = 50)
+    {
+        var audits = await _resolver.GetMergeAuditsAsync(take);
+        return audits.Select(a => new ClientMergeAuditDto(
+            a.Id, a.SourceClientId, a.SourceName, a.TargetClientId, a.TargetName,
+            a.Mode.ToString(), a.Reason, a.Confidence, a.OrdersMoved, a.AliasesMoved, a.MergedAt
+        )).ToList();
+    }
 }

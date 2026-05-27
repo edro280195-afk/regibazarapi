@@ -43,6 +43,7 @@ public class AppDbContext : DbContext
 
     // Identidad multi-señal de clientas
     public DbSet<ClientAlias> ClientAliases => Set<ClientAlias>();
+    public DbSet<ClientMergeAudit> ClientMergeAudits => Set<ClientMergeAudit>();
 
     // Live Capture pipeline
     public DbSet<LiveSession> LiveSessions => Set<LiveSession>();
