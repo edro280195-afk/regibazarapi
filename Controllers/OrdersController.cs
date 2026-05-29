@@ -220,6 +220,40 @@ public class OrdersController : ControllerBase
         return Ok(new PagedResult<OrderSummaryDto>(items, total, page, pageSize));
     }
 
+    /// <summary>
+    /// GET /api/orders/unpaid - Cuentas por cobrar: pedidos con saldo pendiente que no están
+    /// cancelados. Los entregados-con-saldo (fugas) se devuelven primero por ser los más urgentes.
+    /// Filtro opcional por corte de venta.
+    /// </summary>
+    [HttpGet("unpaid")]
+    public async Task<ActionResult<List<OrderSummaryDto>>> GetUnpaid([FromQuery] int? salesPeriodId = null)
+    {
+        var query = _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Include(o => o.SalesPeriod)
+            .Where(o => o.Status != Models.OrderStatus.Canceled);
+
+        if (salesPeriodId.HasValue)
+            query = query.Where(o => o.SalesPeriodId == salesPeriodId.Value);
+
+        // Pre-filtro en BD: descarta los claramente saldados por la colección de pagos.
+        query = query.Where(o => o.Total > o.Payments.Sum(p => p.Amount));
+
+        var candidates = await query.ToListAsync();
+
+        // Refinamiento exacto en memoria: BalanceDue también contempla el AdvancePayment legacy.
+        var unpaid = candidates
+            .Where(o => o.BalanceDue > 0)
+            .OrderByDescending(o => o.Status == Models.OrderStatus.Delivered) // entregado sin cobrar = urgente
+            .ThenBy(o => o.CreatedAt)
+            .Select(o => ExcelService.MapToSummary(o, o.Client, FrontendUrl))
+            .ToList();
+
+        return Ok(unpaid);
+    }
+
     [HttpGet("stats")]
     public async Task<ActionResult<OrderStatsDto>> GetOrderStats()
     {
@@ -641,14 +675,15 @@ public class OrdersController : ControllerBase
             );
         }
 
-        // Por Cobrar: same logic as GetOrderStats — balance due on active (non-delivered/canceled) orders
+        // Por Cobrar (definición unificada): TODO pedido no cancelado con saldo pendiente,
+        // incluidos los entregados sin cobrar. Usa BalanceDue (contempla pagos + abono legacy).
+        // Mismo criterio que el endpoint /orders/unpaid y la tabla "Por Cobrar".
         var activeOrdersForPending = await _db.Orders
             .Include(o => o.Payments)
-            .Where(o => o.Status != Models.OrderStatus.Delivered
-                     && o.Status != Models.OrderStatus.Canceled
-                     && o.Status != Models.OrderStatus.NotDelivered)
+            .Where(o => o.Status != Models.OrderStatus.Canceled)
+            .Where(o => o.Total > o.Payments.Sum(p => p.Amount)) // pre-filtro en BD, igual que /orders/unpaid
             .ToListAsync();
-        var pendingAmount = activeOrdersForPending.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
+        var pendingAmount = activeOrdersForPending.Where(o => o.BalanceDue > 0).Sum(o => o.BalanceDue);
 
         // Recent Activity - 10 most recent orders
         var ordersForDashboard = await _db.Orders
@@ -677,8 +712,9 @@ public class OrdersController : ControllerBase
             TotalCashAmount: paymentsForWallet.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
             TotalTransferOrders: paymentsForWallet.Count(p => p.Method == "Transferencia"),
             TotalTransferAmount: paymentsForWallet.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
-            TotalDepositOrders: paymentsForWallet.Count(p => p.Method == "Deposito"),
-            TotalDepositAmount: paymentsForWallet.Where(p => p.Method == "Deposito").Sum(p => p.Amount),
+            // "Otros" = todo lo que no es Efectivo ni Transferencia (Tarjeta, Depósito, etc.)
+            TotalDepositOrders: paymentsForWallet.Count(p => p.Method != "Efectivo" && p.Method != "Transferencia"),
+            TotalDepositAmount: paymentsForWallet.Where(p => p.Method != "Efectivo" && p.Method != "Transferencia").Sum(p => p.Amount),
             SalesByMonth: salesByMonth,
             ClientsNueva: await _db.Clients.CountAsync(c => c.Type == "Nueva"),
             ClientsFrecuente: await _db.Clients.CountAsync(c => c.Type == "Frecuente"),
@@ -710,19 +746,12 @@ public class OrdersController : ControllerBase
                      || o.Payments.Any(p => p.Date >= startDate && p.Date < endDateExclusive))
             .ToListAsync();
 
-        // ── 2. Incomes / Billed (Venta Real: Entregas ocurridas en el rango) ──
-        // NOTA: Usamos Deliveries para ser ultra-precisos sobre CUANDO se entregó
-        var deliveredInPeriodIds = await _db.Deliveries
-            .Where(d => d.OrderId != null
-                        && d.Status == DeliveryStatus.Delivered
-                        && d.DeliveredAt >= startDate
-                        && d.DeliveredAt < endDateExclusive)
-            .Select(d => d.OrderId!.Value)
-            .ToListAsync();
-        
-        // También incluimos orders marcadas como Delivered cuya creación sea en el rango si no tienen registro de Delivery (retro-compatibilidad)
+        // ── 2. Incomes / Billed (Venta Real: pedidos entregados creados en el rango) ──
+        // Definición unificada con Finanzas: "facturado" = pedidos Delivered cuya CREACIÓN cae en
+        // el rango. Mismo criterio en ambas pantallas y en la comparativa para que los números cuadren.
         var deliveredOrders = orders
-            .Where(o => o.Status == Models.OrderStatus.Delivered && (deliveredInPeriodIds.Contains(o.Id) || (o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive)))
+            .Where(o => o.Status == Models.OrderStatus.Delivered
+                        && o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive)
             .ToList();
 
         var revenue = deliveredOrders.Sum(o => o.Total);
@@ -737,17 +766,17 @@ public class OrdersController : ControllerBase
         // ── 4. Inversiones y Gastos (Basados en FECHA) ──
         var totalInvestment = await _db.Investments
             .Where(i => i.Date >= startDate && i.Date < endDateExclusive)
-            .SumAsync(i => (decimal?)(i.Amount * i.ExchangeRate)) ?? 0m;
+            .SumAsync(i => (decimal?)(i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate))) ?? 0m;
 
         var driverExpenses = await _db.DriverExpenses
             .Where(e => e.Date >= startDate && e.Date < endDateExclusive)
             .SumAsync(e => (decimal?)e.Amount) ?? 0m;
 
-        // ── 5. Sin asignar (Fugas potenciales: Entregado pero sin pagos totales) ──
+        // ── 5. Fugas: Entregado pero con saldo pendiente. Usa BalanceDue (contempla abono legacy). ──
         var unassignedPaymentOrders = deliveredOrders
-            .Where(o => !(o.Payments?.Any() ?? false) || o.Payments.Sum(p => p.Amount) < o.Total)
+            .Where(o => o.BalanceDue > 0)
             .ToList();
-        var unassignedAmount = unassignedPaymentOrders.Sum(o => o.Total - (o.Payments?.Sum(p => p.Amount) ?? 0));
+        var unassignedAmount = unassignedPaymentOrders.Sum(o => o.BalanceDue);
 
         // ── 6. Métricas Operativas y Top ──
         var topProducts = orders
@@ -782,7 +811,7 @@ public class OrdersController : ControllerBase
             .GroupBy(i => i.Supplier.Name)
             .Select(g => new SupplierSummaryDto(
                 g.Key,
-                g.Sum(i => i.Amount * i.ExchangeRate),
+                g.Sum(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate)),
                 g.Count()
             ))
             .ToListAsync();
@@ -835,9 +864,10 @@ public class OrdersController : ControllerBase
         var prevStartDate = startDate - duration;
         var prevEndDateExclusive = startDate;
 
-        var prevPeriodRevenue = await _db.Deliveries
-            .Where(d => d.Status == DeliveryStatus.Delivered && d.DeliveredAt >= prevStartDate && d.DeliveredAt < prevEndDateExclusive)
-            .SumAsync(d => (decimal?)d.Order.Total) ?? 0m;
+        // Misma definición que 'revenue' (Delivered creados en el rango) para una comparativa justa.
+        var prevPeriodRevenue = await _db.Orders
+            .Where(o => o.Status == Models.OrderStatus.Delivered && o.CreatedAt >= prevStartDate && o.CreatedAt < prevEndDateExclusive)
+            .SumAsync(o => (decimal?)o.Total) ?? 0m;
 
         var prevPeriodOrders = await _db.Orders
             .CountAsync(o => o.CreatedAt >= prevStartDate && o.CreatedAt < prevEndDateExclusive);
@@ -872,8 +902,10 @@ public class OrdersController : ControllerBase
             CashAmount: allPaymentsInRange.Where(p => p.Method == "Efectivo").Sum(p => p.Amount),
             TransferOrders: allPaymentsInRange.Count(p => p.Method == "Transferencia"),
             TransferAmount: allPaymentsInRange.Where(p => p.Method == "Transferencia").Sum(p => p.Amount),
-            DepositOrders: allPaymentsInRange.Count(p => p.Method == "Deposito"),
-            DepositAmount: allPaymentsInRange.Where(p => p.Method == "Deposito").Sum(p => p.Amount),
+            // "Otros" = todo lo que no es Efectivo ni Transferencia (Tarjeta, Depósito, OXXO, etc.).
+            // Así el desglose siempre suma el total cobrado, sin importar el método.
+            DepositOrders: allPaymentsInRange.Count(p => p.Method != "Efectivo" && p.Method != "Transferencia"),
+            DepositAmount: allPaymentsInRange.Where(p => p.Method != "Efectivo" && p.Method != "Transferencia").Sum(p => p.Amount),
             UnassignedPaymentOrders: unassignedPaymentOrders.Count,
             UnassignedPaymentAmount: unassignedAmount,
             SupplierSummaries: supplierSummaries,
@@ -1062,9 +1094,10 @@ public class OrdersController : ControllerBase
             }
         }
 
-        // Requerimiento 3 y 4: Edición de Shipping Cost y Abono
+        // Edición de Shipping Cost. El "abono" legacy (AdvancePayment) ya no se escribe:
+        // todos los cobros se registran como OrderPayment (libro de pagos) para que cuadren
+        // con los reportes. Si llega req.AdvancePayment se ignora a propósito.
         if (req.ShippingCost.HasValue) order.ShippingCost = req.ShippingCost.Value;
-        if (req.AdvancePayment.HasValue) order.AdvancePayment = req.AdvancePayment.Value;
 
         bool addressChanged = order.AlternativeAddress != req.AlternativeAddress;
         order.AlternativeAddress = req.AlternativeAddress;
@@ -1307,6 +1340,11 @@ public class OrdersController : ControllerBase
 
         if (order == null) return NotFound("Orden no encontrada");
         if (req.Amount <= 0) return BadRequest("El monto debe ser mayor a 0");
+
+        // Evita sobrepagos por dedazo (inflarían lo cobrado). Margen de 0.50 por redondeos.
+        var currentBalance = order.Total - order.AmountPaid;
+        if (req.Amount > currentBalance + 0.5m)
+            return BadRequest($"El pago (${req.Amount:0.00}) excede el saldo pendiente (${currentBalance:0.00}).");
 
         // Si viene fecha de pago explícita la usamos (retroactivo); si no, usamos ahora.
         var paymentDate = req.PaymentDate.HasValue

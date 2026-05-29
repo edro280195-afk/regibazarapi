@@ -214,6 +214,32 @@ using (var scope = app.Services.CreateScope())
         await db.SaveChangesAsync();
         Console.WriteLine("✅ Backfill de clientas completado.");
     }
+
+    // Migración única: el "abono" legacy (Order.AdvancePayment) se mueve al libro de pagos
+    // (OrderPayment) para que ese dinero cuadre en reportes/finanzas. Idempotente: una vez
+    // migrado queda AdvancePayment = 0 y no se vuelve a procesar.
+#pragma warning disable CS0618 // Uso intencional del campo legacy solo para migrarlo
+    var ordersWithAdvance = await db.Orders.Where(o => o.AdvancePayment > 0).ToListAsync();
+    if (ordersWithAdvance.Count > 0)
+    {
+        Console.WriteLine($"⚙️  Migrando abono legacy de {ordersWithAdvance.Count} pedidos al libro de pagos...");
+        foreach (var o in ordersWithAdvance)
+        {
+            db.OrderPayments.Add(new EntregasApi.Models.OrderPayment
+            {
+                OrderId = o.Id,
+                Amount = o.AdvancePayment,
+                Method = "Abono",
+                Date = o.CreatedAt,
+                RegisteredBy = "Sistema",
+                Notes = "Abono inicial (migrado del campo legacy)"
+            });
+            o.AdvancePayment = 0;
+        }
+        await db.SaveChangesAsync();
+        Console.WriteLine("✅ Migración de abonos legacy completada.");
+    }
+#pragma warning restore CS0618
 }
 
 // ── Middleware pipeline ──

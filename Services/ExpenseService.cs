@@ -159,7 +159,8 @@ namespace EntregasApi.Services
                 .OrderByDescending(i => i.Date)
                 .ToListAsync();
 
-            var totalInvestment = investments.Sum(i => i.Amount);
+            // Convertimos a MXN con el tipo de cambio (compras en USD). Protegido contra rate 0.
+            var totalInvestment = investments.Sum(i => i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate));
 
             // 4. Expenses (DriverExpenses within the range)
             var expenses = await _db.DriverExpenses
@@ -182,7 +183,7 @@ namespace EntregasApi.Services
             var investmentLines = investments.Select(i => new InvestmentLineDto(
                 i.Id,
                 i.Supplier?.Name ?? "Sin proveedor",
-                i.Amount,
+                i.Amount * (i.ExchangeRate == 0 ? 1 : i.ExchangeRate), // monto ya convertido a MXN
                 i.Date,
                 i.Notes
             )).ToList();
