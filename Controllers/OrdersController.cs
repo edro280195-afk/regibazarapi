@@ -1034,6 +1034,7 @@ public class OrdersController : ControllerBase
             if (!string.IsNullOrWhiteSpace(req.ClientAddress)) order.Client.Address = req.ClientAddress;
             if (!string.IsNullOrWhiteSpace(req.ClientPhone)) order.Client.Phone = req.ClientPhone;
             if (!string.IsNullOrEmpty(req.Type)) order.Client.Type = req.Type;
+            if (req.ClientFacebookProfileUrl != null) order.Client.FacebookProfileUrl = string.IsNullOrWhiteSpace(req.ClientFacebookProfileUrl) ? null : req.ClientFacebookProfileUrl;
 
             // Si el tipo cambió, sincronizamos las caducidades de todos sus pedidos pendientes
             if (typeChanged)

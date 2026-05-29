@@ -14,7 +14,8 @@ public record UpdateClientRequest(
     string? Address,
     string Tag,
     string Type,
-    string? DeliveryInstructions = null
+    string? DeliveryInstructions = null,
+    string? FacebookProfileUrl = null
 );
 
 [ApiController]
@@ -186,6 +187,7 @@ public class ClientsController : ControllerBase
         }
         client.Type = req.Type;
         if (!string.IsNullOrWhiteSpace(req.DeliveryInstructions)) client.DeliveryInstructions = req.DeliveryInstructions;
+        if (req.FacebookProfileUrl != null) client.FacebookProfileUrl = string.IsNullOrWhiteSpace(req.FacebookProfileUrl) ? null : req.FacebookProfileUrl;
 
         if (Enum.TryParse<ClientTag>(req.Tag, true, out var newTag))
         {

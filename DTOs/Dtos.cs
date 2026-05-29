@@ -63,7 +63,8 @@ public record OrderSummaryDto(
     decimal DiscountAmount = 0m,
     string? AlternativeAddress = null,
     int? DeliveryRouteId = null,
-    DateTime? ScheduledDeliveryDate = null
+    DateTime? ScheduledDeliveryDate = null,
+    string? ClientFacebookProfileUrl = null
 );
 
 
@@ -79,7 +80,8 @@ public record ClientDto(
     string? DeliveryInstructions = null,
     double? Latitude = null,
     double? Longitude = null,
-    List<string>? Aliases = null
+    List<string>? Aliases = null,
+    string? FacebookProfileUrl = null
 );
 
 public record OrderTrackingDto(
@@ -522,7 +524,7 @@ public record SupplierDto(
     DateTime CreatedAt,
     decimal TotalInvested = 0m
 );
-public record UpdateClientRequest(string Name, string? Phone, string? Address, ClientTag Tag, string Type, string? DeliveryInstructions);
+public record UpdateClientRequest(string Name, string? Phone, string? Address, ClientTag Tag, string Type, string? DeliveryInstructions, string? FacebookProfileUrl = null);
 
 public record CreateSupplierRequest
 {
@@ -679,7 +681,8 @@ public record UpdateOrderDetailsRequest(
     int? SalesPeriodId = null,
     string? DeliveryInstructions = null,
     string? AlternativeAddress = null,
-    DateTime? ScheduledDeliveryDate = null
+    DateTime? ScheduledDeliveryDate = null,
+    string? ClientFacebookProfileUrl = null
 );
 
 // DTO para actualizar un producto individual

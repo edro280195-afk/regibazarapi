@@ -303,7 +303,8 @@ public class ExcelService : IExcelService
             DiscountAmount: order.DiscountAmount,
             AlternativeAddress: order.AlternativeAddress,
             DeliveryRouteId: order.DeliveryRouteId,
-            ScheduledDeliveryDate: order.ScheduledDeliveryDate
+            ScheduledDeliveryDate: order.ScheduledDeliveryDate,
+            ClientFacebookProfileUrl: client?.FacebookProfileUrl
         );
     }
 }
