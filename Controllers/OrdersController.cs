@@ -127,6 +127,7 @@ public class OrdersController : ControllerBase
         [FromQuery] DateTime? dateFrom = null,
         [FromQuery] DateTime? dateTo = null,
         [FromQuery] int? clientId = null,
+        [FromQuery] int? salesPeriodId = null,
         [FromQuery] string sortBy = "date",
         [FromQuery] string sortDir = "desc")
     {
@@ -139,6 +140,11 @@ public class OrdersController : ControllerBase
         if (clientId.HasValue)
         {
             query = query.Where(o => o.ClientId == clientId.Value);
+        }
+
+        if (salesPeriodId.HasValue)
+        {
+            query = query.Where(o => o.SalesPeriodId == salesPeriodId.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(status))
@@ -1113,6 +1119,25 @@ public class OrdersController : ControllerBase
 
         // Recargar nav prop para que MapToSummary incluya el nombre del corte
         await _db.Entry(order).Reference(o => o.SalesPeriod).LoadAsync();
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
+    /// <summary>PATCH /api/orders/{id}/notified - Marca o desmarca que ya se le envió el enlace a la clienta</summary>
+    [HttpPatch("{id}/notified")]
+    public async Task<ActionResult<OrderSummaryDto>> SetNotified(int id, [FromBody] SetNotifiedRequest req)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Include(o => o.SalesPeriod)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Orden no encontrada");
+
+        order.NotifiedAt = req.Notified ? DateTime.UtcNow : null;
+        await _db.SaveChangesAsync();
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }

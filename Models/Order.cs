@@ -41,6 +41,9 @@ public class Order
     public DateTime ExpiresAt { get; set; }
     public OrderStatus Status { get; set; } = OrderStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>Marca cuándo se le envió el enlace del pedido a la clienta (Messenger). Null = aún no notificada.</summary>
+    public DateTime? NotifiedAt { get; set; }
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     public Delivery? Delivery { get; set; }
     public OrderType OrderType { get; set; } = OrderType.Delivery;

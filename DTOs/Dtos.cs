@@ -64,7 +64,8 @@ public record OrderSummaryDto(
     string? AlternativeAddress = null,
     int? DeliveryRouteId = null,
     DateTime? ScheduledDeliveryDate = null,
-    string? ClientFacebookProfileUrl = null
+    string? ClientFacebookProfileUrl = null,
+    DateTime? NotifiedAt = null
 );
 
 
@@ -526,6 +527,38 @@ public record SupplierDto(
 );
 public record UpdateClientRequest(string Name, string? Phone, string? Address, ClientTag Tag, string Type, string? DeliveryInstructions, string? FacebookProfileUrl = null);
 
+// ── Importación masiva de Facebook de clientas ──
+
+/// <summary>Una fila cruda del archivo/pegado: nombre tal como viene + enlace de FB.</summary>
+public record FacebookImportRow(string Name, string FacebookUrl);
+
+public record FacebookImportPreviewRequest(List<FacebookImportRow> Rows);
+
+/// <summary>
+/// Resultado del matching difuso de una fila contra las clientas existentes.
+/// Status: "matched" (match claro, premarcado) | "review" (ambiguo, revisar) | "notfound" (sin match confiable).
+/// </summary>
+public record FacebookImportPreviewItem(
+    int RowIndex,
+    string InputName,
+    string InputUrl,
+    bool UrlValid,
+    string Status,
+    int? SuggestedClientId,
+    double TopScore,
+    bool TopAlreadyHasFacebook,
+    bool DuplicateUrlInBatch,
+    List<ResolveCandidateDto> Candidates);
+
+public record FacebookImportPreviewResponse(List<FacebookImportPreviewItem> Items);
+
+/// <summary>Una asignación confirmada por el usuario: a esta clienta, este enlace.</summary>
+public record FacebookImportApplyRow(int ClientId, string FacebookUrl);
+
+public record FacebookImportApplyRequest(List<FacebookImportApplyRow> Rows);
+
+public record FacebookImportApplyResponse(int Applied, int Skipped, List<string> Errors);
+
 public record CreateSupplierRequest
 {
     [Required, MaxLength(200)]
@@ -662,6 +695,9 @@ public record ExpenseLineDto(
     string? Notes,
     string? EvidenceUrl
 );
+
+// DTO para marcar/desmarcar que el enlace ya fue enviado a la clienta
+public record SetNotifiedRequest(bool Notified);
 
 // DTO para actualizar la orden completa
 public record UpdateOrderDetailsRequest(

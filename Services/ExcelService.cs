@@ -304,7 +304,8 @@ public class ExcelService : IExcelService
             AlternativeAddress: order.AlternativeAddress,
             DeliveryRouteId: order.DeliveryRouteId,
             ScheduledDeliveryDate: order.ScheduledDeliveryDate,
-            ClientFacebookProfileUrl: client?.FacebookProfileUrl
+            ClientFacebookProfileUrl: client?.FacebookProfileUrl,
+            NotifiedAt: order.NotifiedAt
         );
     }
 }
