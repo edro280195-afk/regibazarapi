@@ -29,6 +29,7 @@ public class AppDbContext : DbContext
     public DbSet<TandaPayment> TandaPayments => Set<TandaPayment>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
+    public DbSet<LoyaltyReward> LoyaltyRewards => Set<LoyaltyReward>();
     public DbSet<PushSubscriptionModel> PushSubscriptions => Set<PushSubscriptionModel>();
     public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
     public DbSet<SalesPeriod> SalesPeriods => Set<SalesPeriod>();
