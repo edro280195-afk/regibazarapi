@@ -25,11 +25,9 @@ public class RouteOptimizerService : IRouteOptimizerService
         var withCoords = stops.Where(s => s.Latitude.HasValue && s.Longitude.HasValue).ToList();
         var withoutCoords = stops.Where(s => !s.Latitude.HasValue || !s.Longitude.HasValue).ToList();
 
-        // Si todo está sin coords no hay nada que optimizar, regresamos en el mismo orden.
         if (withCoords.Count == 0)
             return new OptimizedRoute(stops.Select(s => s.Id).ToList(), 0, 0, "no-coords");
 
-        // 1 sola parada con coords: no necesita llamar a Google.
         if (withCoords.Count == 1)
         {
             var ordered = withCoords.Concat(withoutCoords).Select(s => s.Id).ToList();
@@ -44,7 +42,6 @@ public class RouteOptimizerService : IRouteOptimizerService
                 var result = await OptimizeWithGoogleRoutesAsync(withCoords, startLat, startLng, apiKey, ct);
                 if (result != null)
                 {
-                    // Anexamos las paradas sin coords al final (no hay manera de optimizarlas).
                     var allIds = result.OrderedStopIds.Concat(withoutCoords.Select(s => s.Id)).ToList();
                     return result with { OrderedStopIds = allIds };
                 }
@@ -55,7 +52,6 @@ public class RouteOptimizerService : IRouteOptimizerService
             }
         }
 
-        // Fallback: Nearest Neighbor con Haversine.
         var fallback = NearestNeighborHaversine(withCoords, startLat, startLng);
         var fallbackIds = fallback.Concat(withoutCoords.Select(s => s.Id)).ToList();
         return new OptimizedRoute(fallbackIds, 0, 0, "haversine-fallback");
@@ -64,7 +60,6 @@ public class RouteOptimizerService : IRouteOptimizerService
     private async Task<OptimizedRoute?> OptimizeWithGoogleRoutesAsync(
         List<RouteStop> stops, double startLat, double startLng, string apiKey, CancellationToken ct)
     {
-        // Routes API v2 acepta hasta 25 intermediate waypoints. Si hay más usamos fallback.
         if (stops.Count > 25)
         {
             _logger.LogInformation("Routes API v2 limita a 25 waypoints; tenemos {Count}, usando Haversine", stops.Count);
@@ -77,7 +72,6 @@ public class RouteOptimizerService : IRouteOptimizerService
         var body = new
         {
             origin = new { location = new { latLng = new { latitude = startLat, longitude = startLng } } },
-            // Destination = depot mismo (round trip). El driver vuelve al negocio al final.
             destination = new { location = new { latLng = new { latitude = startLat, longitude = startLng } } },
             intermediates = stops.Select(s => new
             {
@@ -94,6 +88,14 @@ public class RouteOptimizerService : IRouteOptimizerService
         req.Headers.Add("X-Goog-Api-Key", apiKey);
         req.Headers.Add("X-Goog-FieldMask",
             "routes.distanceMeters,routes.duration,routes.optimizedIntermediateWaypointIndex,routes.polyline.encodedPolyline");
+
+        // La API key tiene restricción de HTTP referrer: el servidor no envía Referer automáticamente.
+        // Workaround: inyectar el Referer desde config para que coincida con el dominio permitido en la key.
+        // Solución definitiva: cambiar la restricción de la key a "IP" o "Ninguna" en Google Cloud Console.
+        var frontendUrl = _config["App:FrontendUrl"];
+        if (!string.IsNullOrEmpty(frontendUrl) && Uri.TryCreate(frontendUrl, UriKind.Absolute, out var refUri))
+            req.Headers.Referrer = refUri;
+
         req.Content = JsonContent.Create(body);
 
         using var resp = await http.SendAsync(req, ct);
@@ -114,21 +116,15 @@ public class RouteOptimizerService : IRouteOptimizerService
         int durationSeconds = 0;
         if (route.TryGetProperty("duration", out var dur))
         {
-            // Formato: "1234s"
             var durStr = dur.GetString() ?? "0s";
             int.TryParse(durStr.TrimEnd('s'), out durationSeconds);
         }
 
         List<int> order;
         if (route.TryGetProperty("optimizedIntermediateWaypointIndex", out var idxArr))
-        {
             order = idxArr.EnumerateArray().Select(e => e.GetInt32()).ToList();
-        }
         else
-        {
-            // No retornó orden optimizado, usamos el orden original.
             order = Enumerable.Range(0, stops.Count).ToList();
-        }
 
         string? polyline = null;
         if (route.TryGetProperty("polyline", out var poly) && poly.TryGetProperty("encodedPolyline", out var ep))
@@ -170,7 +166,6 @@ public class RouteOptimizerService : IRouteOptimizerService
         return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
     }
 
-    // ── Legacy sync API ──
     public List<Order> OptimizeRoute(List<Order> orders, double startLat, double startLng)
     {
         if (orders == null || !orders.Any()) return new List<Order>();
@@ -192,12 +187,7 @@ public class RouteOptimizerService : IRouteOptimizerService
             {
                 var order = remaining[i];
                 double dist = HaversineKm(currentLat, currentLng, order.Client.Latitude!.Value, order.Client.Longitude!.Value);
-                if (dist < minDistance)
-                {
-                    minDistance = dist;
-                    nearest = order;
-                    nearestIdx = i;
-                }
+                if (dist < minDistance) { minDistance = dist; nearest = order; nearestIdx = i; }
             }
 
             if (nearest != null)

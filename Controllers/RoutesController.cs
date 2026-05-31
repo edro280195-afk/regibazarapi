@@ -525,14 +525,10 @@ public class RoutesController : ControllerBase
         return Ok(await MapRouteDto(id));
     }
 
-    // Asegúrate de que el constructor use IHubContext<TrackingHub>
-    // private readonly IHubContext<TrackingHub> _hub;
-
     [HttpGet("{id}/chat")]
     public async Task<IActionResult> GetRouteChat(int id)
     {
         var msgs = await _db.ChatMessages
-            // 🚀 FILTRO CLAVE: Solo mensajes donde DeliveryId sea NULL (Admin <-> Chofer)
             .Where(m => m.DeliveryRouteId == id && m.DeliveryId == null)
             .OrderBy(m => m.Timestamp)
             .Select(m => new {
@@ -556,16 +552,15 @@ public class RoutesController : ControllerBase
         var msg = new ChatMessage
         {
             DeliveryRouteId = route.Id,
-            Sender = "Admin", // El Admin siempre es el Admin
+            Sender = "Admin",
             Text = req.Text,
             Timestamp = DateTime.UtcNow,
-            DeliveryId = null // 🚀 IMPORTANTE: Forzamos que sea nulo para que no se filtre a las clientas
+            DeliveryId = null
         };
 
         _db.ChatMessages.Add(msg);
         await _db.SaveChangesAsync();
 
-        // Creamos el objeto ligero (Antídoto para el Error 500)
         var msgDto = new
         {
             id = msg.Id,
@@ -575,7 +570,6 @@ public class RoutesController : ControllerBase
             deliveryRouteId = msg.DeliveryRouteId
         };
 
-        // 🔔 Avisamos al chofer (Usando el Hub unificado)
         await _hub.Clients.Group($"Route_{route.DriverToken}")
             .SendAsync("ReceiveChatMessage", msgDto);
 
@@ -612,7 +606,6 @@ public class RoutesController : ControllerBase
 
         if (delivery == null) return NotFound("Entrega no encontrada");
 
-        // Las entregas de tanda no tienen canal público de chat con la clienta.
         if (delivery.Order == null)
             return BadRequest("Esta entrega es una tanda y no admite chat con la clienta.");
 
@@ -638,15 +631,10 @@ public class RoutesController : ControllerBase
             deliveryId = msg.DeliveryId
         };
 
-        // Avisamos a la clienta
         await _hub.Clients.Group($"Order_{delivery.Order.AccessToken}")
             .SendAsync("ReceiveClientChatMessage", msgDto);
-
-        // Avisamos al chofer
         await _hub.Clients.Group($"Route_{route.DriverToken}")
             .SendAsync("ReceiveClientChatMessage", msgDto);
-
-        // Avisamos a los otros admins
         await _hub.Clients.Group("Admins")
             .SendAsync("ReceiveClientChatMessage", msgDto);
 
@@ -665,24 +653,16 @@ public class RoutesController : ControllerBase
 
         if (route == null) return NotFound("Ruta no encontrada");
 
-        // Actualizamos cada delivery al nuevo orden iterando la lista enviada
         int newOrder = 1;
         foreach (var deliveryId in deliveryIdsInOrder)
         {
             var delivery = route.Deliveries.FirstOrDefault(d => d.Id == deliveryId);
-            if (delivery != null)
-            {
-                delivery.SortOrder = newOrder++;
-            }
+            if (delivery != null) delivery.SortOrder = newOrder++;
         }
 
         await _db.SaveChangesAsync();
 
-        // 🔔 Avisar al Chofer que su lista cambió
-        await _hub.Clients.Group($"Route_{route.DriverToken}")
-            .SendAsync("RouteUpdated");
-
-        // 🔔 FCM broadcast al repartidor
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated");
         await _push.BroadcastToAllDriversAsync("🔄 Ruta reordenada", $"El orden de entregas de {route.Name} fue actualizado.");
 
         return Ok(new { Message = "Orden actualizado correctamente" });
@@ -706,7 +686,6 @@ public class RoutesController : ControllerBase
         order.DeliveryRouteId = id;
         order.Status = Models.OrderStatus.InRoute;
 
-        // ✨ CRITICAL FIX: Create the Delivery record that was missing
         var delivery = new Delivery
         {
             OrderId = orderId,
@@ -721,11 +700,9 @@ public class RoutesController : ControllerBase
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
             await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"Se agregaron entregas. Nueva cuenta: {route.Deliveries.Count + 1}", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
-            // 📡 Silent refresh via SignalR
             await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
         }
 
-        // 🚀 MEJORA: Recalcular la ruta automáticamente para que no se agregue al final
         await OptimizeRouteInternal(id, lat, lng);
 
         return Ok(new { Message = "Orden agregada y ruta optimizada correctamente" });
@@ -794,10 +771,7 @@ public class RoutesController : ControllerBase
 
         if (route == null) return;
 
-        // 🛠️ AUTO-REPAIR: Add missing Deliveries for orders in this route
-        var ordersInRoute = await _db.Orders
-            .Where(o => o.DeliveryRouteId == routeId)
-            .ToListAsync();
+        var ordersInRoute = await _db.Orders.Where(o => o.DeliveryRouteId == routeId).ToListAsync();
 
         bool fixedAny = false;
         foreach (var order in ordersInRoute)
@@ -825,13 +799,10 @@ public class RoutesController : ControllerBase
         var lat = startLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
         var lng = startLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
 
-        // Construimos los stops genéricos y delegamos a Google Routes API.
         var deliveryById = route.Deliveries.ToDictionary(d => StopIdFor(d), d => d);
         var stops = route.Deliveries.Select(d =>
         {
-            var client = d.Kind == DeliveryKind.Tanda
-                ? d.TandaParticipant?.Client
-                : d.Order?.Client;
+            var client = d.Kind == DeliveryKind.Tanda ? d.TandaParticipant?.Client : d.Order?.Client;
             return new RouteStop(StopIdFor(d), client?.Latitude, client?.Longitude);
         }).ToList();
 
@@ -848,9 +819,7 @@ public class RoutesController : ControllerBase
     }
 
     private static string StopIdFor(Delivery d) =>
-        d.Kind == DeliveryKind.Tanda
-            ? $"tanda:{d.TandaParticipantId}"
-            : $"order:{d.OrderId}";
+        d.Kind == DeliveryKind.Tanda ? $"tanda:{d.TandaParticipantId}" : $"order:{d.OrderId}";
 
     [HttpDelete("{id}/remove-order/{orderId}")]
     public async Task<IActionResult> RemoveOrderFromRoute(int id, int orderId)
@@ -862,19 +831,12 @@ public class RoutesController : ControllerBase
         if (delivery == null) return NotFound("Entrega no encontrada en esta ruta.");
 
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
-        if (order != null)
-        {
-            order.DeliveryRouteId = null;
-            order.Status = Models.OrderStatus.Pending;
-        }
+        if (order != null) { order.DeliveryRouteId = null; order.Status = Models.OrderStatus.Pending; }
 
         _db.Deliveries.Remove(delivery);
         await _db.SaveChangesAsync();
 
-        // 🔔 Avisar al chofer
         await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
-
-        // 🔔 FCM broadcast al repartidor
         await _push.BroadcastToAllDriversAsync("📦 Pedido eliminado de ruta", $"Se eliminó un pedido de {route.Name}.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
 
         return Ok(new { Message = "Orden eliminada de la ruta correctamente" });
@@ -901,7 +863,7 @@ public class RoutesController : ControllerBase
         return Ok(new { Message = "Tanda eliminada de la ruta correctamente" });
     }
 
-    /// <summary>GET /api/routes/available-tandas - Lista tandas pendientes para el domingo siguiente.</summary>
+    /// <summary>GET /api/routes/available-tandas - Lista todas las tandas activas no entregadas ni asignadas.</summary>
     [HttpGet("available-tandas")]
     public async Task<ActionResult<List<AvailableTandaDto>>> GetAvailableTandas()
     {
@@ -922,14 +884,6 @@ public class RoutesController : ControllerBase
         var nowUtc = DateTime.UtcNow.Date;
         var result = participants
             .Where(p => !assignedIds.Contains(p.Id))
-            .Where(p =>
-            {
-                // Sólo participantes cuyo turno es el actual o pasado de la tanda activa.
-                var startDate = p.Tanda!.StartDate.Date;
-                var days = (int)(nowUtc - startDate).TotalDays;
-                int currentWeek = days <= 0 ? 1 : ((days - 1) / 7) + 1;
-                return p.AssignedTurn <= currentWeek;
-            })
             .Select(p =>
             {
                 var startDate = p.Tanda!.StartDate.Date;
@@ -982,7 +936,6 @@ public class RoutesController : ControllerBase
         var distinctTandaIds = (req.TandaParticipantIds ?? new List<Guid>()).Distinct().ToList();
         var skipped = new List<SkippedStopDto>();
 
-        // Órdenes: permitir las que están en ESTA ruta aunque ya tengan DeliveryRouteId
         var ordersInDb = distinctOrderIds.Count > 0
             ? await _db.Orders.Include(o => o.Client).Include(o => o.Delivery)
                 .Where(o => distinctOrderIds.Contains(o.Id))
@@ -1039,7 +992,6 @@ public class RoutesController : ControllerBase
                 validTandas.Add(p);
         }
 
-        // Cargar deliveries existentes para split locked vs pending
         var existingDeliveries = await _db.Deliveries
             .Include(d => d.Order)
             .Where(d => d.DeliveryRouteId == id)
@@ -1052,7 +1004,6 @@ public class RoutesController : ControllerBase
         using var transaction = await _db.Database.BeginTransactionAsync();
         try
         {
-            // Remover pending que ya no están en la nueva lista
             var newOrderIdSet = new HashSet<int>(validOrders.Select(o => o.Id));
             var newTandaIdSet = new HashSet<Guid>(validTandas.Select(p => p.Id));
 
@@ -1072,7 +1023,6 @@ public class RoutesController : ControllerBase
             }
             await _db.SaveChangesAsync();
 
-            // Agregar nuevas paradas no existentes aún
             var existingOrderIds = currentPendingDeliveries
                 .Where(d => d.Kind == DeliveryKind.Order && d.OrderId != null)
                 .Select(d => d.OrderId!.Value).ToHashSet();
@@ -1091,7 +1041,6 @@ public class RoutesController : ControllerBase
 
             await _db.SaveChangesAsync();
 
-            // Recargar y re-optimizar solo pending
             var allCurrent = await _db.Deliveries
                 .Include(d => d.Order).ThenInclude(o => o!.Client)
                 .Include(d => d.TandaParticipant).ThenInclude(p => p!.Client)
@@ -1150,8 +1099,7 @@ public class RoutesController : ControllerBase
 
     private async Task<RouteDto> MapRouteDto(int routeId)
     {
-        var route = await _db.DeliveryRoutes
-            .FirstAsync(r => r.Id == routeId);
+        var route = await _db.DeliveryRoutes.FirstAsync(r => r.Id == routeId);
 
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o!.Client)
@@ -1167,17 +1115,7 @@ public class RoutesController : ControllerBase
 
         var expenses = await _db.DriverExpenses
             .Where(e => e.DeliveryRouteId == routeId)
-            .Select(e => new DriverExpenseDto(
-                e.Id,
-                e.DeliveryRouteId,
-                null,
-                e.Amount,
-                e.ExpenseType,
-                e.Date,
-                e.Notes,
-                e.EvidencePath,
-                e.CreatedAt
-            ))
+            .Select(e => new DriverExpenseDto(e.Id, e.DeliveryRouteId, null, e.Amount, e.ExpenseType, e.Date, e.Notes, e.EvidencePath, e.CreatedAt))
             .ToListAsync();
 
         return new RouteDto(
@@ -1209,57 +1147,38 @@ public class RoutesController : ControllerBase
             string routeName = route.Name ?? $"Ruta #{id}";
             string driverToken = route.DriverToken;
 
-            // 1. Liberar los pedidos asociados
-            var linkedOrders = await _db.Orders
-                .Where(o => o.DeliveryRouteId == id)
-                .ToListAsync();
-
+            var linkedOrders = await _db.Orders.Where(o => o.DeliveryRouteId == id).ToListAsync();
             foreach (var order in linkedOrders)
             {
                 order.DeliveryRouteId = null;
-                // Si la orden estaba en ruta, la regresamos a pendiente
-                if (order.Status == OrderStatus.InRoute)
-                {
-                    order.Status = OrderStatus.Pending;
-                }
+                if (order.Status == OrderStatus.InRoute) order.Status = OrderStatus.Pending;
             }
 
-            // 2. Obtener IDs de entregas para limpiar dependencias
             var deliveryIds = route.Deliveries.Select(d => d.Id).ToList();
 
-            // 3. Borrar chats asociados a la ruta o a sus entregas
             var chats = await _db.ChatMessages
                 .Where(c => c.DeliveryRouteId == id || (c.DeliveryId != null && deliveryIds.Contains(c.DeliveryId.Value)))
                 .ToListAsync();
             if (chats.Any()) _db.ChatMessages.RemoveRange(chats);
 
-            // 4. Borrar gastos del chofer asociados a esta ruta
             var expenses = await _db.DriverExpenses.Where(e => e.DeliveryRouteId == id).ToListAsync();
             if (expenses.Any()) _db.DriverExpenses.RemoveRange(expenses);
 
-            // 5. Borrar evidencias de entrega
             var evidences = await _db.DeliveryEvidences.Where(e => deliveryIds.Contains(e.DeliveryId)).ToListAsync();
             if (evidences.Any()) _db.DeliveryEvidences.RemoveRange(evidences);
 
-            // 6. Borrar las entregas (junction records)
             if (route.Deliveries.Any()) _db.Deliveries.RemoveRange(route.Deliveries);
-
-            // 7. Borrar la ruta
             _db.DeliveryRoutes.Remove(route);
 
             await _db.SaveChangesAsync();
             await transaction.CommitAsync();
 
-            // 🔔 Notificaciones Push/SignalR
             try
             {
-                await _hub.Clients.Group($"Route_{driverToken}").SendAsync("RouteDeleted", new
-                {
-                    Message = $"La ruta '{routeName}' fue eliminada por el administrador."
-                });
+                await _hub.Clients.Group($"Route_{driverToken}").SendAsync("RouteDeleted", new { Message = $"La ruta '{routeName}' fue eliminada por el administrador." });
                 await _push.BroadcastToAllDriversAsync("🚫 Ruta cancelada", $"La ruta {routeName} fue eliminada.");
             }
-            catch { /* Ignorar errores de notificación */ }
+            catch { }
 
             return Ok(new { message = "Ruta eliminada correctamente y pedidos liberados." });
         }
@@ -1289,7 +1208,6 @@ public class RoutesController : ControllerBase
         foreach (var order in linkedOrders)
         {
             order.Status = Models.OrderStatus.Delivered;
-
             var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
             if (delivery != null && delivery.Status == DeliveryStatus.Pending)
             {
@@ -1298,12 +1216,9 @@ public class RoutesController : ControllerBase
             }
         }
 
-        // Tandas en la ruta: marcamos las pendientes como entregadas y propagamos al TandaParticipant.
         var tandaDeliveries = await _db.Deliveries
             .Include(d => d.TandaParticipant)
-            .Where(d => d.DeliveryRouteId == id
-                        && d.Kind == DeliveryKind.Tanda
-                        && d.Status == DeliveryStatus.Pending)
+            .Where(d => d.DeliveryRouteId == id && d.Kind == DeliveryKind.Tanda && d.Status == DeliveryStatus.Pending)
             .ToListAsync();
 
         var now = DateTime.UtcNow;
@@ -1323,5 +1238,3 @@ public class RoutesController : ControllerBase
         return Ok(new { Message = "Ruta liquidada exitosamente." });
     }
 }
-
-// DTO auxiliar para el chat
