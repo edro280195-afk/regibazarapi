@@ -94,6 +94,15 @@ public class RouteOptimizerService : IRouteOptimizerService
         req.Headers.Add("X-Goog-Api-Key", apiKey);
         req.Headers.Add("X-Goog-FieldMask",
             "routes.distanceMeters,routes.duration,routes.optimizedIntermediateWaypointIndex,routes.polyline.encodedPolyline");
+
+        // La API key tiene restricción de HTTP referrer: el servidor no envía Referer de forma
+        // automática, por lo que hay que añadirlo manualmente para que Google no lo bloquee.
+        // NOTA PERMANENTE: la solución definitiva es cambiar la restricción de la key de
+        // "sitios web (HTTP referrer)" a "IP" o "Ninguna" en Google Cloud Console.
+        var frontendUrl = _config["App:FrontendUrl"];
+        if (!string.IsNullOrEmpty(frontendUrl) && Uri.TryCreate(frontendUrl, UriKind.Absolute, out var refUri))
+            req.Headers.Referrer = refUri;
+
         req.Content = JsonContent.Create(body);
 
         using var resp = await http.SendAsync(req, ct);
