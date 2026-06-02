@@ -36,6 +36,9 @@ public class TandaParticipant
     [MaxLength(255)]
     public string? Variant { get; set; }
 
+    [Column("weekly_amount")]
+    public decimal? WeeklyAmount { get; set; }
+
     [NotMapped]
     public string? CustomerName { get; set; }
 

@@ -34,8 +34,9 @@ public class AddParticipantDto
     public int AssignedTurn { get; set; }
 
     public string? Variant { get; set; }
-}
 
+    public decimal? WeeklyAmount { get; set; }
+}
 public class RegisterPaymentDto
 {
     [Required]
@@ -82,6 +83,7 @@ public class TandaParticipantViewDto
     public bool IsWinnerThisWeek { get; set; }
     public bool IsDelivered { get; set; }
     public string? Variant { get; set; }
+    public decimal? WeeklyAmount { get; set; }
 }
 
 public class UpdateTandaDto
@@ -125,6 +127,7 @@ public class TandaParticipantDto
     public int CustomerId { get; set; }
     public string? CustomerName { get; set; }
     public int AssignedTurn { get; set; }
+    public decimal? WeeklyAmount { get; set; }
     public bool IsDelivered { get; set; }
     public DateTime? DeliveryDate { get; set; }
     public string Status { get; set; } = string.Empty;

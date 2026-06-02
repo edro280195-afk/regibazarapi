@@ -59,7 +59,8 @@ public class TandaService : ITandaService
             CustomerId = dto.CustomerId,
             AssignedTurn = dto.AssignedTurn,
             Status = "Active",
-            Variant = dto.Variant
+            Variant = dto.Variant,
+            WeeklyAmount = dto.WeeklyAmount
         };
 
         _db.TandaParticipants.Add(participant);
@@ -322,7 +323,8 @@ public class TandaService : ITandaService
                 PaidWeeks = p.Payments.Select(pay => pay.WeekNumber).ToList(),
                 IsWinnerThisWeek = p.AssignedTurn == currentWeek,
                 IsDelivered = p.IsDelivered,
-                Variant = p.Variant
+                Variant = p.Variant,
+                WeeklyAmount = p.WeeklyAmount
             }).OrderBy(p => p.AssignedTurn).ToList()
         };
     }
@@ -370,6 +372,7 @@ public class TandaService : ITandaService
         DeliveryDate = p.DeliveryDate,
         Status = p.Status,
         Variant = p.Variant,
+        WeeklyAmount = p.WeeklyAmount,
         Payments = p.Payments?.Select(MapToPaymentDto).ToList()
     };
 

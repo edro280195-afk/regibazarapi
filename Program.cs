@@ -247,9 +247,9 @@ using (var scope = app.Services.CreateScope())
         Console.WriteLine("⚙️  Sembrando catálogo de premios RegiPuntos...");
         db.LoyaltyRewards.AddRange(
             new EntregasApi.Models.LoyaltyReward { Name = "$50 de descuento", Description = "Aplica $50 menos en tu próximo pedido.", PointsCost = 100, Type = EntregasApi.Models.LoyaltyRewardType.FixedDiscount, Value = 50m, Icon = "💸", SortOrder = 1 },
-            new EntregasApi.Models.LoyaltyReward { Name = "Envío gratis", Description = "Te invitamos el envío de tu pedido.", PointsCost = 120, Type = EntregasApi.Models.LoyaltyRewardType.FreeShipping, Value = 0m, Icon = "🚚", SortOrder = 2 },
-            new EntregasApi.Models.LoyaltyReward { Name = "$100 de descuento", Description = "Aplica $100 menos en tu próximo pedido.", PointsCost = 180, Type = EntregasApi.Models.LoyaltyRewardType.FixedDiscount, Value = 100m, Icon = "💰", SortOrder = 3 },
-            new EntregasApi.Models.LoyaltyReward { Name = "Regalito sorpresa", Description = "Una sorpresita de Regi Bazar en tu pedido.", PointsCost = 250, Type = EntregasApi.Models.LoyaltyRewardType.Gift, Value = 0m, Icon = "🎁", SortOrder = 4 }
+            new EntregasApi.Models.LoyaltyReward { Name = "Envío gratis", Description = "Te invitamos el envío de tu pedido.", PointsCost = 150, Type = EntregasApi.Models.LoyaltyRewardType.FreeShipping, Value = 0m, Icon = "🚚", SortOrder = 2 },
+            new EntregasApi.Models.LoyaltyReward { Name = "$100 de descuento", Description = "Aplica $100 menos en tu próximo pedido.", PointsCost = 200, Type = EntregasApi.Models.LoyaltyRewardType.FixedDiscount, Value = 100m, Icon = "💰", SortOrder = 3 },
+            new EntregasApi.Models.LoyaltyReward { Name = "Regalito sorpresa", Description = "Una sorpresita de Regi Bazar en tu pedido.", PointsCost = 300, Type = EntregasApi.Models.LoyaltyRewardType.Gift, Value = 0m, Icon = "🎁", SortOrder = 4 }
         );
         await db.SaveChangesAsync();
         Console.WriteLine("✅ Catálogo de premios sembrado.");
