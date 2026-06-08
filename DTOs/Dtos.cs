@@ -209,7 +209,12 @@ public record RecomposeRouteResponse(
 );
 
 public record BulkGeocodeRequest(List<int> ClientIds);
-public record SetClientCoordinatesRequest(double Latitude, double Longitude, string? Address);
+public record SetClientCoordinatesRequest(
+    double Latitude,
+    double Longitude,
+    string? Address,
+    string? DeliveryInstructions = null
+);
 public record BulkGeocodeResultDto(
     int ClientId,
     bool Success,

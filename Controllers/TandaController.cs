@@ -124,20 +124,6 @@ public class TandaController : ControllerBase
         }
     }
 
-    [HttpPost("{id}/shuffle")]
-    public async Task<IActionResult> ShuffleParticipants(Guid id, [FromQuery] Guid? winnerId)
-    {
-        try
-        {
-            var result = await _tandaService.ShuffleParticipantsAsync(id, winnerId);
-            return Ok(result);
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { message = ex.Message });
-        }
-    }
-
     [HttpPost("{id}/shuffle-with-raffle")]
     public async Task<IActionResult> ShuffleWithRaffle(Guid id, [FromBody] SelectWinnerDto dto)
     {
@@ -180,16 +166,12 @@ public class TandaController : ControllerBase
                 // Hacer el shuffle
                 var result = await _raffleService.ShuffleTandaTurnsAsync(raffle.Id, dto);
 
-                // Anunciar ganador (completar sorteo)
-                await _raffleService.AnnounceWinnerAsync(raffle.Id);
-
                 return Ok(result);
             }
 
             // Si ya existe un sorteo activo, usarlo
             await _raffleService.EvaluateRaffleAsync(activeRaffle.Id);
             var shuffleResult = await _raffleService.ShuffleTandaTurnsAsync(activeRaffle.Id, dto);
-            await _raffleService.AnnounceWinnerAsync(activeRaffle.Id);
 
             return Ok(shuffleResult);
         }

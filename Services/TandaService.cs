@@ -20,9 +20,27 @@ public class TandaService : ITandaService
         if (product == null)
             throw new Exception("El producto especificado no existe o no está activo.");
 
+        TandaTurnPlanner.ValidateCompleteAssignments(
+            dto.TotalWeeks,
+            dto.Participants.Select(p => p.AssignedTurn).ToList());
+
+        var clientIds = dto.Participants
+            .Select(p => p.CustomerId)
+            .Distinct()
+            .ToList();
+        var clients = await _db.Clients
+            .Where(c => clientIds.Contains(c.Id))
+            .ToDictionaryAsync(c => c.Id);
+
+        if (clientIds.Any(id => !clients.ContainsKey(id)))
+            throw new InvalidOperationException("Una o más clientas seleccionadas ya no existen.");
+
+        await using var transaction = await _db.Database.BeginTransactionAsync();
         var tanda = new Tanda
         {
+            Id = Guid.NewGuid(),
             ProductId = dto.ProductId,
+            Product = product,
             Name = dto.Name,
             TotalWeeks = dto.TotalWeeks,
             WeeklyAmount = dto.WeeklyAmount,
@@ -32,8 +50,26 @@ public class TandaService : ITandaService
             AccessToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N")
         };
 
+        foreach (var assignment in dto.Participants.OrderBy(p => p.AssignedTurn))
+        {
+            tanda.Participants.Add(new TandaParticipant
+            {
+                Id = Guid.NewGuid(),
+                TandaId = tanda.Id,
+                CustomerId = assignment.CustomerId,
+                Client = clients[assignment.CustomerId],
+                AssignedTurn = assignment.AssignedTurn,
+                Status = "Active",
+                Variant = string.IsNullOrWhiteSpace(assignment.Variant)
+                    ? null
+                    : assignment.Variant.Trim(),
+                WeeklyAmount = assignment.WeeklyAmount
+            });
+        }
+
         _db.Tandas.Add(tanda);
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         return MapToTandaDto(tanda);
     }
@@ -193,52 +229,6 @@ public class TandaService : ITandaService
         }
 
         await _db.SaveChangesAsync();
-    }
-
-    public async Task<List<TandaParticipantDto>> ShuffleParticipantsAsync(Guid tandaId, Guid? forcedTurn1Id = null)
-    {
-        var participants = await _db.TandaParticipants
-            .Include(p => p.Client)
-            .Where(p => p.TandaId == tandaId)
-            .ToListAsync();
-
-        if (!participants.Any()) return new List<TandaParticipantDto>();
-
-        // Paso 1: Liberar turnos actuales con offset temporal
-        foreach (var p in participants)
-        {
-            p.AssignedTurn += 1000;
-        }
-        await _db.SaveChangesAsync();
-
-        // Paso 2: Realizar el shuffle
-        var random = new Random();
-        
-        // Si hay un ganador forzado (desde la ruleta), lo asignamos al Turno 1
-        var remainingParticipants = participants.ToList();
-        if (forcedTurn1Id.HasValue)
-        {
-            var winner = remainingParticipants.FirstOrDefault(p => p.Id == forcedTurn1Id.Value);
-            if (winner != null)
-            {
-                winner.AssignedTurn = 1;
-                remainingParticipants.Remove(winner);
-            }
-        }
-
-        // Shuffle para el resto de los turnos
-        var startTurn = forcedTurn1Id.HasValue ? 2 : 1;
-        var turns = Enumerable.Range(startTurn, participants.Count - (forcedTurn1Id.HasValue ? 1 : 0))
-                             .OrderBy(x => random.Next()).ToList();
-
-        for (int i = 0; i < remainingParticipants.Count; i++)
-        {
-            remainingParticipants[i].AssignedTurn = turns[i];
-        }
-
-        await _db.SaveChangesAsync();
-
-        return participants.Select(MapToParticipantDto).ToList();
     }
 
     public async Task<List<TandaProductDto>> GetProductsAsync()
@@ -434,11 +424,11 @@ public class TandaService : ITandaService
             .Where(p => p.TandaId == tandaId)
             .ToListAsync();
 
-        if (participants.Count != participantIdsInOrder.Count)
-            throw new Exception("La lista de participantes no coincide con el total de la tanda.");
+        TandaTurnPlanner.ValidateExactOrder(
+            participants.Select(p => p.Id).ToList(),
+            participantIdsInOrder);
 
-        // Para evitar el error de dependencia circular (circular dependency) por el índice único {tanda_id, assigned_turn}
-        // movemos temporalmente los turnos a un rango fuera de lo normal (sumando 1000)
+        await using var transaction = await _db.Database.BeginTransactionAsync();
         foreach (var p in participants)
         {
             p.AssignedTurn += 1000;
@@ -457,5 +447,6 @@ public class TandaService : ITandaService
         }
 
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
     }
 }

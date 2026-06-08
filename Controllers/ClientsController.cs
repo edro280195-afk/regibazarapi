@@ -214,6 +214,12 @@ public class ClientsController : ControllerBase
             c.Address = normalizedAddress;
             c.NormalizedAddress = TextNormalizer.NormalizeAddress(normalizedAddress);
         }
+        if (req.DeliveryInstructions != null)
+        {
+            c.DeliveryInstructions = string.IsNullOrWhiteSpace(req.DeliveryInstructions)
+                ? null
+                : req.DeliveryInstructions.Trim();
+        }
         await _db.SaveChangesAsync();
         return NoContent();
     }

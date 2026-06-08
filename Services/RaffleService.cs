@@ -483,6 +483,12 @@ public class RaffleService : IRaffleService
         if (!raffle.TandaId.HasValue)
             throw new InvalidOperationException("Este sorteo no está vinculado a una tanda.");
 
+        if (!raffle.ShuffleTandaTurns)
+            throw new InvalidOperationException("Este sorteo no está configurado para mezclar turnos de tanda.");
+
+        if (raffle.Status == "Completed" || raffle.Status == "Cancelled")
+            throw new InvalidOperationException("Este sorteo de tanda ya está cerrado.");
+
         var tanda = raffle.Tanda;
         if (tanda == null)
             throw new KeyNotFoundException("Tanda no encontrada.");
@@ -490,9 +496,15 @@ public class RaffleService : IRaffleService
         if (tanda.Participants.Count == 0)
             throw new InvalidOperationException("La tanda no tiene participantes.");
 
-        // Obtener turnos actuales
-        var currentAssignments = tanda.Participants
+        var activeParticipants = tanda.Participants
             .Where(p => p.Status == "Active")
+            .OrderBy(p => p.AssignedTurn)
+            .ToList();
+
+        if (activeParticipants.Count == 0)
+            throw new InvalidOperationException("No hay participantes activos en la tanda.");
+
+        var currentAssignments = activeParticipants
             .Select(p => new TandaTurnAssignmentDto
             {
                 ClientId = p.CustomerId,
@@ -502,36 +514,8 @@ public class RaffleService : IRaffleService
             })
             .ToList();
 
-        if (currentAssignments.Count == 0)
-            throw new InvalidOperationException("No hay participantes activos en la tanda.");
-
-        // Mezclar turnos
-        var random = new Random();
-        var newTurns = Enumerable.Range(1, currentAssignments.Count)
-            .OrderBy(x => random.Next())
-            .ToList();
-
-        // Asignar nuevos turnos
-        for (int i = 0; i < currentAssignments.Count; i++)
-        {
-            currentAssignments[i].NewTurn = newTurns[i];
-        }
-
-        // Actualizar en la base de datos
-        // Paso 1: Liberar turnos actuales con offset temporal para evitar colisiones en el índice único
-        foreach (var p in tanda.Participants)
-        {
-            p.AssignedTurn += 1000;
-        }
-        await _db.SaveChangesAsync();
-
-        // Paso 2: Asignar nuevos turnos
         foreach (var assignment in currentAssignments)
         {
-            var participant = tanda.Participants.First(p => p.CustomerId == assignment.ClientId);
-            participant.AssignedTurn = assignment.NewTurn;
-
-            // Actualizar participante del sorteo si existe
             var raffleParticipant = raffle.Participants
                 .FirstOrDefault(rp => rp.ClientId == assignment.ClientId);
 
@@ -539,16 +523,16 @@ public class RaffleService : IRaffleService
             {
                 raffleParticipant.AssignedTandaTurn = assignment.NewTurn;
                 raffleParticipant.PreviousTandaTurn = assignment.PreviousTurn;
-                raffleParticipant.IsWinner = true; // Todos "ganan" un nuevo turno
+                raffleParticipant.IsWinner = true;
             }
         }
 
-        // Registrar el sorteo
+        var shuffleDate = DateTime.UtcNow;
         var draw = new RaffleDraw
         {
             Id = Guid.NewGuid(),
             RaffleId = raffleId,
-            DrawDate = DateTime.UtcNow,
+            DrawDate = shuffleDate,
             SelectionMethod = "tandaShuffle",
             IsTandaShuffle = true,
             TandaTurnsReshuffled = currentAssignments.Count,
@@ -556,6 +540,9 @@ public class RaffleService : IRaffleService
         };
 
         _db.RaffleDraws.Add(draw);
+        raffle.Status = "Completed";
+        raffle.AnnouncedAt = shuffleDate;
+        raffle.UpdatedAt = shuffleDate;
         await _db.SaveChangesAsync();
 
         return new TandaShuffleResultDto
@@ -565,7 +552,7 @@ public class RaffleService : IRaffleService
             TandaName = tanda.Name,
             ParticipantsShuffled = currentAssignments.Count,
             TurnAssignments = currentAssignments,
-            ShuffleDate = DateTime.UtcNow
+            ShuffleDate = shuffleDate
         };
     }
 

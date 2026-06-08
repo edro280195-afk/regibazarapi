@@ -20,6 +20,22 @@ public class CreateTandaDto
 
     [Required]
     public DateTime StartDate { get; set; }
+
+    [Required, MinLength(1)]
+    public List<CreateTandaParticipantDto> Participants { get; set; } = new();
+}
+
+public class CreateTandaParticipantDto
+{
+    [Required]
+    public int CustomerId { get; set; }
+
+    [Required]
+    public int AssignedTurn { get; set; }
+
+    public string? Variant { get; set; }
+
+    public decimal? WeeklyAmount { get; set; }
 }
 
 public class AddParticipantDto
