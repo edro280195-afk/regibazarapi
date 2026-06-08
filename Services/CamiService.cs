@@ -1290,7 +1290,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     {
         var nombreClienta = GetStr(args, "nombre_clienta") ?? throw new ArgumentException("nombre_clienta es requerido.");
         var telefono      = GetStr(args, "telefono");
-        var direccion     = GetStr(args, "direccion");
+        var direccion     = ClientDataPolicy.NormalizeOptionalAddress(GetStr(args, "direccion"));
         var tipoClienta   = GetStr(args, "tipo_clienta") ?? "Nueva";
         var tipoEnvioStr  = GetStr(args, "tipo_envio") ?? "Delivery";
         var costoEnvioRaw = GetDecimal(args, "costo_envio", -1);
@@ -1322,15 +1322,26 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
                 Name    = nombreClienta,
                 Phone   = telefono,
                 Address = direccion,
-                Type    = tipoClienta
+                Type    = tipoClienta,
+                NormalizedName = TextNormalizer.NormalizeName(nombreClienta),
+                NormalizedPhone = TextNormalizer.NormalizePhone(telefono),
+                NormalizedAddress = TextNormalizer.NormalizeAddress(direccion)
             };
             _db.Clients.Add(client);
             await _db.SaveChangesAsync();
         }
         else
         {
-            if (telefono != null) client.Phone   = telefono;
-            if (direccion != null) client.Address = direccion;
+            if (!string.IsNullOrWhiteSpace(telefono))
+            {
+                client.Phone = telefono.Trim();
+                client.NormalizedPhone = TextNormalizer.NormalizePhone(client.Phone);
+            }
+            if (direccion != null)
+            {
+                client.Address = direccion;
+                client.NormalizedAddress = TextNormalizer.NormalizeAddress(direccion);
+            }
         }
 
         // Verificar si existe pedido pendiente (merge)
@@ -1565,7 +1576,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
     {
         var nombre    = GetStr(args, "nombre") ?? throw new ArgumentException("nombre es requerido.");
         var telefono  = GetStr(args, "telefono");
-        var direccion = GetStr(args, "direccion");
+        var direccion = ClientDataPolicy.NormalizeOptionalAddress(GetStr(args, "direccion"));
         var tipo      = GetStr(args, "tipo") ?? "Nueva";
 
         var existe = await _db.Clients.AnyAsync(c => c.Name.ToLower() == nombre.ToLower());
@@ -1577,7 +1588,10 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             Name    = nombre,
             Phone   = telefono,
             Address = direccion,
-            Type    = tipo
+            Type    = tipo,
+            NormalizedName = TextNormalizer.NormalizeName(nombre),
+            NormalizedPhone = TextNormalizer.NormalizePhone(telefono),
+            NormalizedAddress = TextNormalizer.NormalizeAddress(direccion)
         };
         _db.Clients.Add(client);
         await _db.SaveChangesAsync();
@@ -2060,10 +2074,20 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         var cambios = new List<string>();
 
         var telefono = GetStr(args, "telefono");
-        if (telefono != null) { client.Phone = telefono; cambios.Add("teléfono"); }
+        if (!string.IsNullOrWhiteSpace(telefono))
+        {
+            client.Phone = telefono.Trim();
+            client.NormalizedPhone = TextNormalizer.NormalizePhone(client.Phone);
+            cambios.Add("teléfono");
+        }
 
-        var direccion = GetStr(args, "direccion");
-        if (direccion != null) { client.Address = direccion; cambios.Add("dirección"); }
+        var direccion = ClientDataPolicy.NormalizeOptionalAddress(GetStr(args, "direccion"));
+        if (direccion != null)
+        {
+            client.Address = direccion;
+            client.NormalizedAddress = TextNormalizer.NormalizeAddress(direccion);
+            cambios.Add("dirección");
+        }
 
         var tipo = GetStr(args, "tipo");
         if (tipo != null && new[] { "Nueva", "Frecuente", "VIP" }.Contains(tipo, StringComparer.OrdinalIgnoreCase))

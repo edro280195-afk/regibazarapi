@@ -65,7 +65,9 @@ public record OrderSummaryDto(
     int? DeliveryRouteId = null,
     DateTime? ScheduledDeliveryDate = null,
     string? ClientFacebookProfileUrl = null,
-    DateTime? NotifiedAt = null
+    DateTime? NotifiedAt = null,
+    double? ClientLatitude = null,
+    double? ClientLongitude = null
 );
 
 

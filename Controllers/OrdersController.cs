@@ -343,16 +343,17 @@ public class OrdersController : ControllerBase
 
         if (client == null)
         {
+            var clientAddress = ClientDataPolicy.NormalizeOptionalAddress(req.ClientAddress);
             client = new Client
             {
                 Name = typedName,
                 Phone = req.ClientPhone,
-                Address = req.ClientAddress,
+                Address = clientAddress,
                 Type = req.Type ?? "Nueva",
                 CreatedAt = DateTime.UtcNow,
                 NormalizedName = TextNormalizer.NormalizeName(typedName),
                 NormalizedPhone = TextNormalizer.NormalizePhone(req.ClientPhone),
-                NormalizedAddress = TextNormalizer.NormalizeAddress(req.ClientAddress),
+                NormalizedAddress = TextNormalizer.NormalizeAddress(clientAddress),
             };
             _db.Clients.Add(client);
             await _db.SaveChangesAsync(); // Guardamos para tener el ID
@@ -363,15 +364,15 @@ public class OrdersController : ControllerBase
             bool typeChanged = !string.IsNullOrEmpty(req.Type) && client.Type != req.Type;
 
             // Actualizamos datos de contacto si vienen nuevos
-            if (!string.IsNullOrEmpty(req.ClientPhone))
+            if (!string.IsNullOrWhiteSpace(req.ClientPhone))
             {
-                client.Phone = req.ClientPhone;
-                client.NormalizedPhone = TextNormalizer.NormalizePhone(req.ClientPhone);
+                client.Phone = req.ClientPhone.Trim();
+                client.NormalizedPhone = TextNormalizer.NormalizePhone(client.Phone);
             }
-            if (!string.IsNullOrEmpty(req.ClientAddress))
+            if (!string.IsNullOrWhiteSpace(req.ClientAddress))
             {
-                client.Address = req.ClientAddress;
-                client.NormalizedAddress = TextNormalizer.NormalizeAddress(req.ClientAddress);
+                client.Address = req.ClientAddress.Trim();
+                client.NormalizedAddress = TextNormalizer.NormalizeAddress(client.Address);
             }
             if (!string.IsNullOrEmpty(req.Type)) client.Type = req.Type;
 
@@ -447,6 +448,12 @@ public class OrdersController : ControllerBase
             var dates = _orderService.CalculateOrderDates(client.Type, existingOrder.CreatedAt, req.ScheduledDeliveryDate);
             existingOrder.ExpiresAt = dates.ExpiresAt;
             existingOrder.ScheduledDeliveryDate = dates.ScheduledDeliveryDate;
+
+            var alternativeAddress = ClientDataPolicy.NormalizeOptionalAddress(req.AlternativeAddress);
+            if (alternativeAddress != null)
+            {
+                existingOrder.AlternativeAddress = alternativeAddress;
+            }
         }
         else
         {
@@ -466,7 +473,7 @@ public class OrdersController : ControllerBase
                 ScheduledDeliveryDate = dates.ScheduledDeliveryDate,
                 Status        = Models.OrderStatus.Pending,
                 OrderType     = reqOrderType,
-                AlternativeAddress = req.AlternativeAddress,
+                AlternativeAddress = ClientDataPolicy.NormalizeOptionalAddress(req.AlternativeAddress),
                 Items         = new List<OrderItem>(),
                 CreatedAt     = DateTime.UtcNow,
                 SalesPeriodId = (await _db.SalesPeriods.FirstOrDefaultAsync(p => p.IsActive))?.Id,
@@ -1069,8 +1076,17 @@ public class OrdersController : ControllerBase
             // la edición rápida desde el Kanban mandaba "" cuando el formulario no
             // incluía esos campos y borraba la BD.
             order.Client.Name = req.ClientName;
-            if (!string.IsNullOrWhiteSpace(req.ClientAddress)) order.Client.Address = req.ClientAddress;
-            if (!string.IsNullOrWhiteSpace(req.ClientPhone)) order.Client.Phone = req.ClientPhone;
+            order.Client.NormalizedName = TextNormalizer.NormalizeName(req.ClientName);
+            if (!string.IsNullOrWhiteSpace(req.ClientAddress))
+            {
+                order.Client.Address = req.ClientAddress.Trim();
+                order.Client.NormalizedAddress = TextNormalizer.NormalizeAddress(order.Client.Address);
+            }
+            if (!string.IsNullOrWhiteSpace(req.ClientPhone))
+            {
+                order.Client.Phone = req.ClientPhone.Trim();
+                order.Client.NormalizedPhone = TextNormalizer.NormalizePhone(order.Client.Phone);
+            }
             if (!string.IsNullOrEmpty(req.Type)) order.Client.Type = req.Type;
             if (req.ClientFacebookProfileUrl != null) order.Client.FacebookProfileUrl = string.IsNullOrWhiteSpace(req.ClientFacebookProfileUrl) ? null : req.ClientFacebookProfileUrl;
 
@@ -1099,8 +1115,10 @@ public class OrdersController : ControllerBase
         // con los reportes. Si llega req.AdvancePayment se ignora a propósito.
         if (req.ShippingCost.HasValue) order.ShippingCost = req.ShippingCost.Value;
 
-        bool addressChanged = order.AlternativeAddress != req.AlternativeAddress;
-        order.AlternativeAddress = req.AlternativeAddress;
+        if (req.AlternativeAddress != null)
+        {
+            order.AlternativeAddress = ClientDataPolicy.NormalizeOptionalAddress(req.AlternativeAddress);
+        }
 
         if (Enum.TryParse<Models.OrderStatus>(req.Status, true, out var newStatus))
         {

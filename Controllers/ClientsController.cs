@@ -208,7 +208,12 @@ public class ClientsController : ControllerBase
         if (c == null) return NotFound();
         c.Latitude = req.Latitude;
         c.Longitude = req.Longitude;
-        if (!string.IsNullOrWhiteSpace(req.Address)) c.Address = req.Address;
+        var normalizedAddress = ClientDataPolicy.NormalizeOptionalAddress(req.Address);
+        if (normalizedAddress != null)
+        {
+            c.Address = normalizedAddress;
+            c.NormalizedAddress = TextNormalizer.NormalizeAddress(normalizedAddress);
+        }
         await _db.SaveChangesAsync();
         return NoContent();
     }
@@ -302,8 +307,8 @@ public class ClientsController : ControllerBase
         }
         if (!string.IsNullOrWhiteSpace(req.Address))
         {
-            client.Address = req.Address;
-            client.NormalizedAddress = TextNormalizer.NormalizeAddress(req.Address);
+            client.Address = req.Address.Trim();
+            client.NormalizedAddress = TextNormalizer.NormalizeAddress(client.Address);
         }
         client.Type = req.Type;
         if (!string.IsNullOrWhiteSpace(req.DeliveryInstructions)) client.DeliveryInstructions = req.DeliveryInstructions;

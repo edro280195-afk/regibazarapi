@@ -27,4 +27,8 @@
     <PackageReference Include="CloudinaryDotNet" Version="1.27.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
+  </ItemGroup>
+
 </Project>

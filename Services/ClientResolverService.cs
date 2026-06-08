@@ -264,6 +264,7 @@ public class ClientResolverService : IClientResolverService
         var aliasesMoved = source.Aliases.Count;
         var sourceName = source.Name ?? "";
         var targetName = target.Name ?? "";
+        var preservedFields = ClientDataPolicy.PreserveMissingData(target, source);
 
         // 1. Reasignar todas las órdenes del source al target
         await _db.Orders
@@ -320,7 +321,13 @@ public class ClientResolverService : IClientResolverService
             TargetClientId = targetId,
             TargetName = targetName,
             Mode = mode,
-            Reason = reason,
+            Reason = preservedFields.Count == 0
+                ? reason
+                : string.Join("; ", new[]
+                {
+                    reason,
+                    $"datos preservados: {string.Join(", ", preservedFields)}"
+                }.Where(value => !string.IsNullOrWhiteSpace(value))),
             Confidence = confidence,
             OrdersMoved = ordersMoved,
             AliasesMoved = aliasesMoved,

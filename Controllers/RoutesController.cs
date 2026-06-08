@@ -221,7 +221,9 @@ public class RoutesController : ControllerBase
                     TandaParticipantId: null,
                     SortOrder: idx++,
                     ClientName: o.Client?.Name ?? "Cliente",
-                    ClientAddress: o.AlternativeAddress ?? o.Client?.Address,
+                    ClientAddress: ClientDataPolicy.ResolveDeliveryAddress(
+                        o.Client?.Address,
+                        o.AlternativeAddress),
                     Latitude: o.Client?.Latitude,
                     Longitude: o.Client?.Longitude,
                     Total: o.Total,
