@@ -62,7 +62,8 @@ public class OrderService : IOrderService
                 localDelivery = manualDate.Value.Date;
             }
 
-            // El vencimiento es 2 días después de la entrega
+            // El vencimiento es 2 días después de la entrega (martes 23:59 si
+            // la entrega es domingo, pero aplica a cualquier día manual).
             var localExpiration = localDelivery.AddDays(2);
 
             return (
@@ -72,16 +73,15 @@ public class OrderService : IOrderService
         }
         else
         {
-            // Lógica estándar
-            var expiresAt = CalculateExpiration(clientType, createdAt);
-            
-            // Si el vencimiento es un Lunes a las 00:00:00 (vía CalculateExpiration), 
-            // la entrega programada es el Domingo (1 día antes)
-            var localExpiresAt = TimeZoneInfo.ConvertTimeFromUtc(expiresAt, mexicoZone);
-            var localDelivery = localExpiresAt.AddDays(-1).Date;
+            // Regla de negocio:
+            //   • Entrega programada: próximo domingo (no se mueve).
+            //   • Vigencia del enlace: 2 días después de la entrega (martes 23:59
+            //     hora México cuando la entrega es domingo).
+            var localDelivery = NextSunday(createdAt);
+            var localExpiration = localDelivery.AddDays(2);
 
             return (
-                expiresAt,
+                TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone),
                 TimeZoneInfo.ConvertTimeToUtc(localDelivery, mexicoZone)
             );
         }
@@ -98,23 +98,33 @@ public class OrderService : IOrderService
             createdAt = DateTime.SpecifyKind(createdAt, DateTimeKind.Utc);
         }
 
-        // Convertimos la fecha base a hora local
-        var localCreated = TimeZoneInfo.ConvertTimeFromUtc(createdAt, mexicoZone);
+        // Vigencia: la entrega es el próximo domingo y el enlace expira 2 días
+        // después (martes 23:59 hora México).
+        var localDelivery = NextSunday(createdAt);
+        var localExpiration = localDelivery.AddDays(2);
 
-        // Calculamos cuántos días faltan para el próximo Lunes
-        int daysUntilMonday = (8 - (int)localCreated.DayOfWeek) % 7;
-        if (daysUntilMonday == 0) daysUntilMonday = 7;
-
-        // Fecha base: El próximo Lunes a las 00:00:00 local
-        DateTime localExpiration = localCreated.Date.AddDays(daysUntilMonday);
-
-        // Regla de negocio: Si es Frecuente, +7 días extra
-        if (clientType == "Frecuente")
-        {
-            localExpiration = localExpiration.AddDays(7);
-        }
-
-        // Devolvemos en UTC
         return TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone);
+    }
+
+    /// <summary>
+    /// Devuelve la fecha (sin hora) del próximo domingo en hora local de México,
+    /// a partir de la fecha/hora UTC dada. Si la fecha de creación YA es domingo,
+    /// devuelve ese mismo día (la clienta ya puede confirmar/entregarse hoy).
+    /// </summary>
+    private static DateTime NextSunday(DateTime createdAtUtc)
+    {
+        var mexicoZone = BackendExtensions.GetMexicoZone();
+        if (createdAtUtc.Kind == DateTimeKind.Unspecified)
+        {
+            createdAtUtc = DateTime.SpecifyKind(createdAtUtc, DateTimeKind.Utc);
+        }
+        var localCreated = TimeZoneInfo.ConvertTimeFromUtc(createdAtUtc, mexicoZone).Date;
+
+        // DayOfWeek.Sunday = 0. Si es domingo, devolvemos hoy mismo.
+        if (localCreated.DayOfWeek == DayOfWeek.Sunday) return localCreated;
+
+        int daysUntilSunday = (7 - (int)localCreated.DayOfWeek) % 7;
+        if (daysUntilSunday == 0) daysUntilSunday = 7;
+        return localCreated.AddDays(daysUntilSunday);
     }
 }

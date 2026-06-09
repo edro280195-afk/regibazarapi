@@ -119,6 +119,10 @@ builder.Services.AddScoped<ISalesPeriodService, SalesPeriodService>();
 builder.Services.AddScoped<IGeminiService, GeminiService>();
 builder.Services.AddScoped<ICamiService, CamiService>();
 builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
+// ElevenLabs reemplaza a Google TTS como motor principal de CAMI. Google se
+// mantiene registrado para que ElevenLabs lo use como fallback automático
+// si la API key no está configurada o ElevenLabs falla.
+builder.Services.AddScoped<IElevenLabsTtsService, ElevenLabsTtsService>();
 builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
 builder.Services.AddScoped<IGeocodingService, GeocodingService>();
 builder.Services.AddScoped<IOrderService, OrderService>();

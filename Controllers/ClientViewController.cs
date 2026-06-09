@@ -105,7 +105,7 @@ public class ClientViewController : ControllerBase
         }
 
         return Ok(new ClientOrderView(
-            ClientId: order.ClientId,                          // <--- 1. ¡Agregado!
+            ClientId: order.ClientId,
             ClientName: order.Client?.Name ?? "Cliente",
             Items: order.Items.Select(i => new OrderItemDto(
                 i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal
@@ -135,7 +135,17 @@ public class ClientViewController : ControllerBase
             DeliveryInstructions: order.DeliveryInstructions,
             ExpiresAt: order.ExpiresAt,
             ScheduledDeliveryDate: order.ScheduledDeliveryDate,
-            EvidenceUrls: order.Delivery?.Evidences?.Select(e => e.ImagePath).ToList()
+            EvidenceUrls: order.Delivery?.Evidences?
+                .Where(e => e.Type == EvidenceType.DeliveryProof)
+                .Select(e => e.ImagePath).ToList(),
+            SignatureSvg: order.Delivery?.SignatureSvg,
+            SignedByName: order.Delivery?.SignedByName,
+            SignedAt: order.Delivery?.SignedAt,
+            FailureReason: order.Delivery?.FailureReason,
+            DeliveredAt: order.Delivery?.DeliveredAt,
+            NonDeliveryEvidenceUrls: order.Delivery?.Evidences?
+                .Where(e => e.Type == EvidenceType.NonDeliveryProof)
+                .Select(e => e.ImagePath).ToList()
         ));
     }
 

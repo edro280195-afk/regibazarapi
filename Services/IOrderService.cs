@@ -9,16 +9,16 @@ public interface IOrderService
     Task SyncOrderExpirationsAsync(int clientId);
 
     /// <summary>
-    /// Calculates the expiration date based on business rules:
-    /// - Nueva: Next Monday from createdAt.
-    /// - Frecuente: Monday after next from createdAt.
+    /// Calculates the expiration date based on business rules.
+    /// The link lives 2 days after the scheduled delivery (Tuesday 23:59 local
+    /// when delivery is on Sunday).
     /// </summary>
     DateTime CalculateExpiration(string clientType, DateTime createdAt);
 
     /// <summary>
     /// Calculates both Expiration and Scheduled Delivery Date.
     /// If manualDate is provided: ExpiresAt = manualDate + 2 days.
-    /// If not: Uses standard logic and sets ScheduledDeliveryDate to Sunday before expiration.
+    /// If not: ScheduledDeliveryDate = next Sunday, ExpiresAt = Sunday + 2 days.
     /// </summary>
     (DateTime ExpiresAt, DateTime ScheduledDeliveryDate) CalculateOrderDates(string clientType, DateTime createdAt, DateTime? manualDate = null);
 }

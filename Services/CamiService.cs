@@ -23,7 +23,7 @@ public class CamiService : ICamiService
     private readonly GenAiClient _gemini;
     private readonly ILogger<CamiService> _logger;
     private readonly IRouteOptimizerService _optimizer;
-    private readonly IGoogleTtsService _tts;
+    private readonly IElevenLabsTtsService _tts;
     private readonly IConfiguration _config;
     private readonly IOrderService _orderService;
 
@@ -468,7 +468,7 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         }
     };
 
-    public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger, IRouteOptimizerService optimizer, IGoogleTtsService tts, IOrderService orderService)
+    public CamiService(AppDbContext db, IConfiguration config, ILogger<CamiService> logger, IRouteOptimizerService optimizer, IElevenLabsTtsService tts, IOrderService orderService)
     {
         _db = db;
         _config = config;

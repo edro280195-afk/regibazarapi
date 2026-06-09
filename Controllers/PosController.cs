@@ -15,11 +15,11 @@ public class PosController : ControllerBase
 {
     private readonly IPosService _posService;
     private readonly IGeminiService _gemini;
-    private readonly IGoogleTtsService _tts;
+    private readonly IElevenLabsTtsService _tts;
     private readonly IConfiguration _config;
     private readonly string FrontendUrl;
 
-    public PosController(IPosService posService, IConfiguration config, IGeminiService gemini, IGoogleTtsService tts)
+    public PosController(IPosService posService, IConfiguration config, IGeminiService gemini, IElevenLabsTtsService tts)
     {
         _posService = posService;
         _config = config;

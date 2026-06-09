@@ -478,6 +478,12 @@ public class DriverController : ControllerBase
                 delivery.Status = DeliveryStatus.Delivered;
                 delivery.DeliveredAt = DateTime.UtcNow;
                 delivery.Notes = req.Notes;
+                if (!string.IsNullOrWhiteSpace(req.SignatureSvg))
+                {
+                    delivery.SignatureSvg = req.SignatureSvg;
+                    delivery.SignedAt = DateTime.UtcNow;
+                    delivery.SignedByName = string.IsNullOrWhiteSpace(req.SignedByName) ? null : req.SignedByName;
+                }
                 if (delivery.TandaParticipant != null)
                 {
                     delivery.TandaParticipant.IsDelivered = true;
@@ -513,6 +519,13 @@ public class DriverController : ControllerBase
             delivery.Status = DeliveryStatus.Delivered;
             delivery.DeliveredAt = DateTime.UtcNow;
             delivery.Notes = req.Notes;
+            // Firma digital capturada en la app del conductor (opcional, no todas las clientas firman)
+            if (!string.IsNullOrWhiteSpace(req.SignatureSvg))
+            {
+                delivery.SignatureSvg = req.SignatureSvg;
+                delivery.SignedAt = DateTime.UtcNow;
+                delivery.SignedByName = string.IsNullOrWhiteSpace(req.SignedByName) ? null : req.SignedByName;
+            }
             delivery.Order!.Status = Models.OrderStatus.Delivered;
             if (!string.IsNullOrWhiteSpace(req.PaymentsJson))
             {

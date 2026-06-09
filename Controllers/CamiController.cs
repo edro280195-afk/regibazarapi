@@ -14,12 +14,12 @@ namespace EntregasApi.Controllers;
 public class CamiController : ControllerBase
 {
     private readonly ICamiService _cami;
-    private readonly IGoogleTtsService _tts;
+    private readonly IElevenLabsTtsService _tts;
     private readonly IGeminiService _gemini;
     private readonly AppDbContext _db;
     private readonly ILogger<CamiController> _logger;
 
-    public CamiController(ICamiService cami, IGoogleTtsService tts, IGeminiService gemini, AppDbContext db, ILogger<CamiController> logger)
+    public CamiController(ICamiService cami, IElevenLabsTtsService tts, IGeminiService gemini, AppDbContext db, ILogger<CamiController> logger)
     {
         _cami = cami;
         _tts = tts;

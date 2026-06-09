@@ -42,6 +42,16 @@ public class Delivery
 
     public DateTime? DeliveredAt { get; set; }
 
+    /// <summary>Firma digital de quien recibe (SVG inline del canvas de firma).</summary>
+    public string? SignatureSvg { get; set; }
+
+    /// <summary>Nombre de quien firmó el pedido al momento de la entrega.</summary>
+    [MaxLength(120)]
+    public string? SignedByName { get; set; }
+
+    /// <summary>Fecha/hora en que se capturó la firma.</summary>
+    public DateTime? SignedAt { get; set; }
+
     /// <summary>Momento en que el repartidor llegó cerca del destino (proximidad 300m)</summary>
     public DateTime? ArrivedAt { get; set; }
 

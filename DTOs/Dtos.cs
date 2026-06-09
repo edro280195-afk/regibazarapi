@@ -312,7 +312,7 @@ public record UpdateAdminExpenseRequest(decimal Amount, string ExpenseType, Date
 
 // ── Driver ──
 public record UpdateLocationRequest(double Latitude, double Longitude);
-public record CompleteDeliveryRequest(string? Notes, string? PaymentsJson);
+public record CompleteDeliveryRequest(string? Notes, string? PaymentsJson, string? SignatureSvg = null, string? SignedByName = null);
 public record PaymentInputDto(decimal Amount, string Method, string? Notes);
 public record FailDeliveryRequest(string Reason, string? Notes);
 
@@ -332,7 +332,7 @@ public record ClientOrderView(
     bool IsCurrentDelivery = false,
     int? DeliveriesAhead = null,
     double? ClientLatitude = null,
-    double? ClientLongitude = null,   
+    double? ClientLongitude = null,
     DateTime? CreatedAt = null,
     string? Type = null,
     string? ClientAddress = null,
@@ -344,7 +344,20 @@ public record ClientOrderView(
     string? DeliveryInstructions = null,
     DateTime? ExpiresAt = null,
     DateTime? ScheduledDeliveryDate = null,
-    List<string>? EvidenceUrls = null
+    /// <summary>Fotos de evidencia de la entrega (solo si fue entregada).</summary>
+    List<string>? EvidenceUrls = null,
+    /// <summary>Firma digital capturada al momento de la entrega (SVG).</summary>
+    string? SignatureSvg = null,
+    /// <summary>Nombre de quien firmó el pedido.</summary>
+    string? SignedByName = null,
+    /// <summary>Fecha/hora en que se firmó.</summary>
+    DateTime? SignedAt = null,
+    /// <summary>Motivo de no entrega (solo si Status = NotDelivered).</summary>
+    string? FailureReason = null,
+    /// <summary>Fecha/hora real de la entrega o del intento fallido.</summary>
+    DateTime? DeliveredAt = null,
+    /// <summary>Fotos del intento de no entrega (cuando Status = NotDelivered).</summary>
+    List<string>? NonDeliveryEvidenceUrls = null
 );
 
 // ── OrderPayment ──

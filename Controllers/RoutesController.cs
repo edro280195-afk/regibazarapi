@@ -21,11 +21,11 @@ public class RoutesController : ControllerBase
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IPushNotificationService _push;
     private readonly IGeminiService _geminiService;
-    private readonly IGoogleTtsService _tts;
+    private readonly IElevenLabsTtsService _tts;
     private readonly IRouteOptimizerService _optimizer;
     private readonly ILogger<RoutesController> _logger;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IGoogleTtsService tts, IRouteOptimizerService optimizer, ILogger<RoutesController> logger)
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IElevenLabsTtsService tts, IRouteOptimizerService optimizer, ILogger<RoutesController> logger)
     {
         _db = db;
         _tokenService = tokenService;
