@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using EntregasApi.Models;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace EntregasApi.Services;
 
@@ -10,18 +11,27 @@ public class RouteOptimizerService : IRouteOptimizerService
     private readonly IHttpClientFactory _httpFactory;
     private readonly IConfiguration _config;
     private readonly ILogger<RouteOptimizerService> _logger;
+    private readonly IMemoryCache _cache;
 
     // Routes API v2 acepta hasta 25 waypoints intermedios por solicitud de computeRoutes.
     private const int MaxIntermediatesForPolyline = 25;
     // computeRouteMatrix permite hasta 625 elementos (orígenes × destinos) por request.
     private const int MatrixElementBudget = 600;
 
-    public RouteOptimizerService(IHttpClientFactory httpFactory, IConfiguration config, ILogger<RouteOptimizerService> logger)
+    // Cache de tramos (origen→destino) para no re-consultar a Google en cada cambio de selección.
+    private const string LegCachePrefix = "rom:leg:";
+    private static readonly TimeSpan LegCacheTtl = TimeSpan.FromHours(6);
+
+    public RouteOptimizerService(IHttpClientFactory httpFactory, IConfiguration config, ILogger<RouteOptimizerService> logger, IMemoryCache cache)
     {
         _httpFactory = httpFactory;
         _config = config;
         _logger = logger;
+        _cache = cache;
     }
+
+    private static string LegKey((double lat, double lng) a, (double lat, double lng) b)
+        => FormattableString.Invariant($"{LegCachePrefix}{a.lat:F6},{a.lng:F6}>{b.lat:F6},{b.lng:F6}");
 
     public async Task<OptimizedRoute> OptimizeAsync(List<RouteStop> stops, double startLat, double startLng, CancellationToken ct = default)
     {
@@ -144,6 +154,23 @@ public class RouteOptimizerService : IRouteOptimizerService
             for (int j = 0; j < N; j++) { dur[i][j] = double.NaN; dist[i][j] = double.NaN; }
         }
 
+        // ── Cache: rellenar tramos ya conocidos; solo llamamos a Google si falta alguno ──
+        bool anyMissing = false;
+        for (int i = 0; i < N; i++)
+            for (int j = 0; j < N; j++)
+            {
+                if (i == j) { dur[i][j] = 0; dist[i][j] = 0; continue; }
+                if (_cache.TryGetValue(LegKey(pts[i], pts[j]), out (double dur, double dist) leg))
+                {
+                    dur[i][j] = leg.dur;
+                    dist[i][j] = leg.dist;
+                }
+                else anyMissing = true;
+            }
+
+        if (!anyMissing)
+            return (dur, dist); // todo servido del cache — cero consultas a Google
+
         var http = _httpFactory.CreateClient();
         http.Timeout = TimeSpan.FromSeconds(20);
 
@@ -221,6 +248,14 @@ public class RouteOptimizerService : IRouteOptimizerService
                 }
             }
 
+        // Guardar todos los tramos en cache (incluye huecos estimados con Haversine).
+        for (int i = 0; i < N; i++)
+            for (int j = 0; j < N; j++)
+            {
+                if (i == j) continue;
+                _cache.Set(LegKey(pts[i], pts[j]), (dur[i][j], dist[i][j]), LegCacheTtl);
+            }
+
         return (dur, dist);
     }
 
@@ -248,17 +283,49 @@ public class RouteOptimizerService : IRouteOptimizerService
     }
 
     // ───────────────────────────────────────────────────────────────────
-    //  TSP de ruta abierta: nearest-neighbor (semilla) + mejora 2-opt.
-    //  cost[0] = depot fijo al inicio; sin regreso (final libre).
+    //  TSP de ruta abierta (depot fijo al inicio, final libre).
+    //  Multi-arranque nearest-neighbor + búsqueda local (2-opt + Or-opt).
+    //  Las mejoras se evalúan por costo TOTAL, así que sirve aunque la matriz
+    //  sea asimétrica (en calles reales el tiempo de ida ≠ el de vuelta).
     // ───────────────────────────────────────────────────────────────────
     private static List<int> SolveOpenRoute(double[][] cost, int n)
+    {
+        // Semillas: NN clásico desde el depot + NN forzando distintos primeros nodos.
+        var seeds = new List<int> { 0 };
+        int maxStarts = Math.Min(n, 12);
+        int stride = Math.Max(1, n / Math.Max(1, maxStarts));
+        for (int k = 1; k <= n; k += stride) seeds.Add(k);
+
+        List<int>? best = null;
+        double bestCost = double.MaxValue;
+
+        foreach (var seed in seeds)
+        {
+            var path = NearestNeighborSeed(cost, n, seed);
+            LocalSearch(path, cost);
+            double c = OpenPathCost(path, cost);
+            if (c < bestCost) { bestCost = c; best = path; }
+        }
+
+        return best ?? new List<int>();
+    }
+
+    /// <summary>NN abierto. forcedFirst 1..n fuerza ese nodo como primera parada; 0 = NN normal.</summary>
+    private static List<int> NearestNeighborSeed(double[][] cost, int n, int forcedFirst)
     {
         var path = new List<int>(n);
         var visited = new bool[n + 1];
         visited[0] = true;
         int current = 0;
 
-        for (int step = 0; step < n; step++)
+        if (forcedFirst >= 1 && forcedFirst <= n)
+        {
+            path.Add(forcedFirst);
+            visited[forcedFirst] = true;
+            current = forcedFirst;
+        }
+
+        while (path.Count < n)
         {
             int best = -1;
             double bestC = double.MaxValue;
@@ -267,50 +334,95 @@ public class RouteOptimizerService : IRouteOptimizerService
                 if (visited[j]) continue;
                 if (cost[current][j] < bestC) { bestC = cost[current][j]; best = j; }
             }
+            if (best < 0) break;
             path.Add(best);
             visited[best] = true;
             current = best;
         }
-
-        TwoOptOpen(path, cost);
         return path;
     }
 
-    private static void TwoOptOpen(List<int> path, double[][] cost)
+    /// <summary>Costo de la ruta abierta depot(0) → path[0] → … → path[^1] (sin regreso).</summary>
+    private static double OpenPathCost(List<int> path, double[][] cost)
     {
-        // full = [depot(0), path...]; ruta abierta -> sin arista de regreso al depot.
+        double sum = 0;
+        int prev = 0;
+        foreach (var idx in path) { sum += cost[prev][idx]; prev = idx; }
+        return sum;
+    }
+
+    /// <summary>Costo total recorriendo la lista completa (full[0] = depot).</summary>
+    private static double FullCost(List<int> full, double[][] cost)
+    {
+        double sum = 0;
+        for (int k = 0; k + 1 < full.Count; k++) sum += cost[full[k]][full[k + 1]];
+        return sum;
+    }
+
+    /// <summary>Búsqueda local: alterna barridos 2-opt y Or-opt hasta que ninguno mejore.</summary>
+    private static void LocalSearch(List<int> path, double[][] cost)
+    {
         var full = new List<int>(path.Count + 1) { 0 };
         full.AddRange(path);
 
         bool improved = true;
         int guard = 0;
-        while (improved && guard++ < 80)
+        while (improved && guard++ < 100)
         {
             improved = false;
-            for (int i = 1; i < full.Count - 1; i++)
-            {
-                for (int j = i + 1; j < full.Count; j++)
-                {
-                    int a = full[i - 1];
-                    int b = full[i];
-                    int c = full[j];
-                    bool hasNext = j + 1 < full.Count;
-                    int d = hasNext ? full[j + 1] : -1;
-
-                    double before = cost[a][b] + (hasNext ? cost[c][d] : 0);
-                    double after = cost[a][c] + (hasNext ? cost[b][d] : 0);
-
-                    if (after + 1e-9 < before)
-                    {
-                        full.Reverse(i, j - i + 1);
-                        improved = true;
-                    }
-                }
-            }
+            if (TwoOptPass(full, cost)) improved = true;
+            if (OrOptPass(full, cost)) improved = true;
         }
 
         path.Clear();
         for (int k = 1; k < full.Count; k++) path.Add(full[k]);
+    }
+
+    /// <summary>Un barrido 2-opt: revierte un segmento si baja el costo total (depot fijo en 0).</summary>
+    private static bool TwoOptPass(List<int> full, double[][] cost)
+    {
+        bool improved = false;
+        double baseCost = FullCost(full, cost);
+        for (int i = 1; i < full.Count - 1; i++)
+        {
+            for (int j = i + 1; j < full.Count; j++)
+            {
+                full.Reverse(i, j - i + 1);
+                double c = FullCost(full, cost);
+                if (c + 1e-9 < baseCost) { baseCost = c; improved = true; }
+                else full.Reverse(i, j - i + 1); // revertir
+            }
+        }
+        return improved;
+    }
+
+    /// <summary>Un barrido Or-opt: reubica segmentos de 1..3 paradas a una mejor posición.</summary>
+    private static bool OrOptPass(List<int> full, double[][] cost)
+    {
+        double baseCost = FullCost(full, cost);
+        for (int segLen = 1; segLen <= 3; segLen++)
+        {
+            for (int segStart = 1; segStart + segLen <= full.Count; segStart++)
+            {
+                var seg = full.GetRange(segStart, segLen);
+                var rest = new List<int>(full);
+                rest.RemoveRange(segStart, segLen);
+
+                for (int pos = 0; pos < rest.Count; pos++)
+                {
+                    var cand = new List<int>(rest);
+                    cand.InsertRange(pos + 1, seg); // pos≥0 ⇒ inserta en índice ≥1, el depot queda en 0
+                    double c = FullCost(cand, cost);
+                    if (c + 1e-9 < baseCost)
+                    {
+                        full.Clear();
+                        full.AddRange(cand);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     // ───────────────────────────────────────────────────────────────────

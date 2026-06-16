@@ -68,6 +68,9 @@ ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 // ── HTTP Client (Mercado Pago y otras llamadas externas) ──
 builder.Services.AddHttpClient();
 
+// ── Cache en memoria (matriz de distancias del optimizador de rutas) ──
+builder.Services.AddMemoryCache();
+
 // ── Database ──
 var connectionString = builder.Configuration.GetConnectionString("Default");
 builder.Services.AddDbContext<AppDbContext>(options =>
