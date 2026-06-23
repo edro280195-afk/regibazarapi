@@ -40,7 +40,7 @@ public class RoutesController : ControllerBase
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
 
-    /// <summary>POST /api/routes - Crear ruta con órdenes y/o tandas seleccionadas. Optimiza con Google Routes API.</summary>
+    /// <summary>POST /api/routes - Crear ruta con órdenes y/o tandas seleccionadas. Optimiza localmente por coordenadas.</summary>
     [HttpPost]
     public async Task<ActionResult<CreateRouteResponse>> Create(CreateRouteRequest req)
     {
@@ -754,7 +754,10 @@ public class RoutesController : ControllerBase
     }
 
     [HttpPost("{id}/optimize")]
-    public async Task<IActionResult> OptimizeRoute(int id, [FromQuery] double? lat = null, [FromQuery] double? lng = null)
+    public async Task<IActionResult> OptimizeRoute(
+        int id,
+        [FromQuery] double? lat = null,
+        [FromQuery] double? lng = null)
     {
         await OptimizeRouteInternal(id, lat, lng);
         return Ok(new { Message = "Ruta optimizada correctamente" });

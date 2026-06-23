@@ -25,10 +25,13 @@ public record OptimizedRoute(
 public interface IRouteOptimizerService
 {
     /// <summary>
-    /// Calcula el orden óptimo de paradas. Implementación principal usa Google Routes API v2
-    /// con tráfico en tiempo real. Si falla cae a Haversine + Nearest Neighbor.
+    /// Calcula el orden óptimo de paradas. Por default usa Haversine local para evitar costos.
     /// </summary>
-    Task<OptimizedRoute> OptimizeAsync(List<RouteStop> stops, double startLat, double startLng, CancellationToken ct = default);
+    Task<OptimizedRoute> OptimizeAsync(
+        List<RouteStop> stops,
+        double startLat,
+        double startLng,
+        CancellationToken ct = default);
 
     // Legacy sync API — usada por CamiService y por consumidores que aún no migran.
     List<Order> OptimizeRoute(List<Order> orders, double startLat, double startLng);
