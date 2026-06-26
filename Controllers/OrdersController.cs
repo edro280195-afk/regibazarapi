@@ -407,11 +407,16 @@ public class OrdersController : ControllerBase
             }
         }
 
-        // 2. BUSCAMOS SI YA TIENE UN PEDIDO ABIERTO (PENDIENTE) 🕵️‍♂️
+        // 2. BUSCAMOS SI YA TIENE UN PEDIDO ABIERTO (PENDIENTE O CONFIRMADO) 🕵️‍♂️
+        // Si la clienta ya tiene un pedido abierto le agregamos los artículos en
+        // lugar de crear uno nuevo. Tomamos el más reciente cuando hay varios.
         var existingOrder = await _db.Orders
             .Include(o => o.Items) // Importante traer los items para no borrarlos
-            .FirstOrDefaultAsync(o => o.ClientId == client.Id
-                                   && o.Status == Models.OrderStatus.Pending);
+            .Where(o => o.ClientId == client.Id
+                     && (o.Status == Models.OrderStatus.Pending
+                      || o.Status == Models.OrderStatus.Confirmed))
+            .OrderByDescending(o => o.CreatedAt)
+            .FirstOrDefaultAsync();
 
         // Parseamos el tipo de orden que viene del request
         Enum.TryParse<OrderType>(req.OrderType, true, out var reqOrderType);
