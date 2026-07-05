@@ -670,6 +670,28 @@ public class RoutesController : ControllerBase
         return Ok(new { Message = "Orden actualizado correctamente" });
     }
 
+    /// <summary>PATCH /api/routes/{id}/deliveries/{deliveryId}/notes - Edita la nota de una entrega (la ve el chofer en su ruta).</summary>
+    [HttpPatch("{id}/deliveries/{deliveryId}/notes")]
+    public async Task<IActionResult> UpdateDeliveryNotes(int id, int deliveryId, [FromBody] UpdateDeliveryNotesRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.Id == id);
+        if (route == null) return NotFound("Ruta no encontrada");
+
+        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.Id == deliveryId && d.DeliveryRouteId == id);
+        if (delivery == null) return NotFound("Entrega no encontrada en esta ruta");
+
+        var notes = req.Notes?.Trim();
+        if (notes is { Length: > 500 }) return BadRequest("La nota no puede exceder 500 caracteres.");
+
+        delivery.Notes = string.IsNullOrWhiteSpace(notes) ? null : notes;
+        await _db.SaveChangesAsync();
+
+        if (!string.IsNullOrEmpty(route.DriverToken))
+            await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+
+        return Ok(new { Message = "Nota actualizada", delivery.Notes });
+    }
+
     // ═══════════════════════════════════════════
     //  MUTACIÓN ATÓMICA DE RUTA 🛠️
     // ═══════════════════════════════════════════

@@ -208,6 +208,8 @@ public record RecomposeRouteResponse(
     List<SkippedStopDto> Skipped
 );
 
+public record UpdateDeliveryNotesRequest(string? Notes);
+
 public record BulkGeocodeRequest(List<int> ClientIds);
 public record SetClientCoordinatesRequest(
     double Latitude,
