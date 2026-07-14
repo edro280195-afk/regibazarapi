@@ -123,7 +123,14 @@ public record ManualOrderRequest(
     // Si viene un ClientId resuelto desde el frontend, se usa directo y se salta el
     // lookup por nombre. Útil cuando el resolver multi-señal ya identificó a la
     // clienta y el `ClientName` tecleado debe quedar como alias.
-    int? ClientId = null
+    int? ClientId = null,
+    // Cuando la dueña ya eligió agregar los artículos a un pedido abierto concreto,
+    // llega su Id aquí y se fusiona contra ese pedido (validando que sea de la misma
+    // clienta y que no esté cancelado). Tiene prioridad sobre el auto-merge.
+    int? TargetOrderId = null,
+    // Cuando la dueña eligió explícitamente "nuevo pedido", se salta el auto-merge y
+    // siempre se crea uno nuevo aunque existan pedidos abiertos.
+    bool ForceNew = false
 );
 public record ManualOrderItem(
     string ProductName,

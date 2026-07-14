@@ -117,6 +117,40 @@ public class OrdersController : ControllerBase
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
 
+    /// <summary>
+    /// GET /api/orders/open?clientId={id}&amp;name={name}
+    /// Devuelve los pedidos "abiertos" (cualquier estado distinto a Cancelado) de una
+    /// clienta, con sus artículos. El frontend lo usa para preguntarle a la dueña si
+    /// desea crear un pedido nuevo o agregar los artículos a uno ya existente.
+    /// Se resuelve por clientId si viene; si no, por nombre (match exact-lower-trim).
+    /// </summary>
+    [HttpGet("open")]
+    public async Task<ActionResult<List<OrderSummaryDto>>> GetOpenForClient(
+        [FromQuery] int? clientId = null,
+        [FromQuery] string? name = null)
+    {
+        int? resolvedClientId = clientId;
+        if (resolvedClientId == null)
+        {
+            var typed = name?.Trim();
+            if (string.IsNullOrEmpty(typed)) return Ok(new List<OrderSummaryDto>());
+            var client = await _db.Clients.FirstOrDefaultAsync(c => c.Name.ToLower() == typed.ToLower());
+            if (client == null) return Ok(new List<OrderSummaryDto>());
+            resolvedClientId = client.Id;
+        }
+
+        var orders = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Where(o => o.ClientId == resolvedClientId
+                     && o.Status != Models.OrderStatus.Canceled)
+            .OrderByDescending(o => o.CreatedAt)
+            .ToListAsync();
+
+        return Ok(orders.Select(o => ExcelService.MapToSummary(o, o.Client, FrontendUrl)).ToList());
+    }
+
     [HttpGet("paged")]
     public async Task<ActionResult<PagedResult<OrderSummaryDto>>> GetPaged(
         [FromQuery] int page = 1,
@@ -407,16 +441,34 @@ public class OrdersController : ControllerBase
             }
         }
 
-        // 2. BUSCAMOS SI YA TIENE UN PEDIDO ABIERTO (PENDIENTE O CONFIRMADO) 🕵️‍♂️
-        // Si la clienta ya tiene un pedido abierto le agregamos los artículos en
-        // lugar de crear uno nuevo. Tomamos el más reciente cuando hay varios.
-        var existingOrder = await _db.Orders
-            .Include(o => o.Items) // Importante traer los items para no borrarlos
-            .Where(o => o.ClientId == client.Id
-                     && (o.Status == Models.OrderStatus.Pending
-                      || o.Status == Models.OrderStatus.Confirmed))
-            .OrderByDescending(o => o.CreatedAt)
-            .FirstOrDefaultAsync();
+        // 2. DECIDIMOS SI FUSIONAMOS CONTRA UN PEDIDO ABIERTO O CREAMOS UNO NUEVO 🕵️‍♂️
+        Order? existingOrder = null;
+        if (req.TargetOrderId is int targetId)
+        {
+            // (a) La dueña eligió explícitamente agregar a un pedido abierto concreto.
+            //     Validamos que sea de esta clienta y que no esté cancelado.
+            existingOrder = await _db.Orders
+                .Include(o => o.Items) // Importante traer los items para no borrarlos
+                .FirstOrDefaultAsync(o => o.Id == targetId
+                                       && o.ClientId == client.Id
+                                       && o.Status != Models.OrderStatus.Canceled);
+            if (existingOrder == null)
+                return BadRequest("El pedido elegido ya no está disponible para agregarle artículos 🥺");
+        }
+        else if (!req.ForceNew)
+        {
+            // (b) Auto-merge legacy (modos IA/Excel que no preguntan): si la clienta ya
+            //     tiene un pedido abierto le agregamos los artículos en lugar de crear
+            //     uno nuevo. Tomamos el más reciente cuando hay varios.
+            existingOrder = await _db.Orders
+                .Include(o => o.Items)
+                .Where(o => o.ClientId == client.Id
+                         && (o.Status == Models.OrderStatus.Pending
+                          || o.Status == Models.OrderStatus.Confirmed))
+                .OrderByDescending(o => o.CreatedAt)
+                .FirstOrDefaultAsync();
+        }
+        // (c) ForceNew == true y sin TargetOrderId → existingOrder queda null → nuevo pedido.
 
         // Parseamos el tipo de orden que viene del request
         Enum.TryParse<OrderType>(req.OrderType, true, out var reqOrderType);
