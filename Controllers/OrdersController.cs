@@ -556,6 +556,16 @@ public class OrdersController : ControllerBase
             existingOrder = newOrder; // Referencia para el return
         }
 
+        // 🛍️ Bolsas capturadas en el alta. Si la dueña tocó un número (incluido 0 =
+        // "va sin bolsas") lo guardamos y lo marcamos confirmado. Si eligió "No sé
+        // todavía" no llega nada y el pedido queda como bolsas pendientes.
+        if (req.PackagesConfirmed || req.TotalPackages.HasValue)
+        {
+            existingOrder.TotalPackages = req.TotalPackages;
+            existingOrder.PackagesConfirmed = true;
+            existingOrder.PackagesReminderSentAt = null;
+        }
+
         await _db.SaveChangesAsync();
 
         // 🤝 Auto-merge: si la clienta resultante choca con otra por teléfono+nombre muy parecido,
@@ -1194,6 +1204,20 @@ public class OrdersController : ControllerBase
             order.SalesPeriodId = null;
         }
 
+        // 🛍️ Bolsas. Si viene un número lo guardamos y confirmamos. Si viene
+        // PackagesConfirmed explícito lo respetamos (permite "va sin bolsas" con 0).
+        if (req.TotalPackages.HasValue)
+        {
+            order.TotalPackages = req.TotalPackages;
+            order.PackagesConfirmed = req.PackagesConfirmed ?? true;
+            order.PackagesReminderSentAt = null;
+        }
+        else if (req.PackagesConfirmed.HasValue)
+        {
+            order.PackagesConfirmed = req.PackagesConfirmed.Value;
+            if (order.PackagesConfirmed) order.PackagesReminderSentAt = null;
+        }
+
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
         order.Tags = req.Tags != null ? System.Text.Json.JsonSerializer.Serialize(req.Tags) : null;
@@ -1246,6 +1270,38 @@ public class OrdersController : ControllerBase
 
         order.NotifiedAt = req.Notified ? DateTime.UtcNow : null;
         await _db.SaveChangesAsync();
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
+    /// <summary>
+    /// PATCH /api/orders/{id}/packages - Set rápido del número de bolsas.
+    /// Lo usan el badge del Kanban, el resolver antes de mandar a ruta y el deep-link
+    /// del recordatorio push. TotalPackages = 0 con Confirmed = true significa
+    /// "va sin bolsas" (queda resuelto). TotalPackages = null con Confirmed = false
+    /// lo regresa a estado pendiente.
+    /// </summary>
+    [HttpPatch("{id}/packages")]
+    public async Task<ActionResult<OrderSummaryDto>> SetPackages(int id, [FromBody] SetPackagesRequest req)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Include(o => o.SalesPeriod)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Orden no encontrada");
+        if (req.TotalPackages is int n && n < 0) return BadRequest("El número de bolsas no puede ser negativo 🥺");
+
+        order.TotalPackages = req.TotalPackages;
+        order.PackagesConfirmed = req.Confirmed;
+        if (req.Confirmed) order.PackagesReminderSentAt = null;
+
+        await _db.SaveChangesAsync();
+
+        // Sincronización admin-a-admin para que el badge se actualice en vivo en todos los tableros
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }
@@ -1640,6 +1696,8 @@ public class OrdersController : ControllerBase
 
         // Actualizamos las banderas rápidas de la orden principal
         order.TotalPackages = order.Packages.Count + newPackages.Count;
+        order.PackagesConfirmed = true; // generar bolsas con QR también resuelve el pendiente
+        order.PackagesReminderSentAt = null;
         order.IsFullyPacked = true;
         // Si agregamos nuevas bolsas, automáticamente ya no está "completamente cargada"
         order.IsFullyLoaded = false;

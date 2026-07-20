@@ -58,6 +58,19 @@ public class Order
     public string? DeliveryInstructions { get; set; }
 
     public int? TotalPackages { get; set; }
+
+    /// <summary>
+    /// True cuando la dueña ya resolvió el tema de bolsas de este pedido: puso un número
+    /// (incluido 0 = "va sin bolsas"). Mientras sea false el pedido cuenta como
+    /// "bolsas pendientes": se le marca en el Kanban, se le manda recordatorio push y
+    /// no se puede mandar a ruta sin confirmarlo. Distingue "aún no lo sé" (null + false)
+    /// de "confirmado que no lleva bolsas" (0 + true).
+    /// </summary>
+    public bool PackagesConfirmed { get; set; }
+
+    /// <summary>Última vez que se envió recordatorio de bolsas pendientes. Evita spamear a la dueña.</summary>
+    public DateTime? PackagesReminderSentAt { get; set; }
+
     public bool IsFullyPacked { get; set; }
     public bool IsFullyLoaded { get; set; }
 
