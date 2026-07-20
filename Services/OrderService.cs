@@ -73,11 +73,12 @@ public class OrderService : IOrderService
         }
         else
         {
-            // Regla de negocio:
-            //   • Entrega programada: próximo domingo (no se mueve).
+            // Regla de negocio (según tipo de clienta):
+            //   • Nueva:              entrega el PRÓXIMO domingo.
+            //   • Frecuente / VIP:    entrega el SEGUNDO domingo (próximo + 7 días).
             //   • Vigencia del enlace: 2 días después de la entrega (martes 23:59
             //     hora México cuando la entrega es domingo).
-            var localDelivery = NextSunday(createdAt);
+            var localDelivery = ComputeLocalDeliveryDate(clientType, createdAt);
             var localExpiration = localDelivery.AddDays(2);
 
             return (
@@ -98,18 +99,39 @@ public class OrderService : IOrderService
             createdAt = DateTime.SpecifyKind(createdAt, DateTimeKind.Utc);
         }
 
-        // Vigencia: la entrega es el próximo domingo y el enlace expira 2 días
-        // después (martes 23:59 hora México).
-        var localDelivery = NextSunday(createdAt);
+        // Vigencia: la entrega depende del tipo de clienta (Nueva = próximo domingo;
+        // Frecuente/VIP = segundo domingo) y el enlace expira 2 días después.
+        var localDelivery = ComputeLocalDeliveryDate(clientType, createdAt);
         var localExpiration = localDelivery.AddDays(2);
 
         return TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone);
     }
 
     /// <summary>
-    /// Devuelve la fecha (sin hora) del próximo domingo en hora local de México,
-    /// a partir de la fecha/hora UTC dada. Si la fecha de creación YA es domingo,
-    /// devuelve ese mismo día (la clienta ya puede confirmar/entregarse hoy).
+    /// Fecha (sin hora, hora local de México) de la entrega programada según el tipo
+    /// de clienta:
+    ///   • Nueva:           el próximo domingo.
+    ///   • Frecuente / VIP: el segundo domingo (próximo domingo + 7 días).
+    /// </summary>
+    private static DateTime ComputeLocalDeliveryDate(string? clientType, DateTime createdAtUtc)
+    {
+        var localDelivery = NextSunday(createdAtUtc);
+        if (IsFrequentType(clientType)) localDelivery = localDelivery.AddDays(7);
+        return localDelivery;
+    }
+
+    /// <summary>Frecuente y VIP comparten regla de entrega (segundo domingo).</summary>
+    private static bool IsFrequentType(string? clientType)
+    {
+        if (string.IsNullOrWhiteSpace(clientType)) return false;
+        return clientType.Trim().Equals("Frecuente", StringComparison.OrdinalIgnoreCase)
+            || clientType.Trim().Equals("VIP", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Devuelve la fecha (sin hora) del PRÓXIMO domingo en hora local de México a
+    /// partir de la fecha/hora UTC dada. Si la fecha de creación ya es domingo,
+    /// cuenta como pasado y devuelve el domingo siguiente (la entrega nunca es "hoy").
     /// </summary>
     private static DateTime NextSunday(DateTime createdAtUtc)
     {
@@ -120,9 +142,8 @@ public class OrderService : IOrderService
         }
         var localCreated = TimeZoneInfo.ConvertTimeFromUtc(createdAtUtc, mexicoZone).Date;
 
-        // DayOfWeek.Sunday = 0. Si es domingo, devolvemos hoy mismo.
-        if (localCreated.DayOfWeek == DayOfWeek.Sunday) return localCreated;
-
+        // DayOfWeek.Sunday = 0. Si hoy es domingo, (7-0)%7 = 0 → se fuerza a 7 para
+        // caer en el domingo siguiente.
         int daysUntilSunday = (7 - (int)localCreated.DayOfWeek) % 7;
         if (daysUntilSunday == 0) daysUntilSunday = 7;
         return localCreated.AddDays(daysUntilSunday);

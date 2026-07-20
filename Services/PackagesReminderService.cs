@@ -82,6 +82,13 @@ public class PackagesReminderService : BackgroundService
         var createdBefore = now - minAge;
         var remindableSince = now - cooldown;
 
+        // Inicio del día local (en UTC): solo recordamos pedidos cuya entrega es HOY o
+        // en el futuro. Los pedidos viejos cuya fecha de entrega ya pasó (no entregados
+        // ni cancelados) NO deben generar recordatorio de bolsas: son otro problema.
+        // ScheduledDeliveryDate se guarda como UTC de la medianoche local de entrega,
+        // por eso comparamos contra la medianoche local de hoy convertida a UTC.
+        var todayStartUtc = localNow.Date.AddHours(-offset);
+
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var push = scope.ServiceProvider.GetRequiredService<IPushNotificationService>();
@@ -92,6 +99,8 @@ public class PackagesReminderService : BackgroundService
                         && o.DeliveryRouteId == null
                         && (o.Status == OrderStatus.Pending || o.Status == OrderStatus.Confirmed)
                         && o.CreatedAt <= createdBefore
+                        // Entrega de hoy en adelante (o sin fecha asignada). Nunca pedidos vencidos.
+                        && (o.ScheduledDeliveryDate == null || o.ScheduledDeliveryDate >= todayStartUtc)
                         && (o.PackagesReminderSentAt == null || o.PackagesReminderSentAt <= remindableSince))
             .OrderBy(o => o.CreatedAt)
             .Take(50)
