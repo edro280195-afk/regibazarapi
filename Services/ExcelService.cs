@@ -307,7 +307,9 @@ public class ExcelService : IExcelService
             ClientFacebookProfileUrl: client?.FacebookProfileUrl,
             NotifiedAt: order.NotifiedAt,
             ClientLatitude: client?.Latitude,
-            ClientLongitude: client?.Longitude
+            ClientLongitude: client?.Longitude,
+            TotalPackages: order.TotalPackages,
+            PackagesConfirmed: order.PackagesConfirmed
         );
     }
 }

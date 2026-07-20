@@ -67,7 +67,10 @@ public record OrderSummaryDto(
     string? ClientFacebookProfileUrl = null,
     DateTime? NotifiedAt = null,
     double? ClientLatitude = null,
-    double? ClientLongitude = null
+    double? ClientLongitude = null,
+    // Bolsas / logística
+    int? TotalPackages = null,
+    bool PackagesConfirmed = false
 );
 
 
@@ -130,7 +133,11 @@ public record ManualOrderRequest(
     int? TargetOrderId = null,
     // Cuando la dueña eligió explícitamente "nuevo pedido", se salta el auto-merge y
     // siempre se crea uno nuevo aunque existan pedidos abiertos.
-    bool ForceNew = false
+    bool ForceNew = false,
+    // Bolsas capturadas en el alta. Null = "no sé todavía" (queda pendiente).
+    // Un número (incluido 0 = "va sin bolsas") marca PackagesConfirmed = true.
+    int? TotalPackages = null,
+    bool PackagesConfirmed = false
 );
 public record ManualOrderItem(
     string ProductName,
@@ -747,8 +754,15 @@ public record UpdateOrderDetailsRequest(
     string? DeliveryInstructions = null,
     string? AlternativeAddress = null,
     DateTime? ScheduledDeliveryDate = null,
-    string? ClientFacebookProfileUrl = null
+    string? ClientFacebookProfileUrl = null,
+    // Bolsas. Null = no tocar el valor existente. Si viene un número se guarda y
+    // marca PackagesConfirmed = true.
+    int? TotalPackages = null,
+    bool? PackagesConfirmed = null
 );
+
+/// <summary>Payload del set rápido de bolsas (badge en Kanban, resolver de ruta, deep-link del recordatorio).</summary>
+public record SetPackagesRequest(int? TotalPackages, bool Confirmed = true);
 
 // DTO para actualizar un producto individual
 public record UpdateOrderItemRequest(

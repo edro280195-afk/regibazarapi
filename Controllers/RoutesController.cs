@@ -61,6 +61,25 @@ public class RoutesController : ControllerBase
             });
         }
 
+        // 🛍️ Puerta de bolsas: no dejamos armar la ruta si algún pedido no tiene bolsas
+        // confirmadas. La dueña debe resolverlo (poner número o "va sin bolsas") o forzar
+        // con req.Force. Así el dato se captura justo cuando importa: al cargar la camioneta.
+        if (!req.Force)
+        {
+            var sinBolsas = orders.Where(o => !o.PackagesConfirmed).ToList();
+            if (sinBolsas.Count > 0)
+            {
+                return BadRequest(new
+                {
+                    code = "PACKAGES_REQUIRED",
+                    message = sinBolsas.Count == 1
+                        ? $"El pedido de {sinBolsas[0].Client?.Name ?? "esta clienta"} no tiene bolsas capturadas. Agrégalas antes de mandarlo a ruta 🛍️"
+                        : $"{sinBolsas.Count} pedidos no tienen bolsas capturadas. Agrégalas antes de mandarlos a ruta 🛍️",
+                    orders = sinBolsas.Select(o => new { id = o.Id, clientName = o.Client?.Name ?? $"#{o.Id}" }).ToList()
+                });
+            }
+        }
+
         // Resolver coordenadas: stops para el optimizer
         var allStops = new List<RouteStop>();
         foreach (var o in orders)
@@ -706,6 +725,18 @@ public class RoutesController : ControllerBase
         if (order == null) return NotFound("Orden no encontrada");
 
         if (order.DeliveryRouteId != null) return BadRequest("La orden ya tiene una ruta asignada.");
+
+        // 🛍️ Puerta de bolsas también al agregar a una ruta existente.
+        if (!order.PackagesConfirmed)
+        {
+            var clientName = await _db.Clients.Where(c => c.Id == order.ClientId).Select(c => c.Name).FirstOrDefaultAsync();
+            return BadRequest(new
+            {
+                code = "PACKAGES_REQUIRED",
+                message = $"El pedido de {clientName ?? "esta clienta"} no tiene bolsas capturadas. Agrégalas antes de mandarlo a ruta 🛍️",
+                orders = new[] { new { id = order.Id, clientName = clientName ?? $"#{order.Id}" } }
+            });
+        }
 
         order.DeliveryRouteId = id;
         order.Status = Models.OrderStatus.InRoute;

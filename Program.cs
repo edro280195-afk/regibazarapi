@@ -133,6 +133,9 @@ builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
 builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
 
+// ── Recordatorios de bolsas pendientes (background) ──
+builder.Services.AddHostedService<PackagesReminderService>();
+
 // ── SignalR ──
 builder.Services.AddSignalR();
 
