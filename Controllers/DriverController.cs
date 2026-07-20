@@ -719,6 +719,8 @@ public class DriverController : ControllerBase
         var route = await _db.DeliveryRoutes.FindAsync(routeId);
         if (route == null) return;
 
+        bool alreadyCompleted = route.Status == RouteStatus.Completed;
+
         route.Status = RouteStatus.Completed;
         route.CompletedAt = DateTime.UtcNow;
 
@@ -758,6 +760,32 @@ public class DriverController : ControllerBase
                 "↩️ Bolsas devueltas al terminar ruta",
                 $"{autoReturned} bolsa(s) regresaron sin entregar en la ruta #{routeId}. Revisa el inventario.",
                 tag: "packages-returned"
+            );
+        }
+
+        // 🏁 Resumen de ruta terminada (solo la primera vez que se completa).
+        if (!alreadyCompleted)
+        {
+            var routeDeliveries = await _db.Deliveries
+                .Include(d => d.Order)
+                .Where(d => d.DeliveryRouteId == routeId)
+                .ToListAsync();
+
+            int entregadas = routeDeliveries.Count(d => d.Status == DeliveryStatus.Delivered);
+            int noEntregadas = routeDeliveries.Count(d => d.Status == DeliveryStatus.NotDelivered);
+            decimal totalEntregado = routeDeliveries
+                .Where(d => d.Status == DeliveryStatus.Delivered && d.Order != null)
+                .Sum(d => d.Order!.Total);
+
+            var resumen = noEntregadas > 0
+                ? $"{entregadas} entregadas ✅, {noEntregadas} sin entregar 📦. Total entregado: ${totalEntregado:N0} 💰"
+                : $"¡Todas entregadas! {entregadas} entregas ✅. Total: ${totalEntregado:N0} 🎉";
+
+            await _push.SendNotificationToAdminsAsync(
+                "🏁 Ruta terminada",
+                resumen,
+                url: "/admin/routes",
+                tag: "route-completed"
             );
         }
     }

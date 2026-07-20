@@ -136,6 +136,9 @@ builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
 // ── Recordatorios de bolsas pendientes (background) ──
 builder.Services.AddHostedService<PackagesReminderService>();
 
+// ── Notificaciones inteligentes al admin (por vencer, saldos, pulso semanal) ──
+builder.Services.AddHostedService<AdminNotificationsService>();
+
 // ── SignalR ──
 builder.Services.AddSignalR();
 
