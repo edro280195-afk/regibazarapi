@@ -1383,8 +1383,9 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             });
         }
 
-        // NUEVO PEDIDO
-        var expirationUtc = _orderService.CalculateExpiration(client.Type, DateTime.UtcNow);
+        // NUEVO PEDIDO — fecha de entrega y vencimiento según tipo de clienta, igual que
+        // el alta manual (Nueva = próximo domingo; Frecuente/VIP = segundo domingo).
+        var dates = _orderService.CalculateOrderDates(client.Type, DateTime.UtcNow);
 
         var shippingCost = costoEnvioRaw >= 0 ? costoEnvioRaw
             : (orderType == OrderType.PickUp ? 0m : settings.DefaultShippingCost);
@@ -1394,7 +1395,8 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
             ClientId      = client.Id,
             AccessToken   = Guid.NewGuid().ToString("N")[..16],
             ShippingCost  = shippingCost,
-            ExpiresAt     = expirationUtc,
+            ExpiresAt     = dates.ExpiresAt,
+            ScheduledDeliveryDate = dates.ScheduledDeliveryDate,
             Status        = OrderStatus.Pending,
             OrderType     = orderType,
             CreatedAt     = DateTime.UtcNow,
@@ -1421,11 +1423,12 @@ Tu objetivo es procesar sus instrucciones de entrega o cobranza usando tus herra
         return ToJson(new
         {
             accion   = "creado",
-            mensaje  = $"Pedido #{newOrder.Id} creado para {client.Name}.",
+            mensaje  = $"Pedido #{newOrder.Id} creado para {client.Name}. Entrega programada: {dates.ScheduledDeliveryDate:dd/MM/yyyy}.",
             pedidoId = newOrder.Id,
             clientaId = client.Id,
             total    = newOrder.Total,
-            expira   = expirationUtc.ToString("dd/MM/yyyy")
+            entrega  = dates.ScheduledDeliveryDate.ToString("dd/MM/yyyy"),
+            expira   = dates.ExpiresAt.ToString("dd/MM/yyyy")
         });
     }
 
