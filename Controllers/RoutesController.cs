@@ -131,12 +131,11 @@ public class RoutesController : ControllerBase
                     var order = orders.FirstOrDefault(o => o.Id == orderId);
                     if (order == null) continue;
 
-                    order.DeliveryRoute = route;
-                    order.Status = Models.OrderStatus.InRoute;
-
                     var delivery = order.Delivery;
                     if (delivery == null)
                     {
+                        order.DeliveryRoute = route;
+                        order.Status = Models.OrderStatus.InRoute;
                         _db.Deliveries.Add(new Delivery
                         {
                             Order = order,
@@ -148,10 +147,7 @@ public class RoutesController : ControllerBase
                     }
                     else
                     {
-                        delivery.DeliveryRoute = route;
-                        delivery.Kind = DeliveryKind.Order;
-                        delivery.SortOrder = sortOrder++;
-                        delivery.Status = DeliveryStatus.Pending;
+                        DeliveryRetryPolicy.PrepareForRoute(order, delivery, route, sortOrder++);
                     }
                     createdOrderClientIds.Add(order.ClientId);
                 }
@@ -721,10 +717,14 @@ public class RoutesController : ControllerBase
         var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
         if (route == null) return NotFound("Ruta no encontrada");
 
-        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+        var order = await _db.Orders
+            .Include(o => o.Delivery)
+            .FirstOrDefaultAsync(o => o.Id == orderId);
         if (order == null) return NotFound("Orden no encontrada");
 
         if (order.DeliveryRouteId != null) return BadRequest("La orden ya tiene una ruta asignada.");
+        if (order.Status is Models.OrderStatus.Delivered or Models.OrderStatus.Canceled)
+            return BadRequest("La orden no se puede agregar a una ruta.");
 
         // 🛍️ Puerta de bolsas también al agregar a una ruta existente.
         if (!order.PackagesConfirmed)
@@ -738,18 +738,23 @@ public class RoutesController : ControllerBase
             });
         }
 
-        order.DeliveryRouteId = id;
-        order.Status = Models.OrderStatus.InRoute;
-
-        var delivery = new Delivery
+        if (order.Delivery != null)
         {
-            OrderId = orderId,
-            Kind = DeliveryKind.Order,
-            DeliveryRouteId = id,
-            SortOrder = route.Deliveries.Count + 1,
-            Status = DeliveryStatus.Pending
-        };
-        _db.Deliveries.Add(delivery);
+            DeliveryRetryPolicy.PrepareForRoute(order, order.Delivery, route, route.Deliveries.Count + 1);
+        }
+        else
+        {
+            order.DeliveryRouteId = id;
+            order.Status = Models.OrderStatus.InRoute;
+            _db.Deliveries.Add(new Delivery
+            {
+                OrderId = orderId,
+                Kind = DeliveryKind.Order,
+                DeliveryRouteId = id,
+                SortOrder = route.Deliveries.Count + 1,
+                Status = DeliveryStatus.Pending
+            });
+        }
         await _db.SaveChangesAsync();
 
         if (!string.IsNullOrEmpty(route.DriverToken))
@@ -1090,9 +1095,16 @@ public class RoutesController : ControllerBase
 
             foreach (var o in validOrders.Where(o => !existingOrderIds.Contains(o.Id)))
             {
-                o.DeliveryRouteId = id;
-                o.Status = Models.OrderStatus.InRoute;
-                _db.Deliveries.Add(new Delivery { Order = o, Kind = DeliveryKind.Order, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });
+                if (o.Delivery != null)
+                {
+                    DeliveryRetryPolicy.PrepareForRoute(o, o.Delivery, route, 999);
+                }
+                else
+                {
+                    o.DeliveryRouteId = id;
+                    o.Status = Models.OrderStatus.InRoute;
+                    _db.Deliveries.Add(new Delivery { Order = o, Kind = DeliveryKind.Order, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });
+                }
             }
             foreach (var p in validTandas.Where(p => !existingTandaIds.Contains(p.Id)))
                 _db.Deliveries.Add(new Delivery { TandaParticipantId = p.Id, Kind = DeliveryKind.Tanda, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });

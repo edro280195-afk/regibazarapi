@@ -1079,8 +1079,18 @@ public class OrdersController : ControllerBase
                 }
             }
 
-            // Aplicamos el cambio de estatus real a la orden
-            order.Status = parsedNewStatus.Value;
+            // Al recuperar un pedido no entregado desde el cambio rápido de estado,
+            // también debe soltarse de la ruta anterior para que no quede bloqueado.
+            if (order.Status == Models.OrderStatus.NotDelivered
+                && parsedNewStatus.Value == Models.OrderStatus.Pending)
+            {
+                DeliveryRetryPolicy.ReleaseForRetry(order);
+            }
+            else
+            {
+                // Aplicamos el cambio de estatus real a la orden.
+                order.Status = parsedNewStatus.Value;
+            }
         }
 
         order.PostponedAt = req.PostponedAt;
@@ -1114,6 +1124,46 @@ public class OrdersController : ControllerBase
                 "Tu pedido ha salido y se encuentra en ruta de entrega", 
                 $"/o/{order.AccessToken}");
         }
+
+        return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
+    }
+
+    /// <summary>
+    /// Libera un pedido no entregado para programarlo de nuevo en otra ruta.
+    /// Conserva las evidencias registradas; únicamente elimina la asociación operativa del pedido.
+    /// </summary>
+    [HttpPost("{id}/release-for-route")]
+    public async Task<ActionResult<OrderSummaryDto>> ReleaseForRoute(int id)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Orden no encontrada");
+        if (order.Status != Models.OrderStatus.NotDelivered)
+            return BadRequest("Solo se pueden liberar pedidos marcados como no entregados.");
+
+        var previousRouteId = order.DeliveryRouteId;
+        DeliveryRetryPolicy.ReleaseForRetry(order);
+        await _db.SaveChangesAsync();
+
+        if (previousRouteId.HasValue)
+        {
+            var previousRoute = await _db.DeliveryRoutes.FindAsync(previousRouteId.Value);
+            if (!string.IsNullOrWhiteSpace(previousRoute?.DriverToken))
+            {
+                await _hub.Clients.Group($"Route_{previousRoute.DriverToken}")
+                    .SendAsync("RouteUpdated", new { id = previousRoute.Id });
+            }
+        }
+
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = Models.OrderStatus.Pending.ToString()
+        });
 
         return Ok(ExcelService.MapToSummary(order, order.Client, FrontendUrl));
     }

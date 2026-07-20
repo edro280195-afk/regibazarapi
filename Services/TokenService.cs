@@ -8,7 +8,7 @@ namespace EntregasApi.Services;
 
 public interface ITokenService
 {
-    string GenerateJwt(int userId, string email, string name);
+    string GenerateJwt(int userId, string email, string name, string role);
     string GenerateAccessToken();
 }
 
@@ -21,7 +21,7 @@ public class TokenService : ITokenService
         _config = config;
     }
 
-    public string GenerateJwt(int userId, string email, string name)
+    public string GenerateJwt(int userId, string email, string name, string role)
     {
         var key = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(_config["Jwt:Key"]!));
@@ -31,7 +31,8 @@ public class TokenService : ITokenService
         {
             new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
             new Claim(ClaimTypes.Email, email),
-            new Claim(ClaimTypes.Name, name)
+            new Claim(ClaimTypes.Name, name),
+            new Claim(ClaimTypes.Role, role)
         };
 
         var token = new JwtSecurityToken(

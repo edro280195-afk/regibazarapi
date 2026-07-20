@@ -36,7 +36,7 @@ public class AuthController : ControllerBase
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
 
-        var token = _tokenService.GenerateJwt(user.Id, user.Email, user.Name);
+        var token = _tokenService.GenerateJwt(user.Id, user.Email, user.Name, user.Role);
         return Ok(new LoginResponse(token, user.Name, user.Role, DateTime.UtcNow.AddDays(7)));
     }
 
@@ -47,7 +47,7 @@ public class AuthController : ControllerBase
         if (user == null || !BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash))
             return Unauthorized("Correo o contraseña incorrectos.");
 
-        var token = _tokenService.GenerateJwt(user.Id, user.Email, user.Name);
+        var token = _tokenService.GenerateJwt(user.Id, user.Email, user.Name, user.Role);
         return Ok(new LoginResponse(token, user.Name, user.Role, DateTime.UtcNow.AddDays(7)));
     }
 }
