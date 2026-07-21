@@ -1767,6 +1767,15 @@ public class OrdersController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        // Mantiene sincronizado el contador de bolsas de los demás tableros
+        // administrativos sin esperar a que recarguen manualmente.
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            UpdatedBy = "Admin"
+        });
+
         var result = newPackages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt));
         return Ok(result);
     }
