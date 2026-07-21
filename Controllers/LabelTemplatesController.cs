@@ -240,9 +240,21 @@ public sealed class LabelTemplatesController(
             CreatedBy = CurrentUserName(),
             CreatedAt = now
         };
-        template.Versions.Add(nextDraft);
+        // El padre ya está siendo seguido por EF; registramos el borrador de
+        // forma explícita para que siempre se persista mediante INSERT.
+        db.LabelTemplateVersions.Add(nextDraft);
 
-        await db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new
+            {
+                message = "La plantilla cambió mientras se publicaba. Recarga la página antes de intentarlo de nuevo."
+            });
+        }
         return Ok(new PublishLabelTemplateResultDto(
             MapVersion(draft),
             MapVersion(nextDraft),
