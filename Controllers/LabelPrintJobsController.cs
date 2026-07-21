@@ -94,13 +94,16 @@ public sealed class LabelPrintJobsController(AppDbContext db, IConfiguration con
             .ThenInclude(order => order.Client)
             .Include(current => current.Order)
             .ThenInclude(order => order.Items)
-            .Include(current => current.Order)
-            .ThenInclude(order => order.Packages)
             .AsSplitQuery()
             .FirstOrDefaultAsync(current => current.Id == packageId, cancellationToken);
         if (package is null) return NotFound(new { message = "Bolsa no encontrada." });
 
         var order = package.Order;
+        // No incluimos Order.Packages: desde la bolsa raíz formaría el ciclo
+        // Bolsa → Pedido → Bolsas, que EF Core no permite con AsNoTracking.
+        var totalPackages = await db.OrderPackages
+            .AsNoTracking()
+            .CountAsync(current => current.OrderId == package.OrderId, cancellationToken);
         var summary = string.Join("\n", order.Items
             .OrderBy(item => item.Id)
             .Take(12)
@@ -123,7 +126,7 @@ public sealed class LabelPrintJobsController(AppDbContext db, IConfiguration con
             ["order.deliveryInstructions"] = deliveryInstructions,
             ["order.itemSummary"] = summary,
             ["package.number"] = package.PackageNumber.ToString(),
-            ["package.total"] = order.Packages.Count.ToString(),
+            ["package.total"] = totalPackages.ToString(),
             ["package.qrCodeValue"] = package.QrCodeValue,
             ["package.status"] = package.Status.ToString()
         };
