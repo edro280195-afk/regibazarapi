@@ -14,7 +14,7 @@ namespace EntregasApi.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/inventory")]
-[Authorize]
+[Authorize(Policy = "InventoryAccess")]
 public class InventoryController(AppDbContext db, IConfiguration configuration) : ControllerBase
 {
     private readonly string _frontendUrl = (configuration["App:FrontendUrl"] ?? "https://regibazar.com").TrimEnd('/');
@@ -39,7 +39,8 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
                 box.Items.Any(item =>
                     item.Name.ToLower().Contains(normalizedSearch) ||
                     (item.Variant ?? string.Empty).ToLower().Contains(normalizedSearch) ||
-                    (item.Barcode ?? string.Empty).ToLower().Contains(normalizedSearch)));
+                    (item.Barcode ?? string.Empty).ToLower().Contains(normalizedSearch) ||
+                    item.LabelCode.ToLower().Contains(normalizedSearch)));
         }
 
         var boxes = await query
@@ -56,6 +57,39 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
             .ToListAsync(cancellationToken);
 
         return Ok(boxes);
+    }
+
+    /// <summary>Localiza existencias por el valor de un cÃ³digo de barras, sin consultar el POS.</summary>
+    [HttpGet("items/by-barcode/{barcode}")]
+    public async Task<ActionResult<List<InventoryBarcodeMatchDto>>> GetItemsByBarcode(
+        string barcode,
+        CancellationToken cancellationToken)
+    {
+        var normalizedBarcode = NormalizeBarcode(barcode);
+        if (normalizedBarcode is null)
+            return BadRequest(new { message = "El cÃ³digo escaneado no es vÃ¡lido." });
+
+        var matches = await db.InventoryItems
+            .AsNoTracking()
+            .Where(item =>
+                (item.Barcode == normalizedBarcode || item.LabelCode == normalizedBarcode) &&
+                item.Quantity > 0 &&
+                !item.InventoryBox.IsArchived)
+            .OrderBy(item => item.InventoryBox.Code)
+            .Select(item => new InventoryBarcodeMatchDto(
+                item.InventoryBoxId,
+                item.InventoryBox.Code,
+                item.InventoryBox.Name,
+                item.InventoryBox.Location,
+                item.Id,
+                item.Name,
+                item.Variant,
+                item.Barcode,
+                item.Barcode ?? item.LabelCode,
+                item.Quantity))
+            .ToListAsync(cancellationToken);
+
+        return Ok(matches);
     }
 
     /// <summary>Obtiene una caja con su contenido e historial reciente.</summary>
@@ -182,7 +216,7 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
         if (box is null) return NotFound(new { message = "Caja no encontrada." });
 
         var variant = NormalizeNullable(request.Variant);
-        var barcode = NormalizeNullable(request.Barcode);
+        var barcode = NormalizeBarcode(request.Barcode);
         var item = box.Items.FirstOrDefault(current =>
             current.Name.ToLower() == name.ToLower() &&
             (current.Variant ?? string.Empty).ToLower() == (variant ?? string.Empty).ToLower() &&
@@ -197,6 +231,7 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
                 Name = name,
                 Variant = variant,
                 Barcode = barcode,
+                LabelCode = await GenerateLabelCodeAsync(cancellationToken),
                 Quantity = 0,
                 CreatedAt = DateTime.UtcNow
             };
@@ -259,6 +294,87 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
         return Ok(MapBox(reloaded!));
     }
 
+    [HttpPost("boxes/{id:guid}/counts")]
+    public async Task<ActionResult<InventoryBoxDto>> CompleteCount(
+        Guid id,
+        [FromBody] CompleteInventoryCountDto request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Items is null || request.Items.Count == 0)
+            return BadRequest(new { message = "Captura la cantidad de cada artículo antes de guardar el conteo." });
+        if (request.Items.Any(item => item.ActualQuantity < 0))
+            return BadRequest(new { message = "Las cantidades contadas no pueden ser negativas." });
+        if (request.Items.Select(item => item.InventoryItemId).Distinct().Count() != request.Items.Count)
+            return BadRequest(new { message = "Un artículo aparece más de una vez en el conteo." });
+
+        var box = await db.InventoryBoxes
+            .Include(current => current.Items)
+            .FirstOrDefaultAsync(current => current.Id == id && !current.IsArchived, cancellationToken);
+        if (box is null) return NotFound(new { message = "Caja no encontrada." });
+        if (box.Items.Count == 0)
+            return BadRequest(new { message = "Esta caja no tiene artículos para contar todavía." });
+
+        var actualByItemId = request.Items.ToDictionary(item => item.InventoryItemId, item => item.ActualQuantity);
+        if (actualByItemId.Keys.Any(itemId => box.Items.All(item => item.Id != itemId)) ||
+            box.Items.Any(item => !actualByItemId.ContainsKey(item.Id)))
+        {
+            return BadRequest(new { message = "El conteo debe incluir exactamente todos los artículos de la caja." });
+        }
+
+        var now = DateTime.UtcNow;
+        var note = NormalizeNullable(request.Note);
+        var session = new InventoryCountSession
+        {
+            InventoryBoxId = box.Id,
+            Note = note,
+            PerformedBy = CurrentUserName(),
+            CountedAt = now
+        };
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        db.InventoryCountSessions.Add(session);
+
+        foreach (var item in box.Items)
+        {
+            var expectedQuantity = item.Quantity;
+            var actualQuantity = actualByItemId[item.Id];
+            var difference = actualQuantity - expectedQuantity;
+
+            session.Entries.Add(new InventoryCountEntry
+            {
+                InventoryItemId = item.Id,
+                ItemName = item.Name,
+                Variant = item.Variant,
+                ExpectedQuantity = expectedQuantity,
+                ActualQuantity = actualQuantity,
+                Difference = difference
+            });
+
+            if (difference == 0) continue;
+
+            item.Quantity = actualQuantity;
+            item.UpdatedAt = now;
+            db.InventoryMovements.Add(new InventoryMovement
+            {
+                InventoryBoxId = box.Id,
+                InventoryItemId = item.Id,
+                Type = InventoryMovementType.CountAdjustment,
+                QuantityDelta = difference,
+                QuantityAfter = actualQuantity,
+                Note = note ?? "Conteo físico",
+                PerformedBy = session.PerformedBy,
+                OccurredAt = now
+            });
+        }
+
+        box.UpdatedAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        var reloaded = await LoadBoxAsync(box.Id, cancellationToken);
+        return Ok(MapBox(reloaded!));
+    }
+
     /// <summary>Mueve artículos entre dos cajas dentro de una sola transacción.</summary>
     [HttpPost("transfers")]
     public async Task<ActionResult<InventoryBoxDto>> Transfer(
@@ -294,6 +410,7 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
                 Name = sourceItem.Name,
                 Variant = sourceItem.Variant,
                 Barcode = sourceItem.Barcode,
+                LabelCode = await GenerateLabelCodeAsync(cancellationToken),
                 Quantity = 0,
                 CreatedAt = DateTime.UtcNow
             };
@@ -357,7 +474,7 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
         box.IsNfcBound,
         $"{_frontendUrl}/caja/{box.NfcToken}",
         box.Items.OrderBy(item => item.Name).ThenBy(item => item.Variant)
-            .Select(item => new InventoryItemDto(item.Id, item.Name, item.Variant, item.Barcode, item.Quantity, item.UpdatedAt)).ToList(),
+            .Select(item => new InventoryItemDto(item.Id, item.Name, item.Variant, item.Barcode, item.LabelCode, item.Quantity, item.UpdatedAt)).ToList(),
         box.Movements.OrderByDescending(movement => movement.OccurredAt).Take(30)
             .Select(movement => new InventoryMovementDto(
                 movement.Id,
@@ -378,6 +495,26 @@ public class InventoryController(AppDbContext db, IConfiguration configuration) 
     private static string? NormalizeNullable(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static string? NormalizeBarcode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var normalized = new string(value.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+        return normalized.Length is > 0 and <= 100 ? normalized : null;
+    }
+
     private static string GenerateNfcToken() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+
+    private async Task<string> GenerateLabelCodeAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var candidate = $"RBI{Convert.ToHexString(RandomNumberGenerator.GetBytes(7))}";
+            var exists = await db.InventoryItems.AnyAsync(item => item.LabelCode == candidate, cancellationToken);
+            if (!exists) return candidate;
+        }
+
+        throw new InvalidOperationException("No fue posible generar un código de etiqueta único para el artículo.");
+    }
 }

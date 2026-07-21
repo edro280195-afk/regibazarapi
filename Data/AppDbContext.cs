@@ -40,6 +40,14 @@ public class AppDbContext : DbContext
     public DbSet<InventoryBox> InventoryBoxes => Set<InventoryBox>();
     public DbSet<InventoryItem> InventoryItems => Set<InventoryItem>();
     public DbSet<InventoryMovement> InventoryMovements => Set<InventoryMovement>();
+    public DbSet<InventoryCountSession> InventoryCountSessions => Set<InventoryCountSession>();
+    public DbSet<InventoryCountEntry> InventoryCountEntries => Set<InventoryCountEntry>();
+
+    // Diseñador, activos y trazabilidad de impresión de etiquetas
+    public DbSet<LabelTemplate> LabelTemplates => Set<LabelTemplate>();
+    public DbSet<LabelTemplateVersion> LabelTemplateVersions => Set<LabelTemplateVersion>();
+    public DbSet<LabelAsset> LabelAssets => Set<LabelAsset>();
+    public DbSet<LabelPrintEvent> LabelPrintEvents => Set<LabelPrintEvent>();
 
     // Sorteos
     public DbSet<Raffle> Raffles => Set<Raffle>();
@@ -125,12 +133,12 @@ public class AppDbContext : DbContext
 
         // --- RELACIONES & CONFIGURACIONES ---
 
-        // One-to-one: Order -> Delivery (OrderId es nullable para soportar deliveries de tanda)
+        // Order -> Deliveries (1:N). Un reintento conserva el intento anterior.
         modelBuilder.Entity<Order>()
-            .HasOne(o => o.Delivery)
+            .HasMany(o => o.Deliveries)
             .WithOne(d => d.Order)
-            .HasForeignKey<Delivery>(d => d.OrderId)
-            .IsRequired(false);
+            .HasForeignKey(d => d.OrderId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         // Delivery -> TandaParticipant (many-to-one opcional; XOR con OrderId)
         modelBuilder.Entity<Delivery>(entity =>
@@ -190,14 +198,20 @@ public class AppDbContext : DbContext
                 .WithOne(movement => movement.InventoryBox)
                 .HasForeignKey(movement => movement.InventoryBoxId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(box => box.CountSessions)
+                .WithOne(session => session.InventoryBox)
+                .HasForeignKey(session => session.InventoryBoxId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<InventoryItem>(entity =>
         {
             entity.HasIndex(item => item.InventoryBoxId);
+            entity.HasIndex(item => item.LabelCode).IsUnique();
             entity.Property(item => item.Name).HasMaxLength(150);
             entity.Property(item => item.Variant).HasMaxLength(120);
             entity.Property(item => item.Barcode).HasMaxLength(100);
+            entity.Property(item => item.LabelCode).HasMaxLength(40);
         });
 
         modelBuilder.Entity<InventoryMovement>(entity =>
@@ -210,6 +224,78 @@ public class AppDbContext : DbContext
                 .WithMany(item => item.Movements)
                 .HasForeignKey(movement => movement.InventoryItemId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<InventoryCountSession>(entity =>
+        {
+            entity.HasIndex(session => new { session.InventoryBoxId, session.CountedAt });
+            entity.Property(session => session.Note).HasMaxLength(300);
+            entity.Property(session => session.PerformedBy).HasMaxLength(120);
+            entity.HasMany(session => session.Entries)
+                .WithOne(entry => entry.InventoryCountSession)
+                .HasForeignKey(entry => entry.InventoryCountSessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<InventoryCountEntry>(entity =>
+        {
+            entity.HasIndex(entry => new { entry.InventoryCountSessionId, entry.InventoryItemId }).IsUnique();
+            entity.Property(entry => entry.ItemName).HasMaxLength(150);
+            entity.Property(entry => entry.Variant).HasMaxLength(120);
+        });
+
+        // Plantillas de impresión: la versión publicada se referencia sin permitir
+        // cascadas cíclicas; las versiones históricas se preservan con la plantilla.
+        modelBuilder.Entity<LabelTemplate>(entity =>
+        {
+            entity.HasIndex(template => new { template.Kind, template.PrinterProfile, template.IsArchived });
+            entity.HasIndex(template => template.Kind)
+                .IsUnique()
+                .HasFilter("\"IsDefault\" = true AND \"IsArchived\" = false")
+                .HasDatabaseName("IX_LabelTemplates_ActiveDefaultByKind");
+            entity.Property(template => template.Name).HasMaxLength(120);
+            entity.Property(template => template.Description).HasMaxLength(400);
+            entity.Property(template => template.CreatedBy).HasMaxLength(120);
+            entity.Property(template => template.UpdatedBy).HasMaxLength(120);
+            entity.HasOne(template => template.PublishedVersion)
+                .WithMany()
+                .HasForeignKey(template => template.PublishedVersionId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasMany(template => template.Versions)
+                .WithOne(version => version.LabelTemplate)
+                .HasForeignKey(version => version.LabelTemplateId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LabelTemplateVersion>(entity =>
+        {
+            entity.HasIndex(version => new { version.LabelTemplateId, version.VersionNumber }).IsUnique();
+            entity.HasIndex(version => new { version.LabelTemplateId, version.Status });
+            entity.Property(version => version.DesignJson).HasColumnType("jsonb");
+            entity.Property(version => version.CreatedBy).HasMaxLength(120);
+            entity.Property(version => version.PublishedBy).HasMaxLength(120);
+        });
+
+        modelBuilder.Entity<LabelAsset>(entity =>
+        {
+            entity.HasIndex(asset => new { asset.IsArchived, asset.UploadedAt });
+            entity.Property(asset => asset.Name).HasMaxLength(120);
+            entity.Property(asset => asset.OriginalFileName).HasMaxLength(260);
+            entity.Property(asset => asset.ContentType).HasMaxLength(120);
+            entity.Property(asset => asset.Url).HasMaxLength(1200);
+            entity.Property(asset => asset.UploadedBy).HasMaxLength(120);
+        });
+
+        modelBuilder.Entity<LabelPrintEvent>(entity =>
+        {
+            entity.HasIndex(printEvent => new { printEvent.TargetKind, printEvent.TargetId, printEvent.RequestedAt });
+            entity.HasIndex(printEvent => printEvent.LabelTemplateVersionId);
+            entity.Property(printEvent => printEvent.TargetId).HasMaxLength(64);
+            entity.Property(printEvent => printEvent.RequestedBy).HasMaxLength(120);
+            entity.HasOne(printEvent => printEvent.LabelTemplateVersion)
+                .WithMany()
+                .HasForeignKey(printEvent => printEvent.LabelTemplateVersionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
         // Order -> Packages (1:N)
         modelBuilder.Entity<Order>()

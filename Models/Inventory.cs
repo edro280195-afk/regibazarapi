@@ -34,6 +34,7 @@ public class InventoryBox
 
     public ICollection<InventoryItem> Items { get; set; } = new List<InventoryItem>();
     public ICollection<InventoryMovement> Movements { get; set; } = new List<InventoryMovement>();
+    public ICollection<InventoryCountSession> CountSessions { get; set; } = new List<InventoryCountSession>();
 }
 
 /// <summary>Existencia actual de un artículo dentro de una caja.</summary>
@@ -52,6 +53,13 @@ public class InventoryItem
     [MaxLength(100)]
     public string? Barcode { get; set; }
 
+    /// <summary>
+    /// Código interno permanente para etiquetar el artículo, aun cuando el producto
+    /// no tenga código comercial. Es único por renglón físico de inventario.
+    /// </summary>
+    [Required, MaxLength(40)]
+    public string LabelCode { get; set; } = string.Empty;
+
     public int Quantity { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -66,7 +74,8 @@ public enum InventoryMovementType
     Removed = 2,
     Adjusted = 3,
     TransferOut = 4,
-    TransferIn = 5
+    TransferIn = 5,
+    CountAdjustment = 6
 }
 
 /// <summary>Bitácora inmutable de cada cambio al inventario físico.</summary>
@@ -89,4 +98,42 @@ public class InventoryMovement
     public string PerformedBy { get; set; } = "Sistema";
 
     public DateTime OccurredAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Corte de inventario de una caja. Conserva la foto del conteo aunque la existencia cambie despuÃ©s.
+/// </summary>
+public class InventoryCountSession
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid InventoryBoxId { get; set; }
+    public InventoryBox InventoryBox { get; set; } = null!;
+
+    [MaxLength(300)]
+    public string? Note { get; set; }
+
+    [Required, MaxLength(120)]
+    public string PerformedBy { get; set; } = "Sistema";
+
+    public DateTime CountedAt { get; set; } = DateTime.UtcNow;
+    public ICollection<InventoryCountEntry> Entries { get; set; } = new List<InventoryCountEntry>();
+}
+
+/// <summary>RenglÃ³n inmutable de una sesiÃ³n de conteo fÃ­sico.</summary>
+public class InventoryCountEntry
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid InventoryCountSessionId { get; set; }
+    public InventoryCountSession InventoryCountSession { get; set; } = null!;
+    public Guid InventoryItemId { get; set; }
+
+    [Required, MaxLength(150)]
+    public string ItemName { get; set; } = string.Empty;
+
+    [MaxLength(120)]
+    public string? Variant { get; set; }
+
+    public int ExpectedQuantity { get; set; }
+    public int ActualQuantity { get; set; }
+    public int Difference { get; set; }
 }

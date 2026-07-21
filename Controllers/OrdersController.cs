@@ -595,9 +595,11 @@ public class OrdersController : ControllerBase
         if (order == null) return NotFound();
 
         // Usamos 'Delivery' (tu modelo) en lugar de 'RouteDelivery'
-        var delivery = await _db.Deliveries
+        var delivery = order.DeliveryRouteId.HasValue
+            ? await _db.Deliveries
             .Include(d => d.DeliveryRoute) // Tu propiedad de navegación es 'DeliveryRoute'
-            .FirstOrDefaultAsync(d => d.OrderId == id);
+            .FirstOrDefaultAsync(d => d.OrderId == id && d.DeliveryRouteId == order.DeliveryRouteId.Value)
+            : null;
 
         if (delivery != null)
         {
@@ -776,7 +778,11 @@ public class OrdersController : ControllerBase
             TotalOrders: await _db.Orders.CountAsync(),
             PendingOrders: await _db.Orders.CountAsync(o => o.Status == Models.OrderStatus.Pending),
             DeliveredOrders: deliveredOrders.Count,
-            NotDeliveredOrders: await _db.Orders.CountAsync(o => o.Status == Models.OrderStatus.NotDelivered),
+            NotDeliveredOrders: await _db.Deliveries
+                .Where(d => d.OrderId != null && d.Status == DeliveryStatus.NotDelivered)
+                .Select(d => d.OrderId!.Value)
+                .Distinct()
+                .CountAsync(),
             ActiveRoutes: await _db.DeliveryRoutes.CountAsync(r => r.Status == RouteStatus.Active),
             TotalRevenue: totalRevenue,
             RevenueMonth: revenueMonth,
@@ -957,7 +963,14 @@ public class OrdersController : ControllerBase
             PendingOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.Pending),
             InRouteOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.InRoute),
             DeliveredOrders: deliveredOrders.Count,
-            NotDeliveredOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.NotDelivered),
+            NotDeliveredOrders: await _db.Deliveries
+                .Where(d => d.OrderId != null
+                            && d.Status == DeliveryStatus.NotDelivered
+                            && d.Order!.CreatedAt >= startDate
+                            && d.Order.CreatedAt < endDateExclusive)
+                .Select(d => d.OrderId!.Value)
+                .Distinct()
+                .CountAsync(),
             CanceledOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.Status == Models.OrderStatus.Canceled),
             DeliveryOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.OrderType == OrderType.Delivery),
             PickUpOrders: orders.Count(o => o.CreatedAt >= startDate && o.CreatedAt < endDateExclusive && o.OrderType == OrderType.PickUp),
@@ -1142,8 +1155,8 @@ public class OrdersController : ControllerBase
             .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null) return NotFound("Orden no encontrada");
-        if (order.Status != Models.OrderStatus.NotDelivered)
-            return BadRequest("Solo se pueden liberar pedidos marcados como no entregados.");
+        if (order.Status is Models.OrderStatus.Delivered or Models.OrderStatus.Canceled)
+            return BadRequest("Solo se pueden liberar pedidos pendientes de entrega.");
 
         var previousRouteId = order.DeliveryRouteId;
         DeliveryRetryPolicy.ReleaseForRetry(order);
@@ -1775,8 +1788,11 @@ public class OrdersController : ControllerBase
         // 2. Máquina de Estados: ¿Qué está haciendo el chofer?
         if (req.Action.Equals("Load", StringComparison.OrdinalIgnoreCase))
         {
-            if (package.Status >= PackageTrackingStatus.Loaded)
+            if (package.Status == PackageTrackingStatus.Loaded)
                 return BadRequest(new { message = $"La bolsa {package.PackageNumber} ya estaba cargada en la camioneta." });
+
+            if (package.Status == PackageTrackingStatus.Delivered)
+                return BadRequest(new { message = $"La bolsa {package.PackageNumber} ya fue entregada y no puede cargarse de nuevo." });
 
             package.Status = PackageTrackingStatus.Loaded;
             package.LoadedAt = DateTime.UtcNow;
@@ -1784,7 +1800,7 @@ public class OrdersController : ControllerBase
         }
         else if (req.Action.Equals("Deliver", StringComparison.OrdinalIgnoreCase))
         {
-            if (package.Status == PackageTrackingStatus.Packed)
+            if (package.Status != PackageTrackingStatus.Loaded && package.Status != PackageTrackingStatus.Delivered)
                 return BadRequest(new { message = $"¡Peligro! Intentas entregar la bolsa {package.PackageNumber} pero el sistema no registra que la hayas subido a la camioneta." });
 
             if (package.Status == PackageTrackingStatus.Delivered)
@@ -1803,7 +1819,8 @@ public class OrdersController : ControllerBase
         var order = package.Order;
 
         // Revisa si TODAS las bolsas de este pedido ya están al menos 'Loaded'
-        bool allLoaded = order.Packages.All(p => p.Status >= PackageTrackingStatus.Loaded);
+        bool allLoaded = order.Packages.All(p =>
+            p.Status is PackageTrackingStatus.Loaded or PackageTrackingStatus.Delivered);
         order.IsFullyLoaded = allLoaded;
 
         // Opcional: Si se escanean todas como Deliver, pasar la orden entera a Delivered automáticamente

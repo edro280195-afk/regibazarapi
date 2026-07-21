@@ -105,7 +105,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    // Bodega puede operar exclusivamente las cajas y existencias; administraciÃ³n conserva acceso completo.
+    options.AddPolicy("InventoryAccess", policy => policy.RequireRole("Admin", "Bodega"));
+});
 
 // ── Services ──
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -130,6 +134,7 @@ builder.Services.AddScoped<IPosService, PosService>();
 builder.Services.AddScoped<ITandaService, TandaService>();
 builder.Services.AddScoped<IRaffleService, RaffleService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
+builder.Services.AddSingleton<ILabelTemplateDesignValidator, LabelTemplateDesignValidator>();
 builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
 builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
 

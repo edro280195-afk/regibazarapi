@@ -45,7 +45,8 @@ public class Order
     /// <summary>Marca cuándo se le envió el enlace del pedido a la clienta (Messenger). Null = aún no notificada.</summary>
     public DateTime? NotifiedAt { get; set; }
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
-    public Delivery? Delivery { get; set; }
+    /// <summary>Historial de intentos de entrega del pedido.</summary>
+    public ICollection<Delivery> Deliveries { get; set; } = new List<Delivery>();
     public OrderType OrderType { get; set; } = OrderType.Delivery;
     public DateTime? PostponedAt { get; set; }
     public string? PostponedNote { get; set; }
@@ -136,4 +137,4 @@ public enum OrderType
     Delivery = 0,
     PickUp = 1,
     POS_Tienda = 2
-}
+}

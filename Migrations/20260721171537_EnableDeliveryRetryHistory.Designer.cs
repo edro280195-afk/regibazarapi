@@ -3,6 +3,7 @@ using System;
 using EntregasApi.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EntregasApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260721171537_EnableDeliveryRetryHistory")]
+    partial class EnableDeliveryRetryHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -650,11 +653,6 @@ namespace EntregasApi.Migrations
                     b.Property<Guid>("InventoryBoxId")
                         .HasColumnType("uuid");
 
-                    b.Property<string>("LabelCode")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(150)
@@ -673,9 +671,6 @@ namespace EntregasApi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("InventoryBoxId");
-
-                    b.HasIndex("LabelCode")
-                        .IsUnique();
 
                     b.ToTable("InventoryItems");
                 });
@@ -771,208 +766,6 @@ namespace EntregasApi.Migrations
                     b.HasIndex("SupplierId");
 
                     b.ToTable("Investments");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelAsset", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime?>("ArchivedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("ContentType")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<bool>("IsArchived")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("OriginalFileName")
-                        .IsRequired()
-                        .HasMaxLength(260)
-                        .HasColumnType("character varying(260)");
-
-                    b.Property<long>("SizeBytes")
-                        .HasColumnType("bigint");
-
-                    b.Property<DateTime>("UploadedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UploadedBy")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("Url")
-                        .IsRequired()
-                        .HasMaxLength(1200)
-                        .HasColumnType("character varying(1200)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("IsArchived", "UploadedAt");
-
-                    b.ToTable("LabelAssets");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelPrintEvent", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("Copies")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("LabelTemplateVersionId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("Method")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("PrinterProfile")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("RequestedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("RequestedBy")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("TargetId")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<int>("TargetKind")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("LabelTemplateVersionId");
-
-                    b.HasIndex("TargetKind", "TargetId", "RequestedAt");
-
-                    b.ToTable("LabelPrintEvents");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelTemplate", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime?>("ArchivedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedBy")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(400)
-                        .HasColumnType("character varying(400)");
-
-                    b.Property<bool>("IsArchived")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsDefault")
-                        .HasColumnType("boolean");
-
-                    b.Property<int>("Kind")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<int>("PrinterProfile")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("PublishedVersionId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UpdatedBy")
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Kind")
-                        .IsUnique()
-                        .HasDatabaseName("IX_LabelTemplates_ActiveDefaultByKind")
-                        .HasFilter("\"IsDefault\" = true AND \"IsArchived\" = false");
-
-                    b.HasIndex("PublishedVersionId");
-
-                    b.HasIndex("Kind", "PrinterProfile", "IsArchived");
-
-                    b.ToTable("LabelTemplates");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelTemplateVersion", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedBy")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<string>("DesignJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<Guid>("LabelTemplateId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime?>("PublishedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("PublishedBy")
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)");
-
-                    b.Property<int>("Revision")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("VersionNumber")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("LabelTemplateId", "Status");
-
-                    b.HasIndex("LabelTemplateId", "VersionNumber")
-                        .IsUnique();
-
-                    b.ToTable("LabelTemplateVersions");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.LiveCandidate", b =>
@@ -2384,38 +2177,6 @@ namespace EntregasApi.Migrations
                     b.Navigation("Supplier");
                 });
 
-            modelBuilder.Entity("EntregasApi.Models.LabelPrintEvent", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LabelTemplateVersion", "LabelTemplateVersion")
-                        .WithMany()
-                        .HasForeignKey("LabelTemplateVersionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("LabelTemplateVersion");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelTemplate", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LabelTemplateVersion", "PublishedVersion")
-                        .WithMany()
-                        .HasForeignKey("PublishedVersionId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("PublishedVersion");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelTemplateVersion", b =>
-                {
-                    b.HasOne("EntregasApi.Models.LabelTemplate", "LabelTemplate")
-                        .WithMany("Versions")
-                        .HasForeignKey("LabelTemplateId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("LabelTemplate");
-                });
-
             modelBuilder.Entity("EntregasApi.Models.LiveCandidate", b =>
                 {
                     b.HasOne("EntregasApi.Models.LiveProduct", "LiveProduct")
@@ -2726,11 +2487,6 @@ namespace EntregasApi.Migrations
             modelBuilder.Entity("EntregasApi.Models.InventoryItem", b =>
                 {
                     b.Navigation("Movements");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.LabelTemplate", b =>
-                {
-                    b.Navigation("Versions");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.LiveProduct", b =>

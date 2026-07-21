@@ -43,13 +43,12 @@ public class DeliveryHub : Hub
         
         // Find if this order is in a route to also subscribe to route GPS
         var order = await _db.Orders
-            .Include(o => o.Delivery)
-            .ThenInclude(d => d.DeliveryRoute)
+            .Include(o => o.DeliveryRoute)
             .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
-        if (order?.Delivery?.DeliveryRoute != null)
+        if (order?.DeliveryRoute != null)
         {
-            await Groups.AddToGroupAsync(Context.ConnectionId, $"Tracking_{order.Delivery.DeliveryRoute.DriverToken}");
+            await Groups.AddToGroupAsync(Context.ConnectionId, $"Tracking_{order.DeliveryRoute.DriverToken}");
         }
     }
 

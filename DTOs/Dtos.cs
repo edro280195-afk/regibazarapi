@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using EntregasApi.Models;
 using EntregasApi.Services;
 
 namespace EntregasApi.DTOs;
@@ -25,6 +26,7 @@ public record InventoryItemDto(
     string Name,
     string? Variant,
     string? Barcode,
+    string LabelCode,
     int Quantity,
     DateTime UpdatedAt
 );
@@ -87,6 +89,144 @@ public record TransferInventoryItemsDto(
     Guid ItemId,
     [Range(1, int.MaxValue)] int Quantity,
     [MaxLength(300)] string? Note
+);
+
+public record InventoryBarcodeMatchDto(
+    Guid BoxId,
+    string BoxCode,
+    string BoxName,
+    string? Location,
+    Guid ItemId,
+    string ItemName,
+    string? Variant,
+    string? Barcode,
+    string ScannableCode,
+    int Quantity
+);
+
+public record InventoryCountItemDto(
+    Guid InventoryItemId,
+    [Range(0, int.MaxValue)] int ActualQuantity
+);
+
+public record CompleteInventoryCountDto(
+    [Required, MinLength(1)] List<InventoryCountItemDto> Items,
+    [MaxLength(300)] string? Note
+);
+
+// ── Diseñador e impresión de etiquetas ──
+public record LabelTemplateSummaryDto(
+    Guid Id,
+    string Name,
+    string? Description,
+    string Kind,
+    string PrinterProfile,
+    bool IsDefault,
+    bool IsArchived,
+    Guid? PublishedVersionId,
+    int? PublishedVersionNumber,
+    DateTime UpdatedAt
+);
+
+public record LabelTemplateVersionDto(
+    Guid Id,
+    int VersionNumber,
+    string Status,
+    string DesignJson,
+    int Revision,
+    string CreatedBy,
+    DateTime CreatedAt,
+    string? PublishedBy,
+    DateTime? PublishedAt
+);
+
+public record LabelTemplateDetailDto(
+    Guid Id,
+    string Name,
+    string? Description,
+    string Kind,
+    string PrinterProfile,
+    bool IsDefault,
+    bool IsArchived,
+    Guid? PublishedVersionId,
+    LabelTemplateVersionDto? DraftVersion,
+    LabelTemplateVersionDto? PublishedVersion,
+    List<LabelTemplateVersionDto> Versions,
+    DateTime CreatedAt,
+    DateTime UpdatedAt
+);
+
+public record CreateLabelTemplateDto(
+    [Required, MaxLength(120)] string Name,
+    [MaxLength(400)] string? Description,
+    LabelTemplateKind Kind,
+    LabelPrinterProfile PrinterProfile,
+    string? DesignJson = null
+);
+
+public record UpdateLabelTemplateDto(
+    [Required, MaxLength(120)] string Name,
+    [MaxLength(400)] string? Description
+);
+
+public record SaveLabelTemplateDraftDto(
+    [Required] string DesignJson,
+    [Range(1, int.MaxValue)] int ExpectedRevision
+);
+
+public record SaveLabelTemplateDraftResultDto(
+    LabelTemplateVersionDto DraftVersion,
+    List<string> Warnings
+);
+
+public record PublishLabelTemplateDto([Range(1, int.MaxValue)] int ExpectedRevision);
+
+public record RestoreLabelTemplateVersionDto([Range(1, int.MaxValue)] int ExpectedRevision);
+
+public record PublishLabelTemplateResultDto(
+    LabelTemplateVersionDto PublishedVersion,
+    LabelTemplateVersionDto DraftVersion,
+    List<string> Warnings
+);
+
+public record LabelAssetDto(
+    Guid Id,
+    string Name,
+    string OriginalFileName,
+    string ContentType,
+    string Url,
+    long SizeBytes,
+    bool IsArchived,
+    string UploadedBy,
+    DateTime UploadedAt
+);
+
+public record RenameLabelAssetDto([Required, MaxLength(120)] string Name);
+
+public record PublishedLabelTemplateDto(
+    Guid TemplateId,
+    string TemplateName,
+    string Kind,
+    string PrinterProfile,
+    Guid VersionId,
+    int VersionNumber,
+    string DesignJson
+);
+
+public record LabelPrintContextDto(
+    PublishedLabelTemplateDto Template,
+    string TargetKind,
+    string TargetId,
+    Dictionary<string, string> Data
+);
+
+public record CreateLabelPrintEventDto(
+    Guid LabelTemplateVersionId,
+    LabelTemplateKind TargetKind,
+    [Required, MaxLength(64)] string TargetId,
+    LabelPrinterProfile PrinterProfile,
+    LabelPrintMethod Method,
+    [Range(1, 100)] int Copies
 );
 
 // ── General ──
@@ -257,6 +397,20 @@ public record SkippedStopDto(
 public record CreateRouteResponse(
     RouteDto Route,
     List<SkippedStopDto> Skipped
+);
+
+/// <summary>Pedido cuya cantidad de bolsas debe confirmarse antes de salir a ruta.</summary>
+public record RoutePackageRequirementDto(
+    int Id,
+    string ClientName,
+    int? TotalPackages
+);
+
+/// <summary>Respuesta estructurada para que web y Android resuelvan las bolsas faltantes.</summary>
+public record RoutePackagesRequiredDto(
+    string Code,
+    string Message,
+    List<RoutePackageRequirementDto> Orders
 );
 
 public record PreviewRouteRequest(

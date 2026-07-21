@@ -24,42 +24,43 @@ public class DeliveryRetryPolicyTests
     }
 
     [Fact]
-    public void PrepareForRoute_ResetsFailedOperationalStateWithoutDeletingEvidence()
+    public void CreateForRoute_CreatesANewAttemptAndPreservesTheFailedAttempt()
     {
         var route = new DeliveryRoute { Id = 24, DriverToken = "new-route" };
         var order = new Order { Status = OrderStatus.NotDelivered };
-        var delivery = new Delivery
+        var failedDelivery = new Delivery
         {
             Status = DeliveryStatus.NotDelivered,
-            FailureReason = "No contestó",
-            Notes = "Se llamó dos veces",
+            FailureReason = "No contest" + (char)0x00f3,
+            Notes = "Se llam" + (char)0x00f3 + " dos veces",
             DeliveredAt = DateTime.UtcNow,
             SignatureSvg = "<svg />",
             SignedByName = "Persona anterior",
             SignedAt = DateTime.UtcNow,
             ArrivedAt = DateTime.UtcNow
         };
-        delivery.Evidences.Add(new DeliveryEvidence
+        failedDelivery.Evidences.Add(new DeliveryEvidence
         {
             DeliveryId = 1,
             ImagePath = "evidencia.jpg",
             Type = EvidenceType.NonDeliveryProof
         });
 
-        DeliveryRetryPolicy.PrepareForRoute(order, delivery, route, 3);
+        var retry = DeliveryRetryPolicy.CreateForRoute(order, route, 3);
 
         Assert.Same(route, order.DeliveryRoute);
         Assert.Equal(OrderStatus.InRoute, order.Status);
-        Assert.Same(route, delivery.DeliveryRoute);
-        Assert.Equal(DeliveryStatus.Pending, delivery.Status);
-        Assert.Equal(3, delivery.SortOrder);
-        Assert.Null(delivery.FailureReason);
-        Assert.Null(delivery.Notes);
-        Assert.Null(delivery.DeliveredAt);
-        Assert.Null(delivery.SignatureSvg);
-        Assert.Null(delivery.SignedByName);
-        Assert.Null(delivery.SignedAt);
-        Assert.Null(delivery.ArrivedAt);
-        Assert.Single(delivery.Evidences);
+        Assert.Same(route, retry.DeliveryRoute);
+        Assert.Equal(DeliveryStatus.Pending, retry.Status);
+        Assert.Equal(3, retry.SortOrder);
+        Assert.Same(order, retry.Order);
+        Assert.Equal(DeliveryStatus.NotDelivered, failedDelivery.Status);
+        Assert.Equal("No contest" + (char)0x00f3, failedDelivery.FailureReason);
+        Assert.Equal("Se llam" + (char)0x00f3 + " dos veces", failedDelivery.Notes);
+        Assert.NotNull(failedDelivery.DeliveredAt);
+        Assert.NotNull(failedDelivery.SignatureSvg);
+        Assert.NotNull(failedDelivery.SignedByName);
+        Assert.NotNull(failedDelivery.SignedAt);
+        Assert.Single(failedDelivery.Evidences);
     }
 }

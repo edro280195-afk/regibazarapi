@@ -337,17 +337,22 @@ public class DriverController : ControllerBase
             return NotFound(new { message = "Código QR no reconocido. Esta bolsa no es del sistema." });
 
         // 3. Seguridad — el paquete debe pertenecer a un pedido de esta ruta
-        var routeOrderIds = route.Deliveries.Select(d => d.OrderId).ToHashSet();
-        if (!routeOrderIds.Contains(package.OrderId))
+        var routeDelivery = route.Deliveries.FirstOrDefault(d => d.OrderId == package.OrderId);
+        if (routeDelivery == null)
             return BadRequest(new { message = "Esta bolsa no pertenece a tu ruta de hoy." });
+        if (routeDelivery.Status is DeliveryStatus.Delivered or DeliveryStatus.NotDelivered)
+            return BadRequest(new { message = "Este pedido ya no esta pendiente en esta ruta." });
 
         string successMessage;
 
         // 4. Máquina de estados
         if (req.Action.Equals("Load", StringComparison.OrdinalIgnoreCase))
         {
-            if (package.Status >= PackageTrackingStatus.Loaded)
+            if (package.Status == PackageTrackingStatus.Loaded)
                 return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya estaba cargada." });
+
+            if (package.Status == PackageTrackingStatus.Delivered)
+                return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya fue entregada y no puede cargarse de nuevo." });
 
             package.Status = PackageTrackingStatus.Loaded;
             package.LoadedAt = DateTime.UtcNow;
@@ -355,7 +360,7 @@ public class DriverController : ControllerBase
         }
         else if (req.Action.Equals("Deliver", StringComparison.OrdinalIgnoreCase))
         {
-            if (package.Status == PackageTrackingStatus.Packed)
+            if (package.Status != PackageTrackingStatus.Loaded && package.Status != PackageTrackingStatus.Delivered)
                 return BadRequest(new { message = $"¡Alerta! La bolsa #{package.PackageNumber} no fue cargada al vehículo." });
 
             if (package.Status == PackageTrackingStatus.Delivered)
@@ -384,7 +389,8 @@ public class DriverController : ControllerBase
 
         // 5. Actualizar banderas de la orden
         var order = package.Order;
-        order.IsFullyLoaded = order.Packages.All(p => p.Status >= PackageTrackingStatus.Loaded);
+        order.IsFullyLoaded = order.Packages.All(p =>
+            p.Status is PackageTrackingStatus.Loaded or PackageTrackingStatus.Delivered);
 
         await _db.SaveChangesAsync();
 
@@ -633,9 +639,10 @@ public class DriverController : ControllerBase
         delivery.Status = DeliveryStatus.NotDelivered;
         delivery.FailureReason = req.Reason;
         delivery.Notes = req.Notes;
+        delivery.DeliveredAt = DateTime.UtcNow;
         // En orden regular: marcamos también la Order. En tanda no tocamos IsDelivered (sigue false).
         if (delivery.Order != null)
-            delivery.Order.Status = Models.OrderStatus.NotDelivered;
+            DeliveryRetryPolicy.ReleaseForRetry(delivery.Order);
 
         if (photos != null) await SavePhotos(delivery, photos, EvidenceType.NonDeliveryProof);
 
@@ -657,7 +664,8 @@ public class DriverController : ControllerBase
             OrderId = delivery.OrderId,
             TandaParticipantId = delivery.TandaParticipantId,
             Kind = delivery.Kind.ToString(),
-            Status = "NotDelivered",
+            Status = delivery.Order?.Status.ToString() ?? "NotDelivered",
+            DeliveryStatus = "NotDelivered",
             Reason = req.Reason
         });
 
@@ -728,26 +736,31 @@ public class DriverController : ControllerBase
         // Carga todos los paquetes que aún estén en estado Loaded (ni entregados ni devueltos)
         var loadedPackages = await _db.OrderPackages
             .Include(p => p.Order)
-                .ThenInclude(o => o.Delivery)
             .Where(p => p.Status == PackageTrackingStatus.Loaded
-                && p.Order.Delivery != null
-                && p.Order.Delivery.DeliveryRouteId == routeId)
+                && _db.Deliveries.Any(d => d.OrderId == p.OrderId && d.DeliveryRouteId == routeId))
             .ToListAsync();
+
+        var deliveryByOrderId = await _db.Deliveries
+            .Where(d => d.DeliveryRouteId == routeId && d.OrderId != null)
+            .ToDictionaryAsync(d => d.OrderId!.Value);
 
         int autoReturned = 0;
         foreach (var pkg in loadedPackages)
         {
-            var deliveryStatus = pkg.Order.Delivery!.Status;
+            if (!deliveryByOrderId.TryGetValue(pkg.OrderId, out var delivery)) continue;
+
+            var deliveryStatus = delivery.Status;
             if (deliveryStatus == DeliveryStatus.Delivered)
             {
                 pkg.Status = PackageTrackingStatus.Delivered;
-                pkg.DeliveredAt = pkg.Order.Delivery.DeliveredAt ?? DateTime.UtcNow;
+                pkg.DeliveredAt = delivery.DeliveredAt ?? DateTime.UtcNow;
             }
             else
             {
                 // NotDelivered o cualquier otro estado terminal → devuelta
                 pkg.Status = PackageTrackingStatus.Returned;
                 pkg.ReturnedAt = DateTime.UtcNow;
+                if (pkg.Order != null) pkg.Order.IsFullyLoaded = false;
                 autoReturned++;
             }
         }
@@ -949,4 +962,4 @@ public class DriverController : ControllerBase
 
         return Ok(new DriverCamiResponse(responseText));
     }
-}
+}

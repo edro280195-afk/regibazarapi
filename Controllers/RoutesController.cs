@@ -75,7 +75,12 @@ public class RoutesController : ControllerBase
                     message = sinBolsas.Count == 1
                         ? $"El pedido de {sinBolsas[0].Client?.Name ?? "esta clienta"} no tiene bolsas capturadas. Agrégalas antes de mandarlo a ruta 🛍️"
                         : $"{sinBolsas.Count} pedidos no tienen bolsas capturadas. Agrégalas antes de mandarlos a ruta 🛍️",
-                    orders = sinBolsas.Select(o => new { id = o.Id, clientName = o.Client?.Name ?? $"#{o.Id}" }).ToList()
+                    orders = sinBolsas.Select(o => new
+                    {
+                        id = o.Id,
+                        clientName = o.Client?.Name ?? $"#{o.Id}",
+                        totalPackages = o.TotalPackages
+                    }).ToList()
                 });
             }
         }
@@ -131,24 +136,7 @@ public class RoutesController : ControllerBase
                     var order = orders.FirstOrDefault(o => o.Id == orderId);
                     if (order == null) continue;
 
-                    var delivery = order.Delivery;
-                    if (delivery == null)
-                    {
-                        order.DeliveryRoute = route;
-                        order.Status = Models.OrderStatus.InRoute;
-                        _db.Deliveries.Add(new Delivery
-                        {
-                            Order = order,
-                            Kind = DeliveryKind.Order,
-                            DeliveryRoute = route,
-                            SortOrder = sortOrder++,
-                            Status = DeliveryStatus.Pending
-                        });
-                    }
-                    else
-                    {
-                        DeliveryRetryPolicy.PrepareForRoute(order, delivery, route, sortOrder++);
-                    }
+                    _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, sortOrder++));
                     createdOrderClientIds.Add(order.ClientId);
                 }
                 else if (stopId.StartsWith("tanda:"))
@@ -301,7 +289,7 @@ public class RoutesController : ControllerBase
         var ordersInDb = orderIds.Count > 0
             ? await _db.Orders
                 .Include(o => o.Client)
-                .Include(o => o.Delivery)
+                .Include(o => o.Packages)
                 .Where(o => orderIds.Contains(o.Id))
                 .ToListAsync()
             : new List<Order>();
@@ -318,6 +306,7 @@ public class RoutesController : ControllerBase
             else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
             else if (o.DeliveryRouteId != null) reason = "Ya en otra ruta";
             else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
+            else if (o.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded)) reason = "Sus bolsas siguen cargadas en una ruta anterior";
 
             if (reason != null)
                 skipped.Add(new SkippedStopDto("Order", o.Id.ToString(), o.Client?.Name ?? $"#{o.Id}", reason));
@@ -718,13 +707,16 @@ public class RoutesController : ControllerBase
         if (route == null) return NotFound("Ruta no encontrada");
 
         var order = await _db.Orders
-            .Include(o => o.Delivery)
+            .Include(o => o.Client)
+            .Include(o => o.Packages)
             .FirstOrDefaultAsync(o => o.Id == orderId);
         if (order == null) return NotFound("Orden no encontrada");
 
         if (order.DeliveryRouteId != null) return BadRequest("La orden ya tiene una ruta asignada.");
         if (order.Status is Models.OrderStatus.Delivered or Models.OrderStatus.Canceled)
             return BadRequest("La orden no se puede agregar a una ruta.");
+        if (order.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded))
+            return BadRequest("No se puede agregar: sus bolsas siguen cargadas en una ruta anterior.");
 
         // 🛍️ Puerta de bolsas también al agregar a una ruta existente.
         if (!order.PackagesConfirmed)
@@ -734,27 +726,14 @@ public class RoutesController : ControllerBase
             {
                 code = "PACKAGES_REQUIRED",
                 message = $"El pedido de {clientName ?? "esta clienta"} no tiene bolsas capturadas. Agrégalas antes de mandarlo a ruta 🛍️",
-                orders = new[] { new { id = order.Id, clientName = clientName ?? $"#{order.Id}" } }
+                orders = new[]
+                {
+                    new { id = order.Id, clientName = clientName ?? $"#{order.Id}", totalPackages = order.TotalPackages }
+                }
             });
         }
 
-        if (order.Delivery != null)
-        {
-            DeliveryRetryPolicy.PrepareForRoute(order, order.Delivery, route, route.Deliveries.Count + 1);
-        }
-        else
-        {
-            order.DeliveryRouteId = id;
-            order.Status = Models.OrderStatus.InRoute;
-            _db.Deliveries.Add(new Delivery
-            {
-                OrderId = orderId,
-                Kind = DeliveryKind.Order,
-                DeliveryRouteId = id,
-                SortOrder = route.Deliveries.Count + 1,
-                Status = DeliveryStatus.Pending
-            });
-        }
+        _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, route.Deliveries.Count + 1));
         await _db.SaveChangesAsync();
 
         if (!string.IsNullOrEmpty(route.DriverToken))
@@ -892,6 +871,8 @@ public class RoutesController : ControllerBase
 
         var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.DeliveryRouteId == id && d.OrderId == orderId);
         if (delivery == null) return NotFound("Entrega no encontrada en esta ruta.");
+        if (delivery.Status is DeliveryStatus.Delivered or DeliveryStatus.NotDelivered)
+            return BadRequest("No se puede eliminar un intento cerrado porque conserva el historial de entrega.");
 
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
         if (order != null) { order.DeliveryRouteId = null; order.Status = Models.OrderStatus.Pending; }
@@ -998,9 +979,16 @@ public class RoutesController : ControllerBase
         var distinctOrderIds = (req.OrderIds ?? new List<int>()).Distinct().ToList();
         var distinctTandaIds = (req.TandaParticipantIds ?? new List<Guid>()).Distinct().ToList();
         var skipped = new List<SkippedStopDto>();
+        var failedOrderIdsInThisRoute = route.Deliveries
+            .Where(d => d.Kind == DeliveryKind.Order
+                && d.OrderId != null
+                && d.Status == DeliveryStatus.NotDelivered)
+            .Select(d => d.OrderId!.Value)
+            .ToHashSet();
 
         var ordersInDb = distinctOrderIds.Count > 0
-            ? await _db.Orders.Include(o => o.Client).Include(o => o.Delivery)
+            ? await _db.Orders.Include(o => o.Client)
+                .Include(o => o.Packages)
                 .Where(o => distinctOrderIds.Contains(o.Id))
                 .ToListAsync()
             : new List<Order>();
@@ -1015,7 +1003,9 @@ public class RoutesController : ControllerBase
             if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
             else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
             else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
+            else if (failedOrderIdsInThisRoute.Contains(o.Id)) reason = "Tuvo un intento fallido en esta ruta; reintentalo en una ruta nueva";
             else if (o.DeliveryRouteId != null && o.DeliveryRouteId != id) reason = "En otra ruta";
+            else if (o.DeliveryRouteId != id && o.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded)) reason = "Sus bolsas siguen cargadas en una ruta anterior";
             if (reason != null)
                 skipped.Add(new SkippedStopDto("Order", o.Id.ToString(), o.Client?.Name ?? $"#{o.Id}", reason));
             else
@@ -1095,16 +1085,7 @@ public class RoutesController : ControllerBase
 
             foreach (var o in validOrders.Where(o => !existingOrderIds.Contains(o.Id)))
             {
-                if (o.Delivery != null)
-                {
-                    DeliveryRetryPolicy.PrepareForRoute(o, o.Delivery, route, 999);
-                }
-                else
-                {
-                    o.DeliveryRouteId = id;
-                    o.Status = Models.OrderStatus.InRoute;
-                    _db.Deliveries.Add(new Delivery { Order = o, Kind = DeliveryKind.Order, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });
-                }
+                _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(o, route, 999));
             }
             foreach (var p in validTandas.Where(p => !existingTandaIds.Contains(p.Id)))
                 _db.Deliveries.Add(new Delivery { TandaParticipantId = p.Id, Kind = DeliveryKind.Tanda, DeliveryRouteId = id, SortOrder = 999, Status = DeliveryStatus.Pending });
@@ -1278,7 +1259,8 @@ public class RoutesController : ControllerBase
         foreach (var order in linkedOrders)
         {
             order.Status = Models.OrderStatus.Delivered;
-            var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+            var delivery = await _db.Deliveries.FirstOrDefaultAsync(d =>
+                d.OrderId == order.Id && d.DeliveryRouteId == id);
             if (delivery != null && delivery.Status == DeliveryStatus.Pending)
             {
                 delivery.Status = DeliveryStatus.Delivered;

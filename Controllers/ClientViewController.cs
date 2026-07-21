@@ -37,7 +37,7 @@ public class ClientViewController : ControllerBase
             .Include(o => o.Items)
             .Include(o => o.DeliveryRoute)
             .Include(o => o.Payments)
-            .Include(o => o.Delivery).ThenInclude(d => d!.Evidences)
+            .Include(o => o.Deliveries).ThenInclude(d => d.Evidences)
             .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
         if (order == null)
@@ -45,6 +45,10 @@ public class ClientViewController : ControllerBase
 
         if (order.ExpiresAt < DateTime.UtcNow)
             return Gone("Este enlace ha expirado.");
+
+        var latestDelivery = order.DeliveryRouteId is int currentRouteId
+            ? order.Deliveries.FirstOrDefault(d => d.DeliveryRouteId == currentRouteId)
+            : order.Deliveries.OrderByDescending(d => d.Id).FirstOrDefault();
 
         // Ubicación del repartidor
         DriverLocationDto? driverLocation = null;
@@ -135,15 +139,15 @@ public class ClientViewController : ControllerBase
             DeliveryInstructions: order.DeliveryInstructions,
             ExpiresAt: order.ExpiresAt,
             ScheduledDeliveryDate: order.ScheduledDeliveryDate,
-            EvidenceUrls: order.Delivery?.Evidences?
+            EvidenceUrls: latestDelivery?.Evidences
                 .Where(e => e.Type == EvidenceType.DeliveryProof)
                 .Select(e => e.ImagePath).ToList(),
-            SignatureSvg: order.Delivery?.SignatureSvg,
-            SignedByName: order.Delivery?.SignedByName,
-            SignedAt: order.Delivery?.SignedAt,
-            FailureReason: order.Delivery?.FailureReason,
-            DeliveredAt: order.Delivery?.DeliveredAt,
-            NonDeliveryEvidenceUrls: order.Delivery?.Evidences?
+            SignatureSvg: latestDelivery?.SignatureSvg,
+            SignedByName: latestDelivery?.SignedByName,
+            SignedAt: latestDelivery?.SignedAt,
+            FailureReason: latestDelivery?.FailureReason,
+            DeliveredAt: latestDelivery?.DeliveredAt,
+            NonDeliveryEvidenceUrls: latestDelivery?.Evidences
                 .Where(e => e.Type == EvidenceType.NonDeliveryProof)
                 .Select(e => e.ImagePath).ToList()
         ));
@@ -211,8 +215,15 @@ public class ClientViewController : ControllerBase
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound("Pedido no encontrado.");
 
-        // Intentamos obtener el delivery asociado para filtrar los mensajes
-        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+        // Si el pedido está en ruta usamos ese intento; si espera reintento, mostramos
+        // el último intento para conservar la conversación asociada.
+        var delivery = order.DeliveryRouteId.HasValue
+            ? await _db.Deliveries.FirstOrDefaultAsync(d =>
+                d.OrderId == order.Id && d.DeliveryRouteId == order.DeliveryRouteId.Value)
+            : await _db.Deliveries
+                .Where(d => d.OrderId == order.Id)
+                .OrderByDescending(d => d.Id)
+                .FirstOrDefaultAsync();
         
         // Obtenemos los mensajes asociados a la entrega o a la ruta (si existe)
         var msgs = await _db.ChatMessages
@@ -239,7 +250,13 @@ public class ClientViewController : ControllerBase
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound("Pedido no encontrado.");
 
-        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.OrderId == order.Id);
+        var delivery = order.DeliveryRouteId.HasValue
+            ? await _db.Deliveries.FirstOrDefaultAsync(d =>
+                d.OrderId == order.Id && d.DeliveryRouteId == order.DeliveryRouteId.Value)
+            : await _db.Deliveries
+                .Where(d => d.OrderId == order.Id)
+                .OrderByDescending(d => d.Id)
+                .FirstOrDefaultAsync();
 
         var msg = new ChatMessage
         {
