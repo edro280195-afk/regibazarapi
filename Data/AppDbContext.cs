@@ -36,6 +36,11 @@ public class AppDbContext : DbContext
     public DbSet<OrderPackage> OrderPackages => Set<OrderPackage>();
     public DbSet<FcmToken> FcmTokens => Set<FcmToken>();
 
+    // Inventario físico de bodega (independiente del POS legado)
+    public DbSet<InventoryBox> InventoryBoxes => Set<InventoryBox>();
+    public DbSet<InventoryItem> InventoryItems => Set<InventoryItem>();
+    public DbSet<InventoryMovement> InventoryMovements => Set<InventoryMovement>();
+
     // Sorteos
     public DbSet<Raffle> Raffles => Set<Raffle>();
     public DbSet<RaffleParticipant> RaffleParticipants => Set<RaffleParticipant>();
@@ -165,6 +170,47 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Product>()
             .HasIndex(p => p.SKU)
             .IsUnique();
+
+        // Inventario físico / etiquetas NFC
+        modelBuilder.Entity<InventoryBox>(entity =>
+        {
+            entity.HasIndex(box => box.Code).IsUnique();
+            entity.HasIndex(box => box.NfcToken).IsUnique();
+            entity.HasIndex(box => box.NfcTagUid).IsUnique();
+            entity.Property(box => box.Code).HasMaxLength(30);
+            entity.Property(box => box.Name).HasMaxLength(120);
+            entity.Property(box => box.Location).HasMaxLength(200);
+            entity.Property(box => box.NfcToken).HasMaxLength(64);
+            entity.Property(box => box.NfcTagUid).HasMaxLength(64);
+            entity.HasMany(box => box.Items)
+                .WithOne(item => item.InventoryBox)
+                .HasForeignKey(item => item.InventoryBoxId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(box => box.Movements)
+                .WithOne(movement => movement.InventoryBox)
+                .HasForeignKey(movement => movement.InventoryBoxId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<InventoryItem>(entity =>
+        {
+            entity.HasIndex(item => item.InventoryBoxId);
+            entity.Property(item => item.Name).HasMaxLength(150);
+            entity.Property(item => item.Variant).HasMaxLength(120);
+            entity.Property(item => item.Barcode).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<InventoryMovement>(entity =>
+        {
+            entity.HasIndex(movement => new { movement.InventoryBoxId, movement.OccurredAt });
+            entity.HasIndex(movement => movement.TransferGroupId);
+            entity.Property(movement => movement.Note).HasMaxLength(300);
+            entity.Property(movement => movement.PerformedBy).HasMaxLength(120);
+            entity.HasOne(movement => movement.InventoryItem)
+                .WithMany(item => item.Movements)
+                .HasForeignKey(movement => movement.InventoryItemId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
         // Order -> Packages (1:N)
         modelBuilder.Entity<Order>()
             .HasMany(o => o.Packages)
