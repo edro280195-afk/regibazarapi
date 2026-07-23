@@ -1732,6 +1732,12 @@ public class OrdersController : ControllerBase
 
         if (order == null) return NotFound("Pedido no encontrado.");
 
+        // Tomamos una foto del estado ANTES de agregar. Es clave: al hacer Add() de las
+        // bolsas nuevas, EF Core hace "fixup" y las mete en order.Packages, así que leer
+        // order.Packages.Count después del loop las contaría dos veces (el bug del badge
+        // que decía 3 cuando en el detalle solo había 2).
+        int existingCount = order.Packages.Count;
+
         // Averiguamos en qué número de bolsa nos quedamos (por si Miel agrega más días después)
         int startingNumber = order.Packages.Any() ? order.Packages.Max(p => p.PackageNumber) + 1 : 1;
 
@@ -1757,8 +1763,9 @@ public class OrdersController : ControllerBase
             _db.OrderPackages.Add(package);
         }
 
-        // Actualizamos las banderas rápidas de la orden principal
-        order.TotalPackages = order.Packages.Count + newPackages.Count;
+        // Actualizamos las banderas rápidas de la orden principal.
+        // Usamos existingCount (la foto previa) + las nuevas para no duplicar por el fixup de EF.
+        order.TotalPackages = existingCount + newPackages.Count;
         order.PackagesConfirmed = true; // generar bolsas con QR también resuelve el pendiente
         order.PackagesReminderSentAt = null;
         order.IsFullyPacked = true;
@@ -1777,6 +1784,55 @@ public class OrdersController : ControllerBase
         });
 
         var result = newPackages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt));
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// DELETE /api/orders/{id}/packages/{packageId} - Borra una bolsa generada por error.
+    /// Solo se puede borrar mientras la bolsa siga en estado Packed (aún no se ha subido a la
+    /// camioneta ni entregado); si ya se escaneó no se borra para no perder la trazabilidad.
+    /// Devuelve la lista de bolsas que quedan para que el front se actualice de una vez.
+    /// </summary>
+    [HttpDelete("{id}/packages/{packageId}")]
+    public async Task<ActionResult<List<OrderPackageDto>>> DeletePackage(int id, Guid packageId)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Packages)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound("Pedido no encontrado.");
+
+        var package = order.Packages.FirstOrDefault(p => p.Id == packageId);
+        if (package == null) return NotFound("Esa bolsa no existe en este pedido.");
+
+        if (package.Status != PackageTrackingStatus.Packed)
+            return BadRequest($"La bolsa {package.PackageNumber} ya se movió (cargada o entregada) y no se puede borrar. 🥺");
+
+        _db.OrderPackages.Remove(package);
+        order.Packages.Remove(package);
+
+        // Recalculamos contadores y banderas con lo que realmente queda.
+        var remaining = order.Packages.ToList();
+        order.TotalPackages = remaining.Count;
+        order.IsFullyPacked = remaining.Any();
+        order.IsFullyLoaded = remaining.Any() && remaining.All(p =>
+            p.Status is PackageTrackingStatus.Loaded or PackageTrackingStatus.Delivered);
+
+        await _db.SaveChangesAsync();
+
+        // Mantiene el badge de bolsas sincronizado en todos los tableros admin.
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            UpdatedBy = "Admin"
+        });
+
+        var result = remaining
+            .OrderBy(p => p.PackageNumber)
+            .Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt))
+            .ToList();
+
         return Ok(result);
     }
 
