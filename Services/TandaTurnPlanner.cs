@@ -33,4 +33,31 @@ public static class TandaTurnPlanner
                 "La lista de participantes no coincide con los integrantes de la tanda.");
         }
     }
+
+    public static void ValidatePlaceAssignments(
+        int totalWeeks,
+        IReadOnlyCollection<Guid> participantIds,
+        IReadOnlyCollection<TandaPlaceAssignment> requestedAssignments)
+    {
+        if (participantIds.Count != requestedAssignments.Count
+            || requestedAssignments.Select(a => a.ParticipantId).Distinct().Count() != requestedAssignments.Count
+            || !participantIds.ToHashSet().SetEquals(requestedAssignments.Select(a => a.ParticipantId)))
+        {
+            throw new InvalidOperationException(
+                "Los lugares enviados no coinciden con los participantes de la tanda.");
+        }
+
+        if (requestedAssignments.Any(a => a.AssignedTurn < 1 || a.AssignedTurn > totalWeeks))
+        {
+            throw new InvalidOperationException(
+                $"Todos los lugares deben estar entre 1 y {totalWeeks}.");
+        }
+
+        if (requestedAssignments.Select(a => a.AssignedTurn).Distinct().Count() != requestedAssignments.Count)
+        {
+            throw new InvalidOperationException("No puede haber dos participantes en el mismo lugar.");
+        }
+    }
+
+    public readonly record struct TandaPlaceAssignment(Guid ParticipantId, int AssignedTurn);
 }

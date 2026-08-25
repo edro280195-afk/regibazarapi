@@ -10,12 +10,13 @@ public class CreateTandaDto
     [Required, MaxLength(255)]
     public string Name { get; set; } = string.Empty;
 
-    [Required]
+    [Range(1, 52)]
     public int TotalWeeks { get; set; }
 
-    [Required]
+    [Range(typeof(decimal), "0.01", "9999999999")]
     public decimal WeeklyAmount { get; set; }
 
+    [Range(typeof(decimal), "0", "9999999999")]
     public decimal PenaltyAmount { get; set; } = 0;
 
     [Required]
@@ -58,14 +59,20 @@ public class RegisterPaymentDto
     [Required]
     public Guid ParticipantId { get; set; }
 
-    [Required]
+    [Range(1, 52)]
     public int WeekNumber { get; set; }
 
-    [Required]
+    [Range(typeof(decimal), "0.01", "9999999999")]
     public decimal AmountPaid { get; set; }
 
+    [Range(typeof(decimal), "0", "9999999999")]
     public decimal PenaltyPaid { get; set; } = 0;
 
+    public DateTime? PaymentDate { get; set; }
+
+    public bool IsVerified { get; set; } = true;
+
+    [MaxLength(500)]
     public string? Notes { get; set; }
 }
 
@@ -104,19 +111,25 @@ public class TandaParticipantViewDto
 
 public class UpdateTandaDto
 {
+    public Guid? ProductId { get; set; }
+
     [Required, MaxLength(255)]
     public string Name { get; set; } = string.Empty;
 
-    [Required]
+    [Range(1, 52)]
     public int TotalWeeks { get; set; }
 
-    [Required]
+    [Range(typeof(decimal), "0.01", "9999999999")]
     public decimal WeeklyAmount { get; set; }
 
+    [Range(typeof(decimal), "0", "9999999999")]
     public decimal PenaltyAmount { get; set; }
 
     [Required]
     public DateTime StartDate { get; set; }
+
+    [RegularExpression("^(Draft|Active|Completed|Cancelled)$")]
+    public string? Status { get; set; }
 }
 
 // ── DTOs de Respuesta (Admin) ──
@@ -132,6 +145,15 @@ public class TandaDto
     public string Status { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public string? AccessToken { get; set; }
+    public int CurrentWeek { get; set; }
+    public int ParticipantCount { get; set; }
+    public int AvailablePlaces { get; set; }
+    public int PaidInstallments { get; set; }
+    public int TotalInstallments { get; set; }
+    public decimal ExpectedAmount { get; set; }
+    public decimal CollectedAmount { get; set; }
+    public decimal BalanceDue { get; set; }
+    public decimal ProgressPercentage { get; set; }
     public TandaProductDto? Product { get; set; }
     public List<TandaParticipantDto>? Participants { get; set; }
 }
@@ -148,6 +170,10 @@ public class TandaParticipantDto
     public DateTime? DeliveryDate { get; set; }
     public string Status { get; set; } = string.Empty;
     public string? Variant { get; set; }
+    public decimal ExpectedAmount { get; set; }
+    public decimal CollectedAmount { get; set; }
+    public decimal BalanceDue { get; set; }
+    public int PaidInstallments { get; set; }
     public List<TandaPaymentDto>? Payments { get; set; }
 }
 
@@ -185,4 +211,60 @@ public class UpdateParticipantVariantDto
 public class ReorderParticipantsDto
 {
     public List<Guid> ParticipantIds { get; set; } = new();
+}
+
+public class UpdateTandaParticipantDto
+{
+    [Range(1, int.MaxValue)]
+    public int CustomerId { get; set; }
+
+    [Range(1, 52)]
+    public int AssignedTurn { get; set; }
+
+    [MaxLength(255)]
+    public string? Variant { get; set; }
+
+    [Range(typeof(decimal), "0.01", "9999999999")]
+    public decimal? WeeklyAmount { get; set; }
+
+    [RegularExpression("^(Active|Delinquent|Completed)$")]
+    public string Status { get; set; } = "Active";
+
+    public bool IsDelivered { get; set; }
+
+    public DateTime? DeliveryDate { get; set; }
+}
+
+public class UpdateTandaPaymentDto
+{
+    [Range(1, 52)]
+    public int WeekNumber { get; set; }
+
+    [Range(typeof(decimal), "0.01", "9999999999")]
+    public decimal AmountPaid { get; set; }
+
+    [Range(typeof(decimal), "0", "9999999999")]
+    public decimal PenaltyPaid { get; set; }
+
+    public DateTime PaymentDate { get; set; }
+
+    public bool IsVerified { get; set; }
+
+    [MaxLength(500)]
+    public string? Notes { get; set; }
+}
+
+public class UpdateTandaPlacesDto
+{
+    [Required]
+    public List<TandaPlaceAssignmentDto> Assignments { get; set; } = new();
+}
+
+public class TandaPlaceAssignmentDto
+{
+    [Required]
+    public Guid ParticipantId { get; set; }
+
+    [Range(1, 52)]
+    public int AssignedTurn { get; set; }
 }

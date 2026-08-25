@@ -7,7 +7,6 @@ namespace EntregasApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize] // Protegemos el endpoint por defecto
 [Authorize]
 public class TandaController : ControllerBase
 {
@@ -21,11 +20,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetTandas()
+    public async Task<IActionResult> GetTandas(CancellationToken cancellationToken)
     {
         try
         {
-            var tandas = await _tandaService.GetTandasAsync();
+            var tandas = await _tandaService.GetTandasAsync(cancellationToken);
             return Ok(tandas);
         }
         catch (Exception ex)
@@ -35,11 +34,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpGet("{id}")]
-    public async Task<IActionResult> GetTanda(Guid id)
+    public async Task<IActionResult> GetTanda(Guid id, CancellationToken cancellationToken)
     {
         try
         {
-            var tanda = await _tandaService.GetTandaByIdAsync(id);
+            var tanda = await _tandaService.GetTandaByIdAsync(id, cancellationToken);
             if (tanda == null) return NotFound(new { message = "Tanda no encontrada" });
             return Ok(tanda);
         }
@@ -50,11 +49,13 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost]
-    public async Task<IActionResult> CreateTanda([FromBody] CreateTandaDto dto)
+    public async Task<IActionResult> CreateTanda(
+        [FromBody] CreateTandaDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var tanda = await _tandaService.CreateTandaAsync(dto);
+            var tanda = await _tandaService.CreateTandaAsync(dto, cancellationToken);
             return Ok(tanda); // Retorna 200 con la configuración inicial
         }
         catch (Exception ex)
@@ -64,11 +65,13 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost("participants")]
-    public async Task<IActionResult> AddParticipant([FromBody] AddParticipantDto dto)
+    public async Task<IActionResult> AddParticipant(
+        [FromBody] AddParticipantDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var participant = await _tandaService.AddParticipantAsync(dto);
+            var participant = await _tandaService.AddParticipantAsync(dto, cancellationToken);
             return Ok(participant); // Retorna la inscripción exitosa
         }
         catch (Exception ex)
@@ -78,11 +81,13 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost("payments")]
-    public async Task<IActionResult> RegisterPayment([FromBody] RegisterPaymentDto dto)
+    public async Task<IActionResult> RegisterPayment(
+        [FromBody] RegisterPaymentDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var payment = await _tandaService.RegisterPaymentAsync(dto);
+            var payment = await _tandaService.RegisterPaymentAsync(dto, cancellationToken);
             return Ok(payment); // Retorna el abono registrado
         }
         catch (Exception ex)
@@ -92,11 +97,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpGet("{id}/sunday-delivery")]
-    public async Task<IActionResult> GetSundayDelivery(Guid id)
+    public async Task<IActionResult> GetSundayDelivery(Guid id, CancellationToken cancellationToken)
     {
         try
         {
-            var participant = await _tandaService.GetSundayDeliveryAsync(id);
+            var participant = await _tandaService.GetSundayDeliveryAsync(id, cancellationToken);
             
             if (participant == null)
             {
@@ -111,11 +116,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost("{id}/process-penalties")]
-    public async Task<IActionResult> ProcessPenalties(Guid id)
+    public async Task<IActionResult> ProcessPenalties(Guid id, CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.ProcessPenaltiesAsync(id);
+            await _tandaService.ProcessPenaltiesAsync(id, cancellationToken);
             return Ok(new { message = "Corte Dominical: Penalizaciones procesadas correctamente." });
         }
         catch (Exception ex)
@@ -196,11 +201,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpGet("products")]
-    public async Task<IActionResult> GetProducts()
+    public async Task<IActionResult> GetProducts(CancellationToken cancellationToken)
     {
         try
         {
-            var products = await _tandaService.GetProductsAsync();
+            var products = await _tandaService.GetProductsAsync(cancellationToken);
             return Ok(products);
         }
         catch (Exception ex)
@@ -210,11 +215,13 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost("products")]
-    public async Task<IActionResult> CreateProduct([FromBody] CreateTandaProductDto dto)
+    public async Task<IActionResult> CreateProduct(
+        [FromBody] CreateTandaProductDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var product = await _tandaService.CreateProductAsync(dto.Name, dto.BasePrice);
+            var product = await _tandaService.CreateProductAsync(dto.Name, dto.BasePrice, cancellationToken);
             return Ok(product);
         }
         catch (Exception ex)
@@ -224,11 +231,14 @@ public class TandaController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    public async Task<IActionResult> UpdateTanda(Guid id, [FromBody] UpdateTandaDto dto)
+    public async Task<IActionResult> UpdateTanda(
+        Guid id,
+        [FromBody] UpdateTandaDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var tanda = await _tandaService.UpdateTandaAsync(id, dto);
+            var tanda = await _tandaService.UpdateTandaAsync(id, dto, cancellationToken);
             return Ok(tanda);
         }
         catch (Exception ex)
@@ -238,11 +248,14 @@ public class TandaController : ControllerBase
     }
 
     [HttpPatch("participants/{id}/turn")]
-    public async Task<IActionResult> UpdateParticipantTurn(Guid id, [FromBody] UpdateTurnDto dto)
+    public async Task<IActionResult> UpdateParticipantTurn(
+        Guid id,
+        [FromBody] UpdateTurnDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.UpdateParticipantTurnAsync(id, dto.NewTurn);
+            await _tandaService.UpdateParticipantTurnAsync(id, dto.NewTurn, cancellationToken);
             return Ok(new { message = "Turno actualizado correctamente" });
         }
         catch (Exception ex)
@@ -252,11 +265,14 @@ public class TandaController : ControllerBase
     }
 
     [HttpPatch("participants/{id}/variant")]
-    public async Task<IActionResult> UpdateParticipantVariant(Guid id, [FromBody] UpdateParticipantVariantDto dto)
+    public async Task<IActionResult> UpdateParticipantVariant(
+        Guid id,
+        [FromBody] UpdateParticipantVariantDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.UpdateParticipantVariantAsync(id, dto.Variant);
+            await _tandaService.UpdateParticipantVariantAsync(id, dto.Variant, cancellationToken);
             return Ok(new { message = "Variante actualizada correctamente" });
         }
         catch (Exception ex)
@@ -266,11 +282,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpPatch("participants/{id}/confirm-delivery")]
-    public async Task<IActionResult> ConfirmParticipantDelivery(Guid id)
+    public async Task<IActionResult> ConfirmParticipantDelivery(Guid id, CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.ConfirmParticipantDeliveryAsync(id);
+            await _tandaService.ConfirmParticipantDeliveryAsync(id, cancellationToken);
             return Ok(new { message = "¡Entrega de tanda confirmada! ✨" });
         }
         catch (Exception ex)
@@ -280,11 +296,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpDelete("participants/{id}")]
-    public async Task<IActionResult> RemoveParticipant(Guid id)
+    public async Task<IActionResult> RemoveParticipant(Guid id, CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.RemoveParticipantAsync(id);
+            await _tandaService.RemoveParticipantAsync(id, cancellationToken);
             return Ok(new { message = "Participante eliminado correctamente" });
         }
         catch (Exception ex)
@@ -295,11 +311,11 @@ public class TandaController : ControllerBase
     }
 
     [HttpDelete("payments/{id}")]
-    public async Task<IActionResult> DeletePayment(Guid id)
+    public async Task<IActionResult> DeletePayment(Guid id, CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.DeletePaymentAsync(id);
+            await _tandaService.DeletePaymentAsync(id, cancellationToken);
             return Ok(new { message = "Pago eliminado correctamente" });
         }
         catch (Exception ex)
@@ -309,12 +325,66 @@ public class TandaController : ControllerBase
     }
 
     [HttpPost("{id}/reorder")]
-    public async Task<IActionResult> ReorderParticipants(Guid id, [FromBody] ReorderParticipantsDto dto)
+    public async Task<IActionResult> ReorderParticipants(
+        Guid id,
+        [FromBody] ReorderParticipantsDto dto,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await _tandaService.ReorderParticipantsAsync(id, dto.ParticipantIds);
+            await _tandaService.ReorderParticipantsAsync(id, dto.ParticipantIds, cancellationToken);
             return Ok(new { message = "Orden de participantes actualizado correctamente ✨" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("participants/{id}")]
+    public async Task<IActionResult> UpdateParticipant(
+        Guid id,
+        [FromBody] UpdateTandaParticipantDto dto,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var participant = await _tandaService.UpdateParticipantAsync(id, dto, cancellationToken);
+            return Ok(participant);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("payments/{id}")]
+    public async Task<IActionResult> UpdatePayment(
+        Guid id,
+        [FromBody] UpdateTandaPaymentDto dto,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var payment = await _tandaService.UpdatePaymentAsync(id, dto, cancellationToken);
+            return Ok(payment);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("{id}/places")]
+    public async Task<IActionResult> UpdatePlaces(
+        Guid id,
+        [FromBody] UpdateTandaPlacesDto dto,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _tandaService.UpdatePlacesAsync(id, dto.Assignments, cancellationToken);
+            return Ok(new { message = "Lugares actualizados correctamente" });
         }
         catch (Exception ex)
         {
