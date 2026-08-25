@@ -50,6 +50,9 @@ public class TandaService(AppDbContext db) : ITandaService
             WeeklyAmount = dto.WeeklyAmount,
             PenaltyAmount = dto.PenaltyAmount,
             StartDate = dto.StartDate.Date,
+            Currency = string.IsNullOrWhiteSpace(dto.Currency) ? "MXN" : dto.Currency.Trim().ToUpperInvariant(),
+            ItemCost = dto.ItemCost,
+            ExchangeRate = dto.ExchangeRate,
             Status = "Active",
             AccessToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N")
         };
@@ -65,7 +68,10 @@ public class TandaService(AppDbContext db) : ITandaService
                 AssignedTurn = assignment.AssignedTurn,
                 Status = "Active",
                 Variant = CleanOptionalText(assignment.Variant),
-                WeeklyAmount = assignment.WeeklyAmount
+                WeeklyAmount = assignment.WeeklyAmount,
+                Currency = string.IsNullOrWhiteSpace(assignment.Currency) ? null : assignment.Currency.Trim().ToUpperInvariant(),
+                ItemCost = assignment.ItemCost,
+                ExchangeRate = assignment.ExchangeRate
             });
         }
 
@@ -106,7 +112,10 @@ public class TandaService(AppDbContext db) : ITandaService
             AssignedTurn = dto.AssignedTurn,
             Status = "Active",
             Variant = CleanOptionalText(dto.Variant),
-            WeeklyAmount = dto.WeeklyAmount
+            WeeklyAmount = dto.WeeklyAmount,
+            Currency = string.IsNullOrWhiteSpace(dto.Currency) ? null : dto.Currency.Trim().ToUpperInvariant(),
+            ItemCost = dto.ItemCost,
+            ExchangeRate = dto.ExchangeRate
         };
 
         db.TandaParticipants.Add(participant);
@@ -145,6 +154,9 @@ public class TandaService(AppDbContext db) : ITandaService
         participant.Client = client;
         participant.Variant = CleanOptionalText(dto.Variant);
         participant.WeeklyAmount = dto.WeeklyAmount;
+        participant.Currency = string.IsNullOrWhiteSpace(dto.Currency) ? null : dto.Currency.Trim().ToUpperInvariant();
+        participant.ItemCost = dto.ItemCost;
+        participant.ExchangeRate = dto.ExchangeRate;
         participant.Status = NormalizeParticipantStatus(dto.Status);
         participant.IsDelivered = dto.IsDelivered;
         participant.DeliveryDate = dto.IsDelivered
@@ -462,6 +474,10 @@ public class TandaService(AppDbContext db) : ITandaService
         tanda.WeeklyAmount = dto.WeeklyAmount;
         tanda.PenaltyAmount = dto.PenaltyAmount;
         tanda.StartDate = dto.StartDate.Date;
+        if (!string.IsNullOrWhiteSpace(dto.Currency))
+            tanda.Currency = dto.Currency.Trim().ToUpperInvariant();
+        tanda.ItemCost = dto.ItemCost;
+        tanda.ExchangeRate = dto.ExchangeRate;
         if (product is not null)
         {
             tanda.ProductId = product.Id;
@@ -580,6 +596,9 @@ public class TandaService(AppDbContext db) : ITandaService
             WeeklyAmount = tanda.WeeklyAmount,
             PenaltyAmount = tanda.PenaltyAmount,
             StartDate = tanda.StartDate,
+            Currency = tanda.Currency ?? "MXN",
+            ItemCost = tanda.ItemCost,
+            ExchangeRate = tanda.ExchangeRate,
             Status = tanda.Status,
             CreatedAt = tanda.CreatedAt,
             AccessToken = tanda.AccessToken,
@@ -609,6 +628,9 @@ public class TandaService(AppDbContext db) : ITandaService
             CustomerId = participant.CustomerId,
             CustomerName = participant.Client?.Name ?? participant.CustomerName,
             AssignedTurn = participant.AssignedTurn,
+            Currency = participant.Currency,
+            ItemCost = participant.ItemCost,
+            ExchangeRate = participant.ExchangeRate,
             IsDelivered = participant.IsDelivered,
             DeliveryDate = participant.DeliveryDate,
             Status = participant.Status,

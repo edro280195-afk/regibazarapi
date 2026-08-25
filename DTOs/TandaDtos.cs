@@ -22,6 +22,13 @@ public class CreateTandaDto
     [Required]
     public DateTime StartDate { get; set; }
 
+    [MaxLength(10)]
+    public string Currency { get; set; } = "MXN";
+
+    public decimal? ItemCost { get; set; }
+
+    public decimal? ExchangeRate { get; set; }
+
     [Required, MinLength(1)]
     public List<CreateTandaParticipantDto> Participants { get; set; } = new();
 }
@@ -37,6 +44,13 @@ public class CreateTandaParticipantDto
     public string? Variant { get; set; }
 
     public decimal? WeeklyAmount { get; set; }
+
+    [MaxLength(10)]
+    public string? Currency { get; set; }
+
+    public decimal? ItemCost { get; set; }
+
+    public decimal? ExchangeRate { get; set; }
 }
 
 public class AddParticipantDto
@@ -53,6 +67,13 @@ public class AddParticipantDto
     public string? Variant { get; set; }
 
     public decimal? WeeklyAmount { get; set; }
+
+    [MaxLength(10)]
+    public string? Currency { get; set; }
+
+    public decimal? ItemCost { get; set; }
+
+    public decimal? ExchangeRate { get; set; }
 }
 public class RegisterPaymentDto
 {
@@ -128,6 +149,13 @@ public class UpdateTandaDto
     [Required]
     public DateTime StartDate { get; set; }
 
+    [MaxLength(10)]
+    public string? Currency { get; set; }
+
+    public decimal? ItemCost { get; set; }
+
+    public decimal? ExchangeRate { get; set; }
+
     [RegularExpression("^(Draft|Active|Completed|Cancelled)$")]
     public string? Status { get; set; }
 }
@@ -142,6 +170,9 @@ public class TandaDto
     public decimal WeeklyAmount { get; set; }
     public decimal PenaltyAmount { get; set; }
     public DateTime StartDate { get; set; }
+    public string Currency { get; set; } = "MXN";
+    public decimal? ItemCost { get; set; }
+    public decimal? ExchangeRate { get; set; }
     public string Status { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public string? AccessToken { get; set; }
@@ -166,6 +197,9 @@ public class TandaParticipantDto
     public string? CustomerName { get; set; }
     public int AssignedTurn { get; set; }
     public decimal? WeeklyAmount { get; set; }
+    public string? Currency { get; set; }
+    public decimal? ItemCost { get; set; }
+    public decimal? ExchangeRate { get; set; }
     public bool IsDelivered { get; set; }
     public DateTime? DeliveryDate { get; set; }
     public string Status { get; set; } = string.Empty;
@@ -226,6 +260,13 @@ public class UpdateTandaParticipantDto
 
     [Range(typeof(decimal), "0.01", "9999999999")]
     public decimal? WeeklyAmount { get; set; }
+
+    [MaxLength(10)]
+    public string? Currency { get; set; }
+
+    public decimal? ItemCost { get; set; }
+
+    public decimal? ExchangeRate { get; set; }
 
     [RegularExpression("^(Active|Delinquent|Completed)$")]
     public string Status { get; set; } = "Active";

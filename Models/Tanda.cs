@@ -41,6 +41,16 @@ public class Tanda
     [Column("access_token")]
     public string AccessToken { get; set; } = string.Empty;
 
+    [MaxLength(10)]
+    [Column("currency")]
+    public string Currency { get; set; } = "MXN"; // MXN, USD
+
+    [Column("item_cost", TypeName = "decimal(12, 2)")]
+    public decimal? ItemCost { get; set; }
+
+    [Column("exchange_rate", TypeName = "decimal(12, 4)")]
+    public decimal? ExchangeRate { get; set; }
+
     // Relaciones
     [ForeignKey(nameof(ProductId))]
     public TandaProduct? Product { get; set; }

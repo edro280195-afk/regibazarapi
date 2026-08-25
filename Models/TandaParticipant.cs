@@ -36,8 +36,18 @@ public class TandaParticipant
     [MaxLength(255)]
     public string? Variant { get; set; }
 
-    [Column("weekly_amount")]
+    [Column("weekly_amount", TypeName = "decimal(12, 2)")]
     public decimal? WeeklyAmount { get; set; }
+
+    [MaxLength(10)]
+    [Column("currency")]
+    public string? Currency { get; set; } // MXN, USD
+
+    [Column("item_cost", TypeName = "decimal(12, 2)")]
+    public decimal? ItemCost { get; set; }
+
+    [Column("exchange_rate", TypeName = "decimal(12, 4)")]
+    public decimal? ExchangeRate { get; set; }
 
     [NotMapped]
     public string? CustomerName { get; set; }
