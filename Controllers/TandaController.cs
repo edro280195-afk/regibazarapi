@@ -115,6 +115,43 @@ public class TandaController : ControllerBase
         }
     }
 
+    [HttpGet("{id}/payment-proofs")]
+    public async Task<IActionResult> GetPaymentProofs(
+        Guid id,
+        [FromQuery] string? status,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var proofs = await _tandaService.GetPaymentProofsAsync(id, status, cancellationToken);
+            return Ok(proofs);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("payment-proofs/{id}/review")]
+    public async Task<IActionResult> ReviewPaymentProof(
+        Guid id,
+        [FromBody] ReviewTandaPaymentProofDto dto,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var reviewer = User.Identity?.Name
+                ?? User.FindFirst("sub")?.Value
+                ?? "Admin";
+            var proof = await _tandaService.ReviewPaymentProofAsync(id, dto, reviewer, cancellationToken);
+            return Ok(proof);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpPost("{id}/process-penalties")]
     public async Task<IActionResult> ProcessPenalties(Guid id, CancellationToken cancellationToken)
     {

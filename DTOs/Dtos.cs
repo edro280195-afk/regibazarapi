@@ -608,7 +608,13 @@ public record ClientOrderView(
     /// <summary>Fecha/hora real de la entrega o del intento fallido.</summary>
     DateTime? DeliveredAt = null,
     /// <summary>Fotos del intento de no entrega (cuando Status = NotDelivered).</summary>
-    List<string>? NonDeliveryEvidenceUrls = null
+    List<string>? NonDeliveryEvidenceUrls = null,
+    /// <summary>Modo que debe priorizar la vista pública: pago, seguimiento o evidencia.</summary>
+    string? PublicViewMode = null,
+    /// <summary>Fecha límite del enlace cuando no existe un flujo público abierto.</summary>
+    DateTime? PublicAccessUntil = null,
+    /// <summary>Indica si la clienta puede liquidar el saldo desde el enlace.</summary>
+    bool PaymentVisible = false
 );
 
 // ── OrderPayment ──

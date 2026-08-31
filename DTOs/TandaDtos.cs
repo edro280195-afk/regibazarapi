@@ -115,6 +115,7 @@ public class TandaViewDto
     public DateTime StartDate { get; set; }
     public int CurrentWeek { get; set; }
     public List<TandaParticipantViewDto> Participants { get; set; } = new();
+    public TandaParticipantPublicViewDto? CurrentParticipant { get; set; }
 }
 
 public class TandaParticipantViewDto
@@ -195,6 +196,7 @@ public class TandaParticipantDto
     public Guid TandaId { get; set; }
     public int CustomerId { get; set; }
     public string? CustomerName { get; set; }
+    public string? PublicAccessToken { get; set; }
     public int AssignedTurn { get; set; }
     public decimal? WeeklyAmount { get; set; }
     public string? Currency { get; set; }
@@ -308,4 +310,65 @@ public class TandaPlaceAssignmentDto
 
     [Range(1, 52)]
     public int AssignedTurn { get; set; }
+}
+
+public class TandaPaymentProofPublicDto
+{
+    public Guid Id { get; set; }
+    public int WeekNumber { get; set; }
+    public decimal AmountClaimed { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public DateTime SubmittedAt { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? RejectionReason { get; set; }
+}
+
+public class TandaParticipantPublicViewDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int AssignedTurn { get; set; }
+    public int CurrentWeek { get; set; }
+    public int TotalWeeks { get; set; }
+    public decimal WeeklyAmount { get; set; }
+    public decimal ExpectedAmount { get; set; }
+    public decimal CollectedAmount { get; set; }
+    public decimal BalanceDue { get; set; }
+    public bool HasPaidCurrentWeek { get; set; }
+    public List<int> PaidWeeks { get; set; } = new();
+    public List<TandaPaymentProofPublicDto> PaymentProofs { get; set; } = new();
+}
+
+public class TandaPaymentProofAdminDto
+{
+    public Guid Id { get; set; }
+    public Guid ParticipantId { get; set; }
+    public Guid TandaId { get; set; }
+    public string ParticipantName { get; set; } = string.Empty;
+    public string TandaName { get; set; } = string.Empty;
+    public int WeekNumber { get; set; }
+    public decimal AmountClaimed { get; set; }
+    public string FileUrl { get; set; } = string.Empty;
+    public string FileType { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime SubmittedAt { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? ReviewedBy { get; set; }
+    public string? RejectionReason { get; set; }
+}
+
+public class ReviewTandaPaymentProofDto
+{
+    public bool Approve { get; set; }
+
+    [MaxLength(500)]
+    public string? RejectionReason { get; set; }
+}
+
+public class TandaPaymentProofUploadResultDto
+{
+    public TandaPaymentProofPublicDto Proof { get; set; } = new();
+    public Guid TandaId { get; set; }
+    public string ParticipantName { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
 }

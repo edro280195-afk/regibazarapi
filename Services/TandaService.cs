@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EntregasApi.Services;
 
-public class TandaService(AppDbContext db) : ITandaService
+public class TandaService(AppDbContext db, ICloudinaryService cloudinary) : ITandaService
 {
     private static readonly HashSet<string> ValidTandaStatuses =
         new(StringComparer.OrdinalIgnoreCase) { "Draft", "Active", "Completed", "Cancelled" };
@@ -63,6 +63,7 @@ public class TandaService(AppDbContext db) : ITandaService
             {
                 Id = Guid.NewGuid(),
                 TandaId = tanda.Id,
+                PublicAccessToken = GenerateAccessToken(),
                 CustomerId = assignment.CustomerId,
                 Client = clients[assignment.CustomerId],
                 AssignedTurn = assignment.AssignedTurn,
@@ -106,6 +107,7 @@ public class TandaService(AppDbContext db) : ITandaService
         {
             Id = Guid.NewGuid(),
             TandaId = dto.TandaId,
+            PublicAccessToken = GenerateAccessToken(),
             Tanda = tanda,
             CustomerId = dto.CustomerId,
             Client = client,
@@ -409,8 +411,31 @@ public class TandaService(AppDbContext db) : ITandaService
             .Include(t => t.Participants).ThenInclude(p => p.Payments)
             .AsSplitQuery()
             .FirstOrDefaultAsync(t => t.AccessToken == token, cancellationToken);
+        TandaParticipant? currentParticipant = null;
+
         if (tanda is null)
-            return null;
+        {
+            currentParticipant = await db.TandaParticipants
+                .AsNoTracking()
+                .Include(p => p.Client)
+                .Include(p => p.Payments)
+                .Include(p => p.PaymentProofs)
+                .FirstOrDefaultAsync(p => p.PublicAccessToken == token, cancellationToken);
+
+            if (currentParticipant is null)
+                return null;
+
+            tanda = await db.Tandas
+                .AsNoTracking()
+                .Include(t => t.Product)
+                .Include(t => t.Participants).ThenInclude(p => p.Client)
+                .Include(t => t.Participants).ThenInclude(p => p.Payments)
+                .AsSplitQuery()
+                .FirstOrDefaultAsync(t => t.Id == currentParticipant.TandaId, cancellationToken);
+
+            if (tanda is null)
+                return null;
+        }
 
         var currentWeek = CalculateCurrentWeek(tanda.StartDate);
         return new TandaViewDto
@@ -433,7 +458,171 @@ public class TandaService(AppDbContext db) : ITandaService
                 IsDelivered = p.IsDelivered,
                 Variant = p.Variant,
                 WeeklyAmount = p.WeeklyAmount
-            }).OrderBy(p => p.AssignedTurn).ToList()
+            }).OrderBy(p => p.AssignedTurn).ToList(),
+            CurrentParticipant = currentParticipant is null
+                ? null
+                : MapToPublicParticipant(currentParticipant, tanda, currentWeek)
+        };
+    }
+
+    public async Task<List<TandaPaymentProofAdminDto>> GetPaymentProofsAsync(
+        Guid tandaId,
+        string? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        var query = db.TandaPaymentProofs
+            .AsNoTracking()
+            .Include(proof => proof.Participant).ThenInclude(participant => participant!.Client)
+            .Include(proof => proof.Tanda)
+            .Where(proof => proof.TandaId == tandaId);
+
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(proof => proof.Status == status.Trim());
+
+        var proofs = await query
+            .OrderByDescending(proof => proof.SubmittedAt)
+            .ToListAsync(cancellationToken);
+        return proofs.Select(MapToAdminProofDto).ToList();
+    }
+
+    public async Task<TandaPaymentProofAdminDto> ReviewPaymentProofAsync(
+        Guid proofId,
+        ReviewTandaPaymentProofDto dto,
+        string reviewer,
+        CancellationToken cancellationToken = default)
+    {
+        var proof = await db.TandaPaymentProofs
+            .Include(item => item.Participant).ThenInclude(participant => participant!.Client)
+            .Include(item => item.Tanda)
+            .FirstOrDefaultAsync(item => item.Id == proofId, cancellationToken)
+            ?? throw new InvalidOperationException("El comprobante no existe.");
+
+        if (!string.Equals(proof.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Este comprobante ya fue revisado.");
+
+        if (!dto.Approve && string.IsNullOrWhiteSpace(dto.RejectionReason))
+            throw new InvalidOperationException("Indica el motivo del rechazo.");
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        proof.ReviewedAt = DateTime.UtcNow;
+        proof.ReviewedBy = CleanOptionalText(reviewer) ?? "Admin";
+
+        if (dto.Approve)
+        {
+            var participant = proof.Participant
+                ?? throw new InvalidOperationException("La participante del comprobante no existe.");
+            var tanda = proof.Tanda
+                ?? throw new InvalidOperationException("La tanda del comprobante no existe.");
+            var weeklyAmount = participant.WeeklyAmount ?? tanda.WeeklyAmount;
+            var paidAmount = await db.TandaPayments
+                .Where(payment => payment.ParticipantId == proof.ParticipantId
+                    && payment.WeekNumber == proof.WeekNumber
+                    && payment.IsVerified)
+                .SumAsync(payment => payment.AmountPaid, cancellationToken);
+
+            if (paidAmount >= weeklyAmount)
+                throw new InvalidOperationException("La semana ya está liquidada; no se puede registrar este comprobante.");
+            if (paidAmount + proof.AmountClaimed > weeklyAmount + tanda.PenaltyAmount)
+                throw new InvalidOperationException("El comprobante excede el saldo pendiente de la semana.");
+
+            var payment = new TandaPayment
+            {
+                Id = Guid.NewGuid(),
+                ParticipantId = proof.ParticipantId,
+                WeekNumber = proof.WeekNumber,
+                AmountPaid = proof.AmountClaimed,
+                PaymentDate = proof.SubmittedAt,
+                IsVerified = true,
+                Notes = $"Comprobante #{proof.Id:N}"
+            };
+            db.TandaPayments.Add(payment);
+            proof.RegisteredPaymentId = payment.Id;
+            proof.Status = "Approved";
+            proof.RejectionReason = null;
+        }
+        else
+        {
+            proof.Status = "Rejected";
+            proof.RejectionReason = dto.RejectionReason!.Trim();
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return MapToAdminProofDto(proof);
+    }
+
+    public async Task<TandaPaymentProofUploadResultDto> UploadPaymentProofAsync(
+        string participantToken,
+        int weekNumber,
+        decimal amountClaimed,
+        Stream fileStream,
+        string fileName,
+        string contentType,
+        CancellationToken cancellationToken = default)
+    {
+        var participant = await db.TandaParticipants
+            .Include(p => p.Tanda)
+            .Include(p => p.PaymentProofs)
+            .FirstOrDefaultAsync(p => p.PublicAccessToken == participantToken, cancellationToken)
+            ?? throw new InvalidOperationException("El enlace personal no es válido.");
+        var tanda = participant.Tanda
+            ?? throw new InvalidOperationException("La tanda no existe.");
+
+        ValidateTurn(weekNumber, tanda.TotalWeeks);
+        var weeklyAmount = participant.WeeklyAmount ?? tanda.WeeklyAmount;
+        if (amountClaimed <= 0)
+            amountClaimed = weeklyAmount;
+        if (amountClaimed > weeklyAmount + tanda.PenaltyAmount)
+            throw new InvalidOperationException("El monto del comprobante no es válido.");
+
+        if (participant.PaymentProofs.Any(proof => proof.WeekNumber == weekNumber && proof.Status == "Pending"))
+            throw new InvalidOperationException("Ya existe un comprobante en revisión para esta semana.");
+
+        var paidAmount = await db.TandaPayments
+            .Where(payment => payment.ParticipantId == participant.Id
+                && payment.WeekNumber == weekNumber
+                && payment.IsVerified)
+            .SumAsync(payment => payment.AmountPaid, cancellationToken);
+        if (paidAmount >= weeklyAmount)
+            throw new InvalidOperationException("Esta semana ya aparece como pagada.");
+
+        var detectedFileType = await DetectImageTypeAsync(fileStream, cancellationToken);
+        if (detectedFileType is null || !IsAllowedImage(contentType, detectedFileType))
+            throw new InvalidOperationException("El comprobante debe ser una imagen JPG, PNG o WEBP válida.");
+
+        fileStream.Position = 0;
+        var generatedFileName = $"comprobante_{participant.Id:N}_{Guid.NewGuid():N}.{detectedFileType}";
+        string fileUrl;
+        try
+        {
+            fileUrl = await cloudinary.UploadAsync(fileStream, generatedFileName, "tanda-proofs");
+        }
+        catch
+        {
+            throw new InvalidOperationException("No se pudo guardar el comprobante. Intenta nuevamente.");
+        }
+
+        var proof = new TandaPaymentProof
+        {
+            Id = Guid.NewGuid(),
+            ParticipantId = participant.Id,
+            TandaId = tanda.Id,
+            WeekNumber = weekNumber,
+            AmountClaimed = amountClaimed,
+            FileUrl = fileUrl,
+            FileType = detectedFileType,
+            Status = "Pending",
+            SubmittedAt = DateTime.UtcNow
+        };
+        db.TandaPaymentProofs.Add(proof);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new TandaPaymentProofUploadResultDto
+        {
+            Proof = MapToPublicProofDto(proof),
+            TandaId = tanda.Id,
+            ParticipantName = participant.Client?.Name ?? "Participante",
+            Message = "Comprobante recibido. Quedará en revisión antes de aplicar el pago."
         };
     }
 
@@ -627,6 +816,7 @@ public class TandaService(AppDbContext db) : ITandaService
             TandaId = participant.TandaId,
             CustomerId = participant.CustomerId,
             CustomerName = participant.Client?.Name ?? participant.CustomerName,
+            PublicAccessToken = participant.PublicAccessToken,
             AssignedTurn = participant.AssignedTurn,
             Currency = participant.Currency,
             ItemCost = participant.ItemCost,
@@ -643,6 +833,73 @@ public class TandaService(AppDbContext db) : ITandaService
             Payments = participant.Payments.OrderByDescending(p => p.PaymentDate).Select(MapToPaymentDto).ToList()
         };
     }
+
+    private static TandaParticipantPublicViewDto MapToPublicParticipant(
+        TandaParticipant participant,
+        Tanda tanda,
+        int currentWeek)
+    {
+        var weeklyAmount = participant.WeeklyAmount ?? tanda.WeeklyAmount;
+        var collectedAmount = participant.Payments
+            .Where(payment => payment.IsVerified)
+            .Sum(payment => payment.AmountPaid);
+
+        return new TandaParticipantPublicViewDto
+        {
+            Id = participant.Id,
+            Name = participant.Client?.Name ?? "Participante",
+            AssignedTurn = participant.AssignedTurn,
+            CurrentWeek = currentWeek,
+            TotalWeeks = tanda.TotalWeeks,
+            WeeklyAmount = weeklyAmount,
+            ExpectedAmount = weeklyAmount * tanda.TotalWeeks,
+            CollectedAmount = collectedAmount,
+            BalanceDue = Math.Max(0, weeklyAmount * tanda.TotalWeeks - collectedAmount),
+            HasPaidCurrentWeek = participant.Payments.Any(payment =>
+                payment.WeekNumber == currentWeek && payment.IsVerified
+                && payment.AmountPaid >= weeklyAmount),
+            PaidWeeks = participant.Payments
+                .Where(payment => payment.IsVerified)
+                .GroupBy(payment => payment.WeekNumber)
+                .Where(group => group.Sum(payment => payment.AmountPaid) >= weeklyAmount)
+                .Select(group => group.Key)
+                .OrderBy(week => week)
+                .ToList(),
+            PaymentProofs = participant.PaymentProofs
+                .OrderByDescending(proof => proof.SubmittedAt)
+                .Select(MapToPublicProofDto)
+                .ToList()
+        };
+    }
+
+    private static TandaPaymentProofPublicDto MapToPublicProofDto(TandaPaymentProof proof) => new()
+    {
+        Id = proof.Id,
+        WeekNumber = proof.WeekNumber,
+        AmountClaimed = proof.AmountClaimed,
+        Status = proof.Status,
+        SubmittedAt = proof.SubmittedAt,
+        ReviewedAt = proof.ReviewedAt,
+        RejectionReason = proof.RejectionReason
+    };
+
+    private static TandaPaymentProofAdminDto MapToAdminProofDto(TandaPaymentProof proof) => new()
+    {
+        Id = proof.Id,
+        ParticipantId = proof.ParticipantId,
+        TandaId = proof.TandaId,
+        ParticipantName = proof.Participant?.Client?.Name ?? "Participante",
+        TandaName = proof.Tanda?.Name ?? "Tanda",
+        WeekNumber = proof.WeekNumber,
+        AmountClaimed = proof.AmountClaimed,
+        FileUrl = proof.FileUrl,
+        FileType = proof.FileType,
+        Status = proof.Status,
+        SubmittedAt = proof.SubmittedAt,
+        ReviewedAt = proof.ReviewedAt,
+        ReviewedBy = proof.ReviewedBy,
+        RejectionReason = proof.RejectionReason
+    };
 
     private static int CountPaidInstallments(TandaParticipant participant, Tanda tanda)
     {
@@ -696,6 +953,33 @@ public class TandaService(AppDbContext db) : ITandaService
     }
 
     private static string? CleanOptionalText(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string GenerateAccessToken() =>
+        Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+
+    private static async Task<string?> DetectImageTypeAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var header = new byte[12];
+        var read = await stream.ReadAsync(header.AsMemory(0, header.Length), cancellationToken);
+        stream.Position = 0;
+
+        if (read >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF)
+            return "jpg";
+        if (read >= 8 && header.AsSpan(0, 8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }))
+            return "png";
+        if (read >= 12 && header.AsSpan(0, 4).SequenceEqual("RIFF"u8) && header.AsSpan(8, 4).SequenceEqual("WEBP"u8))
+            return "webp";
+        return null;
+    }
+
+    private static bool IsAllowedImage(string contentType, string detectedFileType) =>
+        (detectedFileType, contentType.ToLowerInvariant()) switch
+        {
+            ("jpg", "image/jpeg") => true,
+            ("png", "image/png") => true,
+            ("webp", "image/webp") => true,
+            _ => false
+        };
 
     private static DateTime EnsureUtc(DateTime dateTime) => dateTime.Kind switch
     {

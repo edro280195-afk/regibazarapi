@@ -19,6 +19,10 @@ public class TandaParticipant
     [Column("tanda_id")]
     public Guid TandaId { get; set; }
 
+    [Required, MaxLength(64)]
+    [Column("public_access_token")]
+    public string PublicAccessToken { get; set; } = string.Empty;
+
     [Column("assigned_turn")]
     public int AssignedTurn { get; set; }
 
@@ -59,4 +63,5 @@ public class TandaParticipant
     public Tanda? Tanda { get; set; }
     
     public ICollection<TandaPayment> Payments { get; set; } = new List<TandaPayment>();
+    public ICollection<TandaPaymentProof> PaymentProofs { get; set; } = new List<TandaPaymentProof>();
 }

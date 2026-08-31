@@ -29,4 +29,7 @@ public interface ITandaService
     Task<TandaViewDto?> GetTandaByTokenAsync(string token, CancellationToken cancellationToken = default);
     Task DeletePaymentAsync(Guid paymentId, CancellationToken cancellationToken = default);
     Task ReorderParticipantsAsync(Guid tandaId, List<Guid> participantIdsInOrder, CancellationToken cancellationToken = default);
+    Task<List<TandaPaymentProofAdminDto>> GetPaymentProofsAsync(Guid tandaId, string? status = null, CancellationToken cancellationToken = default);
+    Task<TandaPaymentProofAdminDto> ReviewPaymentProofAsync(Guid proofId, ReviewTandaPaymentProofDto dto, string reviewer, CancellationToken cancellationToken = default);
+    Task<TandaPaymentProofUploadResultDto> UploadPaymentProofAsync(string participantToken, int weekNumber, decimal amountClaimed, Stream fileStream, string fileName, string contentType, CancellationToken cancellationToken = default);
 }

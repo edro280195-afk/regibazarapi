@@ -27,6 +27,7 @@ public class AppDbContext : DbContext
     public DbSet<Tanda> Tandas => Set<Tanda>();
     public DbSet<TandaParticipant> TandaParticipants => Set<TandaParticipant>();
     public DbSet<TandaPayment> TandaPayments => Set<TandaPayment>();
+    public DbSet<TandaPaymentProof> TandaPaymentProofs => Set<TandaPaymentProof>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
     public DbSet<LoyaltyReward> LoyaltyRewards => Set<LoyaltyReward>();
@@ -130,6 +131,37 @@ public class AppDbContext : DbContext
             .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })
             .IsUnique()
             .HasDatabaseName("IX_TandaParticipant_Tanda_Turn");
+
+        modelBuilder.Entity<TandaParticipant>()
+            .HasIndex(tp => tp.PublicAccessToken)
+            .IsUnique()
+            .HasDatabaseName("IX_TandaParticipant_PublicAccessToken");
+
+        modelBuilder.Entity<TandaParticipant>()
+            .HasMany(tp => tp.PaymentProofs)
+            .WithOne(proof => proof.Participant)
+            .HasForeignKey(proof => proof.ParticipantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasOne(proof => proof.Tanda)
+            .WithMany()
+            .HasForeignKey(proof => proof.TandaId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasOne(proof => proof.RegisteredPayment)
+            .WithMany()
+            .HasForeignKey(proof => proof.RegisteredPaymentId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasIndex(proof => new { proof.ParticipantId, proof.WeekNumber })
+            .HasDatabaseName("IX_TandaPaymentProof_Participant_Week");
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasIndex(proof => proof.Status)
+            .HasDatabaseName("IX_TandaPaymentProof_Status");
 
         // --- RELACIONES & CONFIGURACIONES ---
 
