@@ -27,6 +27,7 @@ public class AppDbContext : DbContext
     public DbSet<Tanda> Tandas => Set<Tanda>();
     public DbSet<TandaParticipant> TandaParticipants => Set<TandaParticipant>();
     public DbSet<TandaPayment> TandaPayments => Set<TandaPayment>();
+    public DbSet<TandaParticipantItem> TandaParticipantItems => Set<TandaParticipantItem>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
     public DbSet<LoyaltyReward> LoyaltyRewards => Set<LoyaltyReward>();
@@ -130,6 +131,24 @@ public class AppDbContext : DbContext
             .HasIndex(tp => new { tp.TandaId, tp.AssignedTurn })
             .IsUnique()
             .HasDatabaseName("IX_TandaParticipant_Tanda_Turn");
+
+        modelBuilder.Entity<TandaParticipant>()
+            .HasIndex(tp => tp.PublicToken)
+            .IsUnique()
+            .HasDatabaseName("IX_TandaParticipant_PublicToken");
+
+        modelBuilder.Entity<TandaParticipantItem>(entity =>
+        {
+            entity.HasIndex(item => item.ParticipantId);
+            entity.HasOne(item => item.Participant)
+                .WithMany(participant => participant.Items)
+                .HasForeignKey(item => item.ParticipantId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(item => item.Product)
+                .WithMany()
+                .HasForeignKey(item => item.ProductId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
 
         // --- RELACIONES & CONFIGURACIONES ---
 

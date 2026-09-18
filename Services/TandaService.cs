@@ -52,19 +52,30 @@ public class TandaService : ITandaService
 
         foreach (var assignment in dto.Participants.OrderBy(p => p.AssignedTurn))
         {
-            tanda.Participants.Add(new TandaParticipant
+            var participant = new TandaParticipant
             {
                 Id = Guid.NewGuid(),
                 TandaId = tanda.Id,
                 CustomerId = assignment.CustomerId,
                 Client = clients[assignment.CustomerId],
+                PublicToken = NewPublicToken(),
                 AssignedTurn = assignment.AssignedTurn,
                 Status = "Active",
                 Variant = string.IsNullOrWhiteSpace(assignment.Variant)
                     ? null
                     : assignment.Variant.Trim(),
                 WeeklyAmount = assignment.WeeklyAmount
-            });
+            };
+
+            participant.Items = BuildParticipantItems(
+                assignment.Items,
+                product,
+                participant.Variant,
+                assignment.WeeklyAmount ?? dto.WeeklyAmount);
+            foreach (var item in participant.Items)
+                item.ParticipantId = participant.Id;
+
+            tanda.Participants.Add(participant);
         }
 
         _db.Tandas.Add(tanda);
@@ -91,13 +102,24 @@ public class TandaService : ITandaService
 
         var participant = new TandaParticipant
         {
+            Id = Guid.NewGuid(),
             TandaId = dto.TandaId,
             CustomerId = dto.CustomerId,
+            PublicToken = NewPublicToken(),
             AssignedTurn = dto.AssignedTurn,
             Status = "Active",
             Variant = dto.Variant,
             WeeklyAmount = dto.WeeklyAmount
         };
+
+        var product = await _db.TandaProducts.FirstOrDefaultAsync(p => p.Id == tanda.ProductId);
+        participant.Items = BuildParticipantItems(
+            dto.Items,
+            product,
+            dto.Variant,
+            dto.WeeklyAmount ?? tanda.WeeklyAmount);
+        foreach (var item in participant.Items)
+            item.ParticipantId = participant.Id;
 
         _db.TandaParticipants.Add(participant);
         await _db.SaveChangesAsync();
@@ -127,6 +149,30 @@ public class TandaService : ITandaService
         _db.TandaPayments.Add(payment);
         await _db.SaveChangesAsync();
 
+        return MapToPaymentDto(payment);
+    }
+
+    public async Task<TandaPaymentDto> VerifyPaymentAsync(Guid paymentId, VerifyTandaPaymentDto dto)
+    {
+        var payment = await _db.TandaPayments.FindAsync(paymentId);
+        if (payment == null)
+            throw new Exception("El registro de pago no existe.");
+
+        if (dto.AmountPaid.HasValue)
+        {
+            if (dto.AmountPaid.Value < 0)
+                throw new Exception("El importe no puede ser negativo.");
+            payment.AmountPaid = dto.AmountPaid.Value;
+        }
+
+        if (dto.DepositDate.HasValue)
+            payment.DepositDate = EnsureUtc(dto.DepositDate.Value);
+
+        payment.IsVerified = dto.IsVerified;
+        if (dto.Notes != null)
+            payment.Notes = dto.Notes;
+
+        await _db.SaveChangesAsync();
         return MapToPaymentDto(payment);
     }
 
@@ -179,6 +225,35 @@ public class TandaService : ITandaService
         await _db.SaveChangesAsync();
     }
 
+    public async Task ReplaceParticipantItemsAsync(Guid participantId, ReplaceTandaParticipantItemsDto dto)
+    {
+        var participant = await _db.TandaParticipants
+            .Include(p => p.Items)
+            .Include(p => p.Tanda)
+                .ThenInclude(t => t!.Product)
+            .FirstOrDefaultAsync(p => p.Id == participantId);
+
+        if (participant == null)
+            throw new Exception("Participante no encontrado.");
+
+        if (dto.Items.Count == 0)
+            throw new Exception("Agrega al menos un artículo a la clienta.");
+
+        ValidateItems(dto.Items);
+        _db.TandaParticipantItems.RemoveRange(participant.Items);
+        // Desde este punto el cobro se deriva de los artículos configurados.
+        participant.WeeklyAmount = null;
+        participant.Items = BuildParticipantItems(
+            dto.Items,
+            participant.Tanda?.Product,
+            participant.Variant,
+            participant.WeeklyAmount ?? participant.Tanda?.WeeklyAmount ?? 0);
+        foreach (var item in participant.Items)
+            item.ParticipantId = participant.Id;
+
+        await _db.SaveChangesAsync();
+    }
+
     public async Task ConfirmParticipantDeliveryAsync(Guid participantId)
     {
         var participant = await _db.TandaParticipants.FindAsync(participantId);
@@ -220,7 +295,7 @@ public class TandaService : ITandaService
 
         foreach (var participant in tanda.Participants.Where(p => p.Status == "Active"))
         {
-            bool hasPaidCurrentWeek = participant.Payments.Any(p => p.WeekNumber == currentWeek);
+            bool hasPaidCurrentWeek = participant.Payments.Any(p => p.WeekNumber == currentWeek && p.IsVerified);
             
             if (!hasPaidCurrentWeek)
             {
@@ -276,6 +351,8 @@ public class TandaService : ITandaService
                 .ThenInclude(p => p.Client)
             .Include(t => t.Participants)
                 .ThenInclude(p => p.Payments)
+            .Include(t => t.Participants)
+                .ThenInclude(p => p.Items)
             .FirstOrDefaultAsync(t => t.Id == id);
 
         return tanda != null ? MapToTandaDto(tanda) : null;
@@ -283,17 +360,56 @@ public class TandaService : ITandaService
 
     public async Task<TandaViewDto?> GetTandaByTokenAsync(string token)
     {
+        var participant = await _db.TandaParticipants
+            .Include(p => p.Client)
+            .Include(p => p.Payments)
+            .Include(p => p.Items)
+            .Include(p => p.Tanda)
+                .ThenInclude(t => t!.Product)
+            .FirstOrDefaultAsync(p => p.PublicToken == token);
+
+        if (participant?.Tanda != null)
+            return MapToPublicTandaView(participant.Tanda, participant);
+
         var tanda = await _db.Tandas
             .Include(t => t.Product)
             .Include(t => t.Participants)
                 .ThenInclude(p => p.Client)
             .Include(t => t.Participants)
                 .ThenInclude(p => p.Payments)
+            .Include(t => t.Participants)
+                .ThenInclude(p => p.Items)
             .FirstOrDefaultAsync(t => t.AccessToken == token);
 
         if (tanda == null) return null;
 
+        return MapToPublicTandaView(tanda, null);
+    }
+
+    private TandaViewDto MapToPublicTandaView(Tanda tanda, TandaParticipant? scopedParticipant)
+    {
         int currentWeek = CalculateCurrentWeek(tanda.StartDate);
+        IEnumerable<TandaParticipant> sourceParticipants = scopedParticipant != null
+            ? new[] { scopedParticipant }
+            : tanda.Participants.OrderBy(p => p.AssignedTurn);
+
+        var participants = sourceParticipants.Select(p => new TandaParticipantViewDto
+        {
+            Id = p.Id,
+            Name = scopedParticipant != null
+                ? (p.Client?.Name ?? "Participante")
+                : AnonymizeName(p.Client?.Name ?? "Participante"),
+            AssignedTurn = p.AssignedTurn,
+            HasPaidCurrentWeek = p.Payments.Any(pay => pay.WeekNumber == currentWeek && pay.IsVerified),
+            PaidWeeks = p.Payments.Where(pay => pay.IsVerified).Select(pay => pay.WeekNumber).ToList(),
+            IsWinnerThisWeek = p.AssignedTurn == currentWeek,
+            IsDelivered = p.IsDelivered,
+            Variant = p.Variant,
+            WeeklyAmount = p.WeeklyAmount ?? CalculateWeeklyAmount(tanda, p),
+            PublicToken = p.PublicToken,
+            Items = p.Items.Select(MapToItemDto).ToList(),
+            Payments = p.Payments.Select(MapToPaymentDto).OrderByDescending(pay => pay.WeekNumber).ToList()
+        }).ToList();
 
         return new TandaViewDto
         {
@@ -304,18 +420,8 @@ public class TandaService : ITandaService
             WeeklyAmount = tanda.WeeklyAmount,
             StartDate = tanda.StartDate,
             CurrentWeek = currentWeek,
-            Participants = tanda.Participants.Select(p => new TandaParticipantViewDto
-            {
-                Id = p.Id,
-                Name = AnonymizeName(p.Client?.Name ?? "Participante"),
-                AssignedTurn = p.AssignedTurn,
-                HasPaidCurrentWeek = p.Payments.Any(pay => pay.WeekNumber == currentWeek),
-                PaidWeeks = p.Payments.Select(pay => pay.WeekNumber).ToList(),
-                IsWinnerThisWeek = p.AssignedTurn == currentWeek,
-                IsDelivered = p.IsDelivered,
-                Variant = p.Variant,
-                WeeklyAmount = p.WeeklyAmount
-            }).OrderBy(p => p.AssignedTurn).ToList()
+            Participants = participants,
+            Participant = scopedParticipant != null ? participants.FirstOrDefault() : null
         };
     }
 
@@ -357,13 +463,15 @@ public class TandaService : ITandaService
         TandaId = p.TandaId,
         CustomerId = p.CustomerId,
         CustomerName = p.Client?.Name ?? p.CustomerName,
+        PublicToken = p.PublicToken,
         AssignedTurn = p.AssignedTurn,
         IsDelivered = p.IsDelivered,
         DeliveryDate = p.DeliveryDate,
         Status = p.Status,
         Variant = p.Variant,
         WeeklyAmount = p.WeeklyAmount,
-        Payments = p.Payments?.Select(MapToPaymentDto).ToList()
+        Payments = p.Payments?.Select(MapToPaymentDto).ToList(),
+        Items = p.Items?.Select(MapToItemDto).ToList()
     };
 
     private TandaPaymentDto MapToPaymentDto(TandaPayment pay) => new TandaPaymentDto
@@ -374,9 +482,86 @@ public class TandaService : ITandaService
         AmountPaid = pay.AmountPaid,
         PenaltyPaid = pay.PenaltyPaid,
         PaymentDate = pay.PaymentDate,
+        DepositDate = pay.DepositDate,
+        OcrAmount = pay.OcrAmount,
+        ProofUrl = pay.ProofUrl,
+        OcrText = pay.OcrText,
+        OcrConfidence = pay.OcrConfidence,
+        PaymentMethod = pay.PaymentMethod,
         IsVerified = pay.IsVerified,
         Notes = pay.Notes
     };
+
+    private TandaParticipantItemDto MapToItemDto(TandaParticipantItem item) => new TandaParticipantItemDto
+    {
+        Id = item.Id,
+        ParticipantId = item.ParticipantId,
+        ProductId = item.ProductId,
+        ProductName = item.ProductName,
+        Quantity = item.Quantity,
+        UnitPrice = item.UnitPrice,
+        WeeklyAmount = item.WeeklyAmount,
+        LineTotal = item.LineTotal,
+        Variant = item.Variant
+    };
+
+    private static string NewPublicToken() => Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+
+    private static DateTime EnsureUtc(DateTime value)
+        => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+
+    private static decimal CalculateWeeklyAmount(Tanda tanda, TandaParticipant participant)
+    {
+        var itemAmount = participant.Items
+            .Where(item => item.WeeklyAmount.HasValue)
+            .Sum(item => item.WeeklyAmount!.Value * item.Quantity);
+        return itemAmount > 0 ? itemAmount : tanda.WeeklyAmount;
+    }
+
+    private static void ValidateItems(IEnumerable<CreateTandaParticipantItemDto> items)
+    {
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item.ProductName))
+                throw new Exception("Cada artículo necesita un nombre.");
+            if (item.Quantity < 1)
+                throw new Exception("La cantidad de cada artículo debe ser mayor a cero.");
+            if (item.UnitPrice < 0 || item.WeeklyAmount < 0)
+                throw new Exception("Los importes de los artículos no pueden ser negativos.");
+        }
+    }
+
+    private static List<TandaParticipantItem> BuildParticipantItems(
+        IEnumerable<CreateTandaParticipantItemDto>? requestedItems,
+        TandaProduct? defaultProduct,
+        string? defaultVariant,
+        decimal defaultWeeklyAmount)
+    {
+        var items = requestedItems?.ToList() ?? new List<CreateTandaParticipantItemDto>();
+        if (items.Count == 0 && defaultProduct != null)
+        {
+            items.Add(new CreateTandaParticipantItemDto
+            {
+                ProductId = defaultProduct.Id,
+                ProductName = defaultProduct.Name,
+                UnitPrice = defaultProduct.BasePrice,
+                WeeklyAmount = defaultWeeklyAmount,
+                Variant = defaultVariant
+            });
+        }
+
+        ValidateItems(items);
+        return items.Select(item => new TandaParticipantItem
+        {
+            Id = Guid.NewGuid(),
+            ProductId = item.ProductId,
+            ProductName = item.ProductName.Trim(),
+            Quantity = item.Quantity,
+            UnitPrice = item.UnitPrice,
+            WeeklyAmount = item.WeeklyAmount,
+            Variant = string.IsNullOrWhiteSpace(item.Variant) ? null : item.Variant.Trim()
+        }).ToList();
+    }
 
     private TandaProductDto MapToProductDto(TandaProduct pr) => new TandaProductDto
     {

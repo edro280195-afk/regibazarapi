@@ -36,6 +36,23 @@ public class CreateTandaParticipantDto
     public string? Variant { get; set; }
 
     public decimal? WeeklyAmount { get; set; }
+
+    public List<CreateTandaParticipantItemDto> Items { get; set; } = new();
+}
+
+public class CreateTandaParticipantItemDto
+{
+    public Guid? ProductId { get; set; }
+
+    [Required, MaxLength(255)]
+    public string ProductName { get; set; } = string.Empty;
+
+    [Range(1, 100)]
+    public int Quantity { get; set; } = 1;
+
+    public decimal UnitPrice { get; set; }
+    public decimal? WeeklyAmount { get; set; }
+    public string? Variant { get; set; }
 }
 
 public class AddParticipantDto
@@ -52,6 +69,8 @@ public class AddParticipantDto
     public string? Variant { get; set; }
 
     public decimal? WeeklyAmount { get; set; }
+
+    public List<CreateTandaParticipantItemDto> Items { get; set; } = new();
 }
 public class RegisterPaymentDto
 {
@@ -67,6 +86,19 @@ public class RegisterPaymentDto
     public decimal PenaltyPaid { get; set; } = 0;
 
     public string? Notes { get; set; }
+}
+
+public class VerifyTandaPaymentDto
+{
+    public bool IsVerified { get; set; }
+    public decimal? AmountPaid { get; set; }
+    public DateTime? DepositDate { get; set; }
+    public string? Notes { get; set; }
+}
+
+public class ReplaceTandaParticipantItemsDto
+{
+    public List<CreateTandaParticipantItemDto> Items { get; set; } = new();
 }
 
 public class CreateTandaProductDto
@@ -87,6 +119,7 @@ public class TandaViewDto
     public DateTime StartDate { get; set; }
     public int CurrentWeek { get; set; }
     public List<TandaParticipantViewDto> Participants { get; set; } = new();
+    public TandaParticipantViewDto? Participant { get; set; }
 }
 
 public class TandaParticipantViewDto
@@ -100,6 +133,9 @@ public class TandaParticipantViewDto
     public bool IsDelivered { get; set; }
     public string? Variant { get; set; }
     public decimal? WeeklyAmount { get; set; }
+    public string PublicToken { get; set; } = string.Empty;
+    public List<TandaParticipantItemDto> Items { get; set; } = new();
+    public List<TandaPaymentDto> Payments { get; set; } = new();
 }
 
 public class UpdateTandaDto
@@ -142,6 +178,7 @@ public class TandaParticipantDto
     public Guid TandaId { get; set; }
     public int CustomerId { get; set; }
     public string? CustomerName { get; set; }
+    public string PublicToken { get; set; } = string.Empty;
     public int AssignedTurn { get; set; }
     public decimal? WeeklyAmount { get; set; }
     public bool IsDelivered { get; set; }
@@ -149,6 +186,20 @@ public class TandaParticipantDto
     public string Status { get; set; } = string.Empty;
     public string? Variant { get; set; }
     public List<TandaPaymentDto>? Payments { get; set; }
+    public List<TandaParticipantItemDto>? Items { get; set; }
+}
+
+public class TandaParticipantItemDto
+{
+    public Guid Id { get; set; }
+    public Guid ParticipantId { get; set; }
+    public Guid? ProductId { get; set; }
+    public string ProductName { get; set; } = string.Empty;
+    public int Quantity { get; set; }
+    public decimal UnitPrice { get; set; }
+    public decimal? WeeklyAmount { get; set; }
+    public decimal LineTotal { get; set; }
+    public string? Variant { get; set; }
 }
 
 public class TandaPaymentDto
@@ -159,6 +210,12 @@ public class TandaPaymentDto
     public decimal AmountPaid { get; set; }
     public decimal PenaltyPaid { get; set; }
     public DateTime PaymentDate { get; set; }
+    public DateTime? DepositDate { get; set; }
+    public decimal? OcrAmount { get; set; }
+    public string? ProofUrl { get; set; }
+    public string? OcrText { get; set; }
+    public decimal? OcrConfidence { get; set; }
+    public string? PaymentMethod { get; set; }
     public bool IsVerified { get; set; }
     public string? Notes { get; set; }
 }

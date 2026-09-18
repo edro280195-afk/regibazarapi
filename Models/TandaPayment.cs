@@ -25,6 +25,26 @@ public class TandaPayment
     [Column("payment_date")]
     public DateTime PaymentDate { get; set; } 
 
+    [Column("deposit_date")]
+    public DateTime? DepositDate { get; set; }
+
+    [Column("ocr_amount", TypeName = "decimal(12, 2)")]
+    public decimal? OcrAmount { get; set; }
+
+    [Column("proof_url")]
+    [MaxLength(1000)]
+    public string? ProofUrl { get; set; }
+
+    [Column("ocr_text")]
+    public string? OcrText { get; set; }
+
+    [Column("ocr_confidence")]
+    public decimal? OcrConfidence { get; set; }
+
+    [Column("payment_method")]
+    [MaxLength(50)]
+    public string? PaymentMethod { get; set; }
+
     [Column("is_verified")]
     public bool IsVerified { get; set; } = false;
 

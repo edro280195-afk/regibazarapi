@@ -91,6 +91,19 @@ public class TandaController : ControllerBase
         }
     }
 
+    [HttpPatch("payments/{id}/verification")]
+    public async Task<IActionResult> VerifyPayment(Guid id, [FromBody] VerifyTandaPaymentDto dto)
+    {
+        try
+        {
+            return Ok(await _tandaService.VerifyPaymentAsync(id, dto));
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpGet("{id}/sunday-delivery")]
     public async Task<IActionResult> GetSundayDelivery(Guid id)
     {
@@ -258,6 +271,20 @@ public class TandaController : ControllerBase
         {
             await _tandaService.UpdateParticipantVariantAsync(id, dto.Variant);
             return Ok(new { message = "Variante actualizada correctamente" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("participants/{id}/items")]
+    public async Task<IActionResult> ReplaceParticipantItems(Guid id, [FromBody] ReplaceTandaParticipantItemsDto dto)
+    {
+        try
+        {
+            await _tandaService.ReplaceParticipantItemsAsync(id, dto);
+            return Ok(new { message = "Artículos actualizados correctamente" });
         }
         catch (Exception ex)
         {

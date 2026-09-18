@@ -10,6 +10,10 @@ public class TandaParticipant
     [Column("id")]
     public Guid Id { get; set; }
 
+    [Required, MaxLength(64)]
+    [Column("public_token")]
+    public string PublicToken { get; set; } = string.Empty;
+
     // Relaciones
     [ForeignKey(nameof(Client))]
     [Column("customer_id")]
@@ -49,4 +53,5 @@ public class TandaParticipant
     public Tanda? Tanda { get; set; }
     
     public ICollection<TandaPayment> Payments { get; set; } = new List<TandaPayment>();
+    public ICollection<TandaParticipantItem> Items { get; set; } = new List<TandaParticipantItem>();
 }
