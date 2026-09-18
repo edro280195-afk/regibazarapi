@@ -18,14 +18,12 @@ public class ClientViewController : ControllerBase
     private readonly AppDbContext _db;
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IPushNotificationService _push;
-    private readonly ICamiService _cami;
 
-    public ClientViewController(AppDbContext db, IHubContext<DeliveryHub> hub, IPushNotificationService push, ICamiService cami)
+    public ClientViewController(AppDbContext db, IHubContext<DeliveryHub> hub, IPushNotificationService push)
     {
         _db = db;
         _hub = hub;
         _push = push;
-        _cami = cami;
     }
 
     /// <summary>GET /api/pedido/{token} - Vista pública del pedido</summary>
@@ -43,17 +41,19 @@ public class ClientViewController : ControllerBase
         if (order == null)
             return NotFound("Pedido no encontrado.");
 
-        if (order.ExpiresAt < DateTime.UtcNow)
-            return Gone("Este enlace ha expirado.");
-
         var latestDelivery = order.DeliveryRouteId is int currentRouteId
             ? order.Deliveries.FirstOrDefault(d => d.DeliveryRouteId == currentRouteId)
             : order.Deliveries.OrderByDescending(d => d.Id).FirstOrDefault();
 
+        var now = DateTime.UtcNow;
+        if (!IsPublicLinkAvailable(order, now, latestDelivery?.Status == DeliveryStatus.NotDelivered))
+            return Gone("Este enlace ha expirado.");
+
         // Ubicación del repartidor
         DriverLocationDto? driverLocation = null;
         if (order.DeliveryRoute?.Status == RouteStatus.Active &&
-            order.DeliveryRoute.CurrentLatitude.HasValue)
+            order.DeliveryRoute.CurrentLatitude.HasValue &&
+            order.DeliveryRoute.CurrentLongitude.HasValue)
         {
             driverLocation = new DriverLocationDto(
                 order.DeliveryRoute.CurrentLatitude.Value,
@@ -100,6 +100,12 @@ public class ClientViewController : ControllerBase
                 clientStatus = "InTransit"; // Repartidor viene hacia esta clienta
             }
         }
+        else if (latestDelivery?.Status == DeliveryStatus.NotDelivered)
+        {
+            // Los reintentos devuelven la orden a Pending, pero la clienta debe
+            // seguir viendo el resultado del intento más reciente.
+            clientStatus = "NotDelivered";
+        }
 
         // --- LIMPIEZA DE TIPO DE CLIENTA ---
         string finalType = "Nueva";
@@ -107,6 +113,15 @@ public class ClientViewController : ControllerBase
         {
             finalType = order.Client.Type;
         }
+
+        var paymentVisible = IsPublicPaymentAvailable(order);
+        var publicViewMode = GetPublicViewMode(order, paymentVisible, clientStatus);
+        DateTime? estimatedArrival = publicViewMode == "Tracking"
+            ? CalculateEstimatedArrival(driverLocation, order.Client?.Latitude, order.Client?.Longitude, deliveriesAhead)
+            : (DateTime?)null;
+        var publicAccessUntil = IsOpenPublicWorkflow(order) || latestDelivery?.Status == DeliveryStatus.NotDelivered
+            ? (DateTime?)null
+            : order.ExpiresAt;
 
         return Ok(new ClientOrderView(
             ClientId: order.ClientId,
@@ -118,7 +133,7 @@ public class ClientViewController : ControllerBase
             ShippingCost: order.ShippingCost,
             Total: order.Total,
             Status: clientStatus,
-            EstimatedArrival: null,
+            EstimatedArrival: estimatedArrival,
             DriverLocation: driverLocation,
             QueuePosition: queuePosition,
             TotalDeliveries: totalDeliveries,
@@ -149,23 +164,11 @@ public class ClientViewController : ControllerBase
             DeliveredAt: latestDelivery?.DeliveredAt,
             NonDeliveryEvidenceUrls: latestDelivery?.Evidences
                 .Where(e => e.Type == EvidenceType.NonDeliveryProof)
-                .Select(e => e.ImagePath).ToList()
+                .Select(e => e.ImagePath).ToList(),
+            PublicViewMode: publicViewMode,
+            PublicAccessUntil: publicAccessUntil,
+            PaymentVisible: paymentVisible
         ));
-    }
-
-    [HttpGet("cami-greeting")]
-    public async Task<ActionResult<CamiGreetingResponse>> GetCamiGreeting(string accessToken)
-    {
-        var order = await _db.Orders
-            .Include(o => o.Client)
-            .Include(o => o.Items)
-            .Include(o => o.Payments)
-            .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
-
-        if (order == null) return NotFound("Pedido no encontrado.");
-
-        var response = await _cami.GetProactiveGreetingAsync(order);
-        return Ok(response);
     }
 
     /// <summary>POST /api/pedido/{token}/confirm - La clienta confirma su pedido</summary>
@@ -176,7 +179,7 @@ public class ClientViewController : ControllerBase
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
         if (order == null) return NotFound(new { message = "Pedido no encontrado." });
-        if (order.ExpiresAt < DateTime.UtcNow) return StatusCode(410, new { message = "Este enlace ha expirado." });
+        if (!IsPublicLinkAvailable(order, DateTime.UtcNow)) return StatusCode(410, new { message = "Este enlace ha expirado." });
 
         // Solo se puede confirmar si estaba Pendiente o Pospuesto
         if (order.Status == Models.OrderStatus.Pending || order.Status == Models.OrderStatus.Postponed)
@@ -214,6 +217,8 @@ public class ClientViewController : ControllerBase
     {
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound("Pedido no encontrado.");
+        if (!IsPublicLinkAvailable(order, DateTime.UtcNow))
+            return Gone("Este enlace ha expirado.");
 
         // Si el pedido está en ruta usamos ese intento; si espera reintento, mostramos
         // el último intento para conservar la conversación asociada.
@@ -249,6 +254,8 @@ public class ClientViewController : ControllerBase
     {
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound("Pedido no encontrado.");
+        if (!IsPublicLinkAvailable(order, DateTime.UtcNow))
+            return Gone("Este enlace ha expirado.");
 
         var delivery = order.DeliveryRouteId.HasValue
             ? await _db.Deliveries.FirstOrDefaultAsync(d =>
@@ -304,7 +311,7 @@ public class ClientViewController : ControllerBase
     {
         var order = await _db.Orders.FirstOrDefaultAsync(o => o.AccessToken == accessToken);
         if (order == null) return NotFound(new { message = "Pedido no encontrado." });
-        if (order.ExpiresAt < DateTime.UtcNow) return StatusCode(410, new { message = "Este enlace ha expirado." });
+        if (!IsPublicLinkAvailable(order, DateTime.UtcNow)) return StatusCode(410, new { message = "Este enlace ha expirado." });
 
         order.DeliveryInstructions = req.Instructions;
         await _db.SaveChangesAsync();
@@ -332,7 +339,8 @@ public class ClientViewController : ControllerBase
             .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
         if (order == null) return NotFound(new { message = "Pedido no encontrado." });
-        if (order.ExpiresAt < DateTime.UtcNow) return StatusCode(410, new { message = "Este enlace ha expirado." });
+        if (!IsPublicLinkAvailable(order, DateTime.UtcNow)) return StatusCode(410, new { message = "Este enlace ha expirado." });
+        if (!IsPublicPaymentAvailable(order)) return BadRequest(new { message = "Este pedido ya no acepta pagos desde este enlace." });
 
         // El monto viene SIEMPRE del servidor, nunca del cliente
         var balanceDue = order.BalanceDue;
@@ -476,6 +484,73 @@ public class ClientViewController : ControllerBase
         "cc_rejected_duplicated_payment"     => "Pago duplicado detectado.",
         _                                    => "Pago rechazado. Intenta con otra tarjeta o método de pago."
     };
+
+    private static bool IsPublicPaymentAvailable(Order order)
+        => order.Status != OrderStatus.Canceled && order.BalanceDue > 0m;
+
+    private static bool IsOpenPublicWorkflow(Order order)
+        => IsPublicPaymentAvailable(order)
+           || order.DeliveryRoute?.Status == RouteStatus.Active
+           || order.Status is OrderStatus.NotDelivered or OrderStatus.Postponed;
+
+    private static bool IsPublicLinkAvailable(Order order, DateTime now, bool hasOpenDeliveryIssue = false)
+        => hasOpenDeliveryIssue || IsOpenPublicWorkflow(order) || order.ExpiresAt >= now;
+
+    private static string GetPublicViewMode(Order order, bool paymentVisible, string? clientStatus = null)
+    {
+        if (clientStatus == "NotDelivered")
+            return "NotDelivered";
+
+        if (order.Status == OrderStatus.Delivered)
+            return paymentVisible ? "DeliveredWithBalance" : "Delivered";
+
+        if (order.Status == OrderStatus.NotDelivered)
+            return "NotDelivered";
+
+        if (order.Status == OrderStatus.Postponed)
+            return "Postponed";
+
+        if (order.Status == OrderStatus.Canceled)
+            return "Canceled";
+
+        if (order.DeliveryRoute?.Status == RouteStatus.Active || order.Status == OrderStatus.InRoute)
+            return "Tracking";
+
+        return "Payment";
+    }
+
+    private static DateTime? CalculateEstimatedArrival(
+        DriverLocationDto? driverLocation,
+        double? clientLatitude,
+        double? clientLongitude,
+        int? deliveriesAhead)
+    {
+        if (driverLocation == null || !clientLatitude.HasValue || !clientLongitude.HasValue)
+            return null;
+
+        var distanceMeters = HaversineDistance(
+            driverLocation.Latitude,
+            driverLocation.Longitude,
+            clientLatitude.Value,
+            clientLongitude.Value);
+        var drivingMinutes = Math.Max(5d, distanceMeters / 1000d / 25d * 60d);
+        var stopMinutes = Math.Max(0, deliveriesAhead ?? 0) * 10d;
+
+        return DateTime.UtcNow.AddMinutes(Math.Ceiling(drivingMinutes + stopMinutes));
+    }
+
+    private static double HaversineDistance(double latitude1, double longitude1, double latitude2, double longitude2)
+    {
+        const double earthRadiusMeters = 6371000d;
+        var latitudeDelta = (latitude2 - latitude1) * Math.PI / 180d;
+        var longitudeDelta = (longitude2 - longitude1) * Math.PI / 180d;
+        var a = Math.Sin(latitudeDelta / 2d) * Math.Sin(latitudeDelta / 2d)
+                + Math.Cos(latitude1 * Math.PI / 180d)
+                * Math.Cos(latitude2 * Math.PI / 180d)
+                * Math.Sin(longitudeDelta / 2d)
+                * Math.Sin(longitudeDelta / 2d);
+        return earthRadiusMeters * 2d * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1d - a));
+    }
 
     private ObjectResult Gone(string message)
     {

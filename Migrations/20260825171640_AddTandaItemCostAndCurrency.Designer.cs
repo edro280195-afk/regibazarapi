@@ -3,6 +3,7 @@ using System;
 using EntregasApi.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EntregasApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260825171640_AddTandaItemCostAndCurrency")]
+    partial class AddTandaItemCostAndCurrency
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2112,12 +2115,6 @@ namespace EntregasApi.Migrations
                         .HasColumnType("decimal(12, 2)")
                         .HasColumnName("item_cost");
 
-                    b.Property<string>("PublicAccessToken")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("public_access_token");
-
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -2140,10 +2137,6 @@ namespace EntregasApi.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CustomerId");
-
-                    b.HasIndex("PublicAccessToken")
-                        .IsUnique()
-                        .HasDatabaseName("IX_TandaParticipant_PublicAccessToken");
 
                     b.HasIndex("TandaId", "AssignedTurn")
                         .IsUnique()
@@ -2192,84 +2185,6 @@ namespace EntregasApi.Migrations
                     b.HasIndex("ParticipantId");
 
                     b.ToTable("payments");
-                });
-
-            modelBuilder.Entity("EntregasApi.Models.TandaPaymentProof", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<decimal>("AmountClaimed")
-                        .HasColumnType("decimal(12, 2)")
-                        .HasColumnName("amount_claimed");
-
-                    b.Property<string>("FileType")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasColumnName("file_type");
-
-                    b.Property<string>("FileUrl")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("file_url");
-
-                    b.Property<Guid>("ParticipantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("participant_id");
-
-                    b.Property<Guid?>("RegisteredPaymentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("registered_payment_id");
-
-                    b.Property<string>("RejectionReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("rejection_reason");
-
-                    b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("reviewed_at");
-
-                    b.Property<string>("ReviewedBy")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("reviewed_by");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("status");
-
-                    b.Property<DateTime>("SubmittedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("submitted_at");
-
-                    b.Property<Guid>("TandaId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tanda_id");
-
-                    b.Property<int>("WeekNumber")
-                        .HasColumnType("integer")
-                        .HasColumnName("week_number");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RegisteredPaymentId");
-
-                    b.HasIndex("Status")
-                        .HasDatabaseName("IX_TandaPaymentProof_Status");
-
-                    b.HasIndex("TandaId");
-
-                    b.HasIndex("ParticipantId", "WeekNumber")
-                        .HasDatabaseName("IX_TandaPaymentProof_Participant_Week");
-
-                    b.ToTable("tanda_payment_proofs");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.TandaProduct", b =>
@@ -2798,32 +2713,6 @@ namespace EntregasApi.Migrations
                     b.Navigation("Participant");
                 });
 
-            modelBuilder.Entity("EntregasApi.Models.TandaPaymentProof", b =>
-                {
-                    b.HasOne("EntregasApi.Models.TandaParticipant", "Participant")
-                        .WithMany("PaymentProofs")
-                        .HasForeignKey("ParticipantId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("EntregasApi.Models.TandaPayment", "RegisteredPayment")
-                        .WithMany()
-                        .HasForeignKey("RegisteredPaymentId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("EntregasApi.Models.Tanda", "Tanda")
-                        .WithMany()
-                        .HasForeignKey("TandaId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Participant");
-
-                    b.Navigation("RegisteredPayment");
-
-                    b.Navigation("Tanda");
-                });
-
             modelBuilder.Entity("EntregasApi.Models.CashRegisterSession", b =>
                 {
                     b.Navigation("Payments");
@@ -2925,8 +2814,6 @@ namespace EntregasApi.Migrations
 
             modelBuilder.Entity("EntregasApi.Models.TandaParticipant", b =>
                 {
-                    b.Navigation("PaymentProofs");
-
                     b.Navigation("Payments");
                 });
 #pragma warning restore 612, 618

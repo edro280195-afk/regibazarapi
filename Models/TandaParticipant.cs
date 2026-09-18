@@ -10,10 +10,6 @@ public class TandaParticipant
     [Column("id")]
     public Guid Id { get; set; }
 
-    [Required, MaxLength(64)]
-    [Column("public_token")]
-    public string PublicToken { get; set; } = string.Empty;
-
     // Relaciones
     [ForeignKey(nameof(Client))]
     [Column("customer_id")]
@@ -22,6 +18,10 @@ public class TandaParticipant
     [ForeignKey(nameof(Tanda))]
     [Column("tanda_id")]
     public Guid TandaId { get; set; }
+
+    [Required, MaxLength(64)]
+    [Column("public_access_token")]
+    public string PublicAccessToken { get; set; } = string.Empty;
 
     [Column("assigned_turn")]
     public int AssignedTurn { get; set; }
@@ -40,8 +40,18 @@ public class TandaParticipant
     [MaxLength(255)]
     public string? Variant { get; set; }
 
-    [Column("weekly_amount")]
+    [Column("weekly_amount", TypeName = "decimal(12, 2)")]
     public decimal? WeeklyAmount { get; set; }
+
+    [MaxLength(10)]
+    [Column("currency")]
+    public string? Currency { get; set; } // MXN, USD
+
+    [Column("item_cost", TypeName = "decimal(12, 2)")]
+    public decimal? ItemCost { get; set; }
+
+    [Column("exchange_rate", TypeName = "decimal(12, 4)")]
+    public decimal? ExchangeRate { get; set; }
 
     [NotMapped]
     public string? CustomerName { get; set; }
@@ -53,5 +63,6 @@ public class TandaParticipant
     public Tanda? Tanda { get; set; }
     
     public ICollection<TandaPayment> Payments { get; set; } = new List<TandaPayment>();
+    public ICollection<TandaPaymentProof> PaymentProofs { get; set; } = new List<TandaPaymentProof>();
     public ICollection<TandaParticipantItem> Items { get; set; } = new List<TandaParticipantItem>();
 }

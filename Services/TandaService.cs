@@ -5,47 +5,54 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EntregasApi.Services;
 
-public class TandaService : ITandaService
+public class TandaService(AppDbContext db, ICloudinaryService cloudinary, ITandaPaymentOcrService paymentOcr) : ITandaService
 {
-    private readonly AppDbContext _db;
+    private static readonly HashSet<string> ValidTandaStatuses =
+        new(StringComparer.OrdinalIgnoreCase) { "Draft", "Active", "Completed", "Cancelled" };
 
-    public TandaService(AppDbContext db)
-    {
-        _db = db;
-    }
+    private static readonly HashSet<string> ValidParticipantStatuses =
+        new(StringComparer.OrdinalIgnoreCase) { "Active", "Delinquent", "Completed" };
 
-    public async Task<TandaDto> CreateTandaAsync(CreateTandaDto dto)
+    public async Task<TandaDto> CreateTandaAsync(
+        CreateTandaDto dto,
+        CancellationToken cancellationToken = default)
     {
-        var product = await _db.TandaProducts.FirstOrDefaultAsync(p => p.Id == dto.ProductId && p.IsActive);
-        if (product == null)
-            throw new Exception("El producto especificado no existe o no está activo.");
+        ValidateTandaValues(dto.Name, dto.TotalWeeks, dto.WeeklyAmount, dto.PenaltyAmount);
+
+        var product = await db.TandaProducts
+            .FirstOrDefaultAsync(p => p.Id == dto.ProductId && p.IsActive, cancellationToken);
+        if (product is null)
+            throw new InvalidOperationException("El producto especificado no existe o no está activo.");
 
         TandaTurnPlanner.ValidateCompleteAssignments(
             dto.TotalWeeks,
             dto.Participants.Select(p => p.AssignedTurn).ToList());
 
-        var clientIds = dto.Participants
-            .Select(p => p.CustomerId)
-            .Distinct()
-            .ToList();
-        var clients = await _db.Clients
+        if (dto.Participants.Any(p => p.WeeklyAmount is <= 0))
+            throw new InvalidOperationException("El abono personalizado debe ser mayor a cero.");
+
+        var clientIds = dto.Participants.Select(p => p.CustomerId).Distinct().ToList();
+        var clients = await db.Clients
             .Where(c => clientIds.Contains(c.Id))
-            .ToDictionaryAsync(c => c.Id);
+            .ToDictionaryAsync(c => c.Id, cancellationToken);
 
         if (clientIds.Any(id => !clients.ContainsKey(id)))
             throw new InvalidOperationException("Una o más clientas seleccionadas ya no existen.");
 
-        await using var transaction = await _db.Database.BeginTransactionAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var tanda = new Tanda
         {
             Id = Guid.NewGuid(),
             ProductId = dto.ProductId,
             Product = product,
-            Name = dto.Name,
+            Name = dto.Name.Trim(),
             TotalWeeks = dto.TotalWeeks,
             WeeklyAmount = dto.WeeklyAmount,
             PenaltyAmount = dto.PenaltyAmount,
-            StartDate = dto.StartDate,
+            StartDate = dto.StartDate.Date,
+            Currency = string.IsNullOrWhiteSpace(dto.Currency) ? "MXN" : dto.Currency.Trim().ToUpperInvariant(),
+            ItemCost = dto.ItemCost,
+            ExchangeRate = dto.ExchangeRate,
             Status = "Active",
             AccessToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N")
         };
@@ -56,361 +63,471 @@ public class TandaService : ITandaService
             {
                 Id = Guid.NewGuid(),
                 TandaId = tanda.Id,
+                PublicAccessToken = GenerateAccessToken(),
                 CustomerId = assignment.CustomerId,
                 Client = clients[assignment.CustomerId],
-                PublicToken = NewPublicToken(),
                 AssignedTurn = assignment.AssignedTurn,
                 Status = "Active",
-                Variant = string.IsNullOrWhiteSpace(assignment.Variant)
-                    ? null
-                    : assignment.Variant.Trim(),
-                WeeklyAmount = assignment.WeeklyAmount
+                Variant = CleanOptionalText(assignment.Variant),
+                WeeklyAmount = assignment.WeeklyAmount,
+                Currency = string.IsNullOrWhiteSpace(assignment.Currency) ? null : assignment.Currency.Trim().ToUpperInvariant(),
+                ItemCost = assignment.ItemCost,
+                ExchangeRate = assignment.ExchangeRate,
+                Items = BuildParticipantItems(
+                    assignment.Items,
+                    product,
+                    assignment.Variant,
+                    assignment.WeeklyAmount ?? dto.WeeklyAmount)
             };
-
-            participant.Items = BuildParticipantItems(
-                assignment.Items,
-                product,
-                participant.Variant,
-                assignment.WeeklyAmount ?? dto.WeeklyAmount);
             foreach (var item in participant.Items)
                 item.ParticipantId = participant.Id;
-
             tanda.Participants.Add(participant);
         }
 
-        _db.Tandas.Add(tanda);
-        await _db.SaveChangesAsync();
-        await transaction.CommitAsync();
+        db.Tandas.Add(tanda);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return MapToTandaDto(tanda);
     }
 
-    public async Task<TandaParticipantDto> AddParticipantAsync(AddParticipantDto dto)
+    public async Task<TandaParticipantDto> AddParticipantAsync(
+        AddParticipantDto dto,
+        CancellationToken cancellationToken = default)
     {
-        var tanda = await _db.Tandas.FindAsync(dto.TandaId);
-        if (tanda == null)
-            throw new Exception("La tanda especificada no existe.");
+        var tanda = await db.Tandas
+            .Include(t => t.Participants)
+            .FirstOrDefaultAsync(t => t.Id == dto.TandaId, cancellationToken)
+            ?? throw new InvalidOperationException("La tanda especificada no existe.");
 
-        if (dto.AssignedTurn < 1 || dto.AssignedTurn > tanda.TotalWeeks)
-            throw new Exception("El turno asignado está fuera de los límites de las semanas de la tanda.");
+        ValidateTurn(dto.AssignedTurn, tanda.TotalWeeks);
+        if (dto.WeeklyAmount is <= 0)
+            throw new InvalidOperationException("El abono personalizado debe ser mayor a cero.");
+        if (tanda.Participants.Count >= tanda.TotalWeeks)
+            throw new InvalidOperationException("La tanda ya tiene ocupados todos sus lugares.");
+        if (tanda.Participants.Any(p => p.AssignedTurn == dto.AssignedTurn))
+            throw new InvalidOperationException($"El lugar {dto.AssignedTurn} ya está ocupado.");
 
-        var isTurnOccupied = await _db.TandaParticipants
-            .AnyAsync(p => p.TandaId == dto.TandaId && p.AssignedTurn == dto.AssignedTurn);
-
-        if (isTurnOccupied)
-            throw new Exception($"El turno {dto.AssignedTurn} ya está ocupado en esta tanda.");
+        var client = await db.Clients.FindAsync([dto.CustomerId], cancellationToken)
+            ?? throw new InvalidOperationException("La clienta seleccionada ya no existe.");
 
         var participant = new TandaParticipant
         {
             Id = Guid.NewGuid(),
             TandaId = dto.TandaId,
+            PublicAccessToken = GenerateAccessToken(),
+            Tanda = tanda,
             CustomerId = dto.CustomerId,
-            PublicToken = NewPublicToken(),
+            Client = client,
             AssignedTurn = dto.AssignedTurn,
             Status = "Active",
-            Variant = dto.Variant,
-            WeeklyAmount = dto.WeeklyAmount
+            Variant = CleanOptionalText(dto.Variant),
+            WeeklyAmount = dto.WeeklyAmount,
+            Currency = string.IsNullOrWhiteSpace(dto.Currency) ? null : dto.Currency.Trim().ToUpperInvariant(),
+            ItemCost = dto.ItemCost,
+            ExchangeRate = dto.ExchangeRate,
+            Items = BuildParticipantItems(
+                dto.Items,
+                await db.TandaProducts.FirstOrDefaultAsync(p => p.Id == tanda.ProductId, cancellationToken),
+                dto.Variant,
+                dto.WeeklyAmount ?? tanda.WeeklyAmount)
         };
 
-        var product = await _db.TandaProducts.FirstOrDefaultAsync(p => p.Id == tanda.ProductId);
-        participant.Items = BuildParticipantItems(
-            dto.Items,
-            product,
-            dto.Variant,
-            dto.WeeklyAmount ?? tanda.WeeklyAmount);
         foreach (var item in participant.Items)
             item.ParticipantId = participant.Id;
 
-        _db.TandaParticipants.Add(participant);
-        await _db.SaveChangesAsync();
-
-        return MapToParticipantDto(participant);
+        db.TandaParticipants.Add(participant);
+        await db.SaveChangesAsync(cancellationToken);
+        return MapToParticipantDto(participant, tanda);
     }
 
-    public async Task<TandaPaymentDto> RegisterPaymentAsync(RegisterPaymentDto dto)
+    public async Task<TandaParticipantDto> UpdateParticipantAsync(
+        Guid participantId,
+        UpdateTandaParticipantDto dto,
+        CancellationToken cancellationToken = default)
     {
-        // Eliminada la restricción de día de la semana para pagos (a petición de la administradora)
+        var participant = await db.TandaParticipants
+            .Include(p => p.Client)
+            .Include(p => p.Payments)
+            .Include(p => p.Items)
+            .Include(p => p.Tanda)
+            .FirstOrDefaultAsync(p => p.Id == participantId, cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
 
-        var participant = await _db.TandaParticipants.FindAsync(dto.ParticipantId);
-        if (participant == null)
-            throw new Exception("Participante no encontrado.");
+        var tanda = participant.Tanda
+            ?? throw new InvalidOperationException("La tanda del participante no existe.");
+        ValidateTurn(dto.AssignedTurn, tanda.TotalWeeks);
+        if (dto.WeeklyAmount is <= 0)
+            throw new InvalidOperationException("El abono personalizado debe ser mayor a cero.");
+        if (!ValidParticipantStatuses.Contains(dto.Status))
+            throw new InvalidOperationException("El estado del participante no es válido.");
+
+        var client = await db.Clients.FindAsync([dto.CustomerId], cancellationToken)
+            ?? throw new InvalidOperationException("La clienta seleccionada ya no existe.");
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if (dto.AssignedTurn != participant.AssignedTurn)
+            await MoveParticipantToTurnAsync(participant, dto.AssignedTurn, cancellationToken);
+
+        participant.CustomerId = dto.CustomerId;
+        participant.Client = client;
+        participant.Variant = CleanOptionalText(dto.Variant);
+        participant.WeeklyAmount = dto.WeeklyAmount;
+        participant.Currency = string.IsNullOrWhiteSpace(dto.Currency) ? null : dto.Currency.Trim().ToUpperInvariant();
+        participant.ItemCost = dto.ItemCost;
+        participant.ExchangeRate = dto.ExchangeRate;
+        participant.Status = NormalizeParticipantStatus(dto.Status);
+        participant.IsDelivered = dto.IsDelivered;
+        participant.DeliveryDate = dto.IsDelivered
+            ? (dto.DeliveryDate ?? DateTime.UtcNow).Date
+            : null;
+
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return MapToParticipantDto(participant, tanda);
+    }
+
+    public async Task<TandaPaymentDto> RegisterPaymentAsync(
+        RegisterPaymentDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        var participant = await db.TandaParticipants
+            .Include(p => p.Tanda)
+            .FirstOrDefaultAsync(p => p.Id == dto.ParticipantId, cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
+
+        ValidatePayment(dto.WeekNumber, dto.AmountPaid, dto.PenaltyPaid, participant.Tanda);
 
         var payment = new TandaPayment
         {
+            Id = Guid.NewGuid(),
             ParticipantId = dto.ParticipantId,
             WeekNumber = dto.WeekNumber,
             AmountPaid = dto.AmountPaid,
             PenaltyPaid = dto.PenaltyPaid,
-            PaymentDate = DateTime.UtcNow,
-            IsVerified = true,
-            Notes = dto.Notes
+            PaymentDate = EnsureUtc(dto.PaymentDate ?? DateTime.UtcNow),
+            IsVerified = dto.IsVerified,
+            Notes = CleanOptionalText(dto.Notes)
         };
 
-        _db.TandaPayments.Add(payment);
-        await _db.SaveChangesAsync();
-
+        db.TandaPayments.Add(payment);
+        await db.SaveChangesAsync(cancellationToken);
         return MapToPaymentDto(payment);
     }
 
-    public async Task<TandaPaymentDto> VerifyPaymentAsync(Guid paymentId, VerifyTandaPaymentDto dto)
+    public async Task<TandaPaymentDto> VerifyPaymentAsync(
+        Guid paymentId,
+        VerifyTandaPaymentDto dto,
+        CancellationToken cancellationToken = default)
     {
-        var payment = await _db.TandaPayments.FindAsync(paymentId);
-        if (payment == null)
-            throw new Exception("El registro de pago no existe.");
+        var payment = await db.TandaPayments.FindAsync([paymentId], cancellationToken)
+            ?? throw new InvalidOperationException("El registro de pago no existe.");
 
         if (dto.AmountPaid.HasValue)
         {
             if (dto.AmountPaid.Value < 0)
-                throw new Exception("El importe no puede ser negativo.");
+                throw new InvalidOperationException("El monto no puede ser negativo.");
             payment.AmountPaid = dto.AmountPaid.Value;
         }
 
+        payment.IsVerified = dto.IsVerified;
         if (dto.DepositDate.HasValue)
             payment.DepositDate = EnsureUtc(dto.DepositDate.Value);
+        if (dto.Notes is not null)
+            payment.Notes = CleanOptionalText(dto.Notes);
 
-        payment.IsVerified = dto.IsVerified;
-        if (dto.Notes != null)
-            payment.Notes = dto.Notes;
-
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
         return MapToPaymentDto(payment);
     }
 
-    public async Task<TandaParticipantDto?> GetSundayDeliveryAsync(Guid tandaId)
+    public async Task<TandaPaymentDto> UpdatePaymentAsync(
+        Guid paymentId,
+        UpdateTandaPaymentDto dto,
+        CancellationToken cancellationToken = default)
     {
-        var tanda = await _db.Tandas.FindAsync(tandaId);
-        if (tanda == null)
-            throw new Exception("La tanda especificada no existe.");
+        var payment = await db.TandaPayments
+            .Include(p => p.Participant)
+                .ThenInclude(p => p!.Tanda)
+            .FirstOrDefaultAsync(p => p.Id == paymentId, cancellationToken)
+            ?? throw new InvalidOperationException("El registro de pago no existe.");
 
-        int currentWeek = CalculateCurrentWeek(tanda.StartDate);
+        ValidatePayment(dto.WeekNumber, dto.AmountPaid, dto.PenaltyPaid, payment.Participant?.Tanda);
+        payment.WeekNumber = dto.WeekNumber;
+        payment.AmountPaid = dto.AmountPaid;
+        payment.PenaltyPaid = dto.PenaltyPaid;
+        payment.PaymentDate = EnsureUtc(dto.PaymentDate);
+        payment.IsVerified = dto.IsVerified;
+        payment.Notes = CleanOptionalText(dto.Notes);
 
+        await db.SaveChangesAsync(cancellationToken);
+        return MapToPaymentDto(payment);
+    }
+
+    public async Task<TandaParticipantDto?> GetSundayDeliveryAsync(
+        Guid tandaId,
+        CancellationToken cancellationToken = default)
+    {
+        var tanda = await db.Tandas.FindAsync([tandaId], cancellationToken)
+            ?? throw new InvalidOperationException("La tanda especificada no existe.");
+
+        var currentWeek = CalculateCurrentWeek(tanda.StartDate);
         if (currentWeek < 1 || currentWeek > tanda.TotalWeeks)
             return null;
 
-        var participant = await _db.TandaParticipants
+        var participant = await db.TandaParticipants
+            .AsNoTracking()
             .Include(p => p.Client)
-            .FirstOrDefaultAsync(p => p.TandaId == tandaId && p.AssignedTurn == currentWeek);
+            .Include(p => p.Payments)
+            .Include(p => p.Items)
+            .FirstOrDefaultAsync(
+                p => p.TandaId == tandaId && p.AssignedTurn == currentWeek,
+                cancellationToken);
 
-        return participant != null ? MapToParticipantDto(participant) : null;
+        return participant is null ? null : MapToParticipantDto(participant, tanda);
     }
 
-    public async Task UpdateParticipantTurnAsync(Guid participantId, int newTurn)
+    public async Task UpdateParticipantTurnAsync(
+        Guid participantId,
+        int newTurn,
+        CancellationToken cancellationToken = default)
     {
-        var participant = await _db.TandaParticipants.FindAsync(participantId);
-        if (participant == null) throw new Exception("Participante no encontrado");
+        var participant = await db.TandaParticipants
+            .Include(p => p.Tanda)
+            .FirstOrDefaultAsync(p => p.Id == participantId, cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
 
-        var tanda = await _db.Tandas.FindAsync(participant.TandaId);
-        if (tanda == null) throw new Exception("Tanda no encontrada");
+        ValidateTurn(newTurn, participant.Tanda?.TotalWeeks ?? 0);
+        if (participant.AssignedTurn == newTurn)
+            return;
 
-        if (newTurn < 1 || newTurn > tanda.TotalWeeks)
-            throw new Exception($"El turno {newTurn} está fuera de los límites (1-{tanda.TotalWeeks})");
-
-        // Validar si el turno ya está ocupado
-        var existing = await _db.TandaParticipants
-            .FirstOrDefaultAsync(p => p.TandaId == participant.TandaId && p.AssignedTurn == newTurn && p.Id != participantId);
-
-        if (existing != null)
-            throw new Exception($"El turno {newTurn} ya está ocupado por {existing.CustomerName ?? "otra persona"}");
-
-        participant.AssignedTurn = newTurn;
-        await _db.SaveChangesAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await MoveParticipantToTurnAsync(participant, newTurn, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
-    public async Task UpdateParticipantVariantAsync(Guid participantId, string? variant)
+    public async Task UpdateParticipantVariantAsync(
+        Guid participantId,
+        string? variant,
+        CancellationToken cancellationToken = default)
     {
-        var participant = await _db.TandaParticipants.FindAsync(participantId);
-        if (participant == null) throw new Exception("Participante no encontrado");
-
-        participant.Variant = variant;
-        await _db.SaveChangesAsync();
+        var participant = await db.TandaParticipants.FindAsync([participantId], cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
+        participant.Variant = CleanOptionalText(variant);
+        await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task ReplaceParticipantItemsAsync(Guid participantId, ReplaceTandaParticipantItemsDto dto)
+    public async Task ReplaceParticipantItemsAsync(
+        Guid participantId,
+        ReplaceTandaParticipantItemsDto dto,
+        CancellationToken cancellationToken = default)
     {
-        var participant = await _db.TandaParticipants
+        var participant = await db.TandaParticipants
             .Include(p => p.Items)
             .Include(p => p.Tanda)
-                .ThenInclude(t => t!.Product)
-            .FirstOrDefaultAsync(p => p.Id == participantId);
+            .FirstOrDefaultAsync(p => p.Id == participantId, cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
 
-        if (participant == null)
-            throw new Exception("Participante no encontrado.");
+        var productIds = dto.Items
+            .Where(item => item.ProductId.HasValue)
+            .Select(item => item.ProductId!.Value)
+            .Distinct()
+            .ToList();
+        var products = await db.TandaProducts
+            .Where(product => productIds.Contains(product.Id))
+            .ToDictionaryAsync(product => product.Id, cancellationToken);
 
-        if (dto.Items.Count == 0)
-            throw new Exception("Agrega al menos un artículo a la clienta.");
+        ValidateParticipantItems(dto.Items);
+        if (products.Count != productIds.Count)
+            throw new InvalidOperationException("Uno o más productos de los artículos ya no existen.");
 
-        ValidateItems(dto.Items);
-        _db.TandaParticipantItems.RemoveRange(participant.Items);
-        // Desde este punto el cobro se deriva de los artículos configurados.
-        participant.WeeklyAmount = null;
+        db.TandaParticipantItems.RemoveRange(participant.Items);
         participant.Items = BuildParticipantItems(
             dto.Items,
-            participant.Tanda?.Product,
+            products.Values.FirstOrDefault(),
             participant.Variant,
-            participant.WeeklyAmount ?? participant.Tanda?.WeeklyAmount ?? 0);
+            participant.Tanda?.WeeklyAmount ?? 0,
+            products);
+        participant.WeeklyAmount = null;
+
         foreach (var item in participant.Items)
             item.ParticipantId = participant.Id;
 
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task ConfirmParticipantDeliveryAsync(Guid participantId)
+    public async Task ConfirmParticipantDeliveryAsync(
+        Guid participantId,
+        CancellationToken cancellationToken = default)
     {
-        var participant = await _db.TandaParticipants.FindAsync(participantId);
-        if (participant == null) throw new Exception("Participante no encontrado");
-
+        var participant = await db.TandaParticipants.FindAsync([participantId], cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
         participant.IsDelivered = true;
-        participant.DeliveryDate = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
+        participant.DeliveryDate = DateTime.UtcNow.Date;
+        participant.Status = "Completed";
+        await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task RemoveParticipantAsync(Guid participantId)
+    public async Task RemoveParticipantAsync(
+        Guid participantId,
+        CancellationToken cancellationToken = default)
     {
-        var participant = await _db.TandaParticipants
+        var participant = await db.TandaParticipants
             .Include(p => p.Payments)
-            .FirstOrDefaultAsync(p => p.Id == participantId);
+            .FirstOrDefaultAsync(p => p.Id == participantId, cancellationToken)
+            ?? throw new InvalidOperationException("Participante no encontrado.");
 
-        if (participant == null) throw new Exception("Participante no encontrado");
-
-        // Eliminar pagos asociados para mantener integridad
-        if (participant.Payments.Any())
-        {
-            _db.TandaPayments.RemoveRange(participant.Payments);
-        }
-
-        _db.TandaParticipants.Remove(participant);
-        await _db.SaveChangesAsync();
+        if (participant.Payments.Count > 0)
+            db.TandaPayments.RemoveRange(participant.Payments);
+        db.TandaParticipants.Remove(participant);
+        await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task ProcessPenaltiesAsync(Guid tandaId)
+    public async Task ProcessPenaltiesAsync(
+        Guid tandaId,
+        CancellationToken cancellationToken = default)
     {
-        var tanda = await _db.Tandas
+        var tanda = await db.Tandas
             .Include(t => t.Participants)
                 .ThenInclude(p => p.Payments)
-            .FirstOrDefaultAsync(t => t.Id == tandaId);
+            .Include(t => t.Participants)
+                .ThenInclude(p => p.Items)
+            .FirstOrDefaultAsync(t => t.Id == tandaId, cancellationToken)
+            ?? throw new InvalidOperationException("La tanda especificada no existe.");
 
-        if (tanda == null) throw new Exception("La tanda especificada no existe.");
+        var currentWeek = CalculateCurrentWeek(tanda.StartDate);
+        if (currentWeek < 1 || currentWeek > tanda.TotalWeeks)
+            return;
 
-        int currentWeek = CalculateCurrentWeek(tanda.StartDate);
-
-        foreach (var participant in tanda.Participants.Where(p => p.Status == "Active"))
+        foreach (var participant in tanda.Participants.Where(p => !p.IsDelivered))
         {
-            bool hasPaidCurrentWeek = participant.Payments.Any(p => p.WeekNumber == currentWeek && p.IsVerified);
-            
-            if (!hasPaidCurrentWeek)
-            {
-                participant.Status = "Delinquent";
-            }
+            var weeklyAmount = CalculateParticipantWeeklyAmount(participant, tanda);
+            var amountPaid = participant.Payments
+                .Where(p => p.WeekNumber == currentWeek && p.IsVerified)
+                .Sum(p => p.AmountPaid);
+            participant.Status = amountPaid >= weeklyAmount ? "Active" : "Delinquent";
         }
-
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<List<TandaProductDto>> GetProductsAsync()
+    public async Task<List<TandaProductDto>> GetProductsAsync(
+        CancellationToken cancellationToken = default)
     {
-        var products = await _db.TandaProducts
+        var products = await db.TandaProducts
+            .AsNoTracking()
             .Where(p => p.IsActive)
             .OrderBy(p => p.Name)
-            .ToListAsync();
-            
+            .ToListAsync(cancellationToken);
         return products.Select(MapToProductDto).ToList();
     }
 
-    public async Task<TandaProductDto> CreateProductAsync(string name, decimal basePrice)
+    public async Task<TandaProductDto> CreateProductAsync(
+        string name,
+        decimal basePrice,
+        CancellationToken cancellationToken = default)
     {
+        var cleanName = name.Trim();
+        if (string.IsNullOrWhiteSpace(cleanName))
+            throw new InvalidOperationException("El producto necesita un nombre.");
+        if (basePrice < 0)
+            throw new InvalidOperationException("El precio base no puede ser negativo.");
+
+        var existing = await db.TandaProducts
+            .FirstOrDefaultAsync(p => p.Name.ToLower() == cleanName.ToLower(), cancellationToken);
+        if (existing is not null)
+        {
+            if (!existing.IsActive)
+            {
+                existing.IsActive = true;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            return MapToProductDto(existing);
+        }
+
         var product = new TandaProduct
         {
             Id = Guid.NewGuid(),
-            Name = name,
+            Name = cleanName,
             BasePrice = basePrice,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
-
-        _db.TandaProducts.Add(product);
-        await _db.SaveChangesAsync();
-
+        db.TandaProducts.Add(product);
+        await db.SaveChangesAsync(cancellationToken);
         return MapToProductDto(product);
     }
 
-    public async Task<List<TandaDto>> GetTandasAsync()
+    public async Task<List<TandaDto>> GetTandasAsync(
+        CancellationToken cancellationToken = default)
     {
-        var tandas = await _db.Tandas
+        var tandas = await db.Tandas
+            .AsNoTracking()
             .Include(t => t.Product)
+            .Include(t => t.Participants).ThenInclude(p => p.Client)
+            .Include(t => t.Participants).ThenInclude(p => p.Payments)
+            .Include(t => t.Participants).ThenInclude(p => p.Items)
+            .Include(t => t.Participants).ThenInclude(p => p.Items)
+            .AsSplitQuery()
             .OrderByDescending(t => t.CreatedAt)
-            .ToListAsync();
-            
+            .ToListAsync(cancellationToken);
         return tandas.Select(MapToTandaDto).ToList();
     }
 
-    public async Task<TandaDto?> GetTandaByIdAsync(Guid id)
+    public async Task<TandaDto?> GetTandaByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
     {
-        var tanda = await _db.Tandas
+        var tanda = await db.Tandas
+            .AsNoTracking()
             .Include(t => t.Product)
-            .Include(t => t.Participants)
-                .ThenInclude(p => p.Client)
-            .Include(t => t.Participants)
-                .ThenInclude(p => p.Payments)
-            .Include(t => t.Participants)
-                .ThenInclude(p => p.Items)
-            .FirstOrDefaultAsync(t => t.Id == id);
-
-        return tanda != null ? MapToTandaDto(tanda) : null;
+            .Include(t => t.Participants).ThenInclude(p => p.Client)
+            .Include(t => t.Participants).ThenInclude(p => p.Payments)
+            .Include(t => t.Participants).ThenInclude(p => p.Items)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+        return tanda is null ? null : MapToTandaDto(tanda);
     }
 
-    public async Task<TandaViewDto?> GetTandaByTokenAsync(string token)
+    public async Task<TandaViewDto?> GetTandaByTokenAsync(
+        string token,
+        CancellationToken cancellationToken = default)
     {
-        var participant = await _db.TandaParticipants
-            .Include(p => p.Client)
-            .Include(p => p.Payments)
-            .Include(p => p.Items)
-            .Include(p => p.Tanda)
-                .ThenInclude(t => t!.Product)
-            .FirstOrDefaultAsync(p => p.PublicToken == token);
-
-        if (participant?.Tanda != null)
-            return MapToPublicTandaView(participant.Tanda, participant);
-
-        var tanda = await _db.Tandas
+        var tanda = await db.Tandas
+            .AsNoTracking()
             .Include(t => t.Product)
-            .Include(t => t.Participants)
-                .ThenInclude(p => p.Client)
-            .Include(t => t.Participants)
-                .ThenInclude(p => p.Payments)
-            .Include(t => t.Participants)
-                .ThenInclude(p => p.Items)
-            .FirstOrDefaultAsync(t => t.AccessToken == token);
+            .Include(t => t.Participants).ThenInclude(p => p.Client)
+            .Include(t => t.Participants).ThenInclude(p => p.Payments)
+            .Include(t => t.Participants).ThenInclude(p => p.Items)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(t => t.AccessToken == token, cancellationToken);
+        TandaParticipant? currentParticipant = null;
 
-        if (tanda == null) return null;
-
-        return MapToPublicTandaView(tanda, null);
-    }
-
-    private TandaViewDto MapToPublicTandaView(Tanda tanda, TandaParticipant? scopedParticipant)
-    {
-        int currentWeek = CalculateCurrentWeek(tanda.StartDate);
-        IEnumerable<TandaParticipant> sourceParticipants = scopedParticipant != null
-            ? new[] { scopedParticipant }
-            : tanda.Participants.OrderBy(p => p.AssignedTurn);
-
-        var participants = sourceParticipants.Select(p => new TandaParticipantViewDto
+        if (tanda is null)
         {
-            Id = p.Id,
-            Name = scopedParticipant != null
-                ? (p.Client?.Name ?? "Participante")
-                : AnonymizeName(p.Client?.Name ?? "Participante"),
-            AssignedTurn = p.AssignedTurn,
-            HasPaidCurrentWeek = p.Payments.Any(pay => pay.WeekNumber == currentWeek && pay.IsVerified),
-            PaidWeeks = p.Payments.Where(pay => pay.IsVerified).Select(pay => pay.WeekNumber).ToList(),
-            IsWinnerThisWeek = p.AssignedTurn == currentWeek,
-            IsDelivered = p.IsDelivered,
-            Variant = p.Variant,
-            WeeklyAmount = p.WeeklyAmount ?? CalculateWeeklyAmount(tanda, p),
-            PublicToken = p.PublicToken,
-            Items = p.Items.Select(MapToItemDto).ToList(),
-            Payments = p.Payments.Select(MapToPaymentDto).OrderByDescending(pay => pay.WeekNumber).ToList()
-        }).ToList();
+            currentParticipant = await db.TandaParticipants
+                .AsNoTracking()
+                .Include(p => p.Client)
+                .Include(p => p.Payments)
+                .Include(p => p.PaymentProofs)
+                .Include(p => p.Items)
+                .FirstOrDefaultAsync(p => p.PublicAccessToken == token, cancellationToken);
 
+            if (currentParticipant is null)
+                return null;
+
+            tanda = await db.Tandas
+                .AsNoTracking()
+                .Include(t => t.Product)
+                .Include(t => t.Participants).ThenInclude(p => p.Client)
+                .Include(t => t.Participants).ThenInclude(p => p.Payments)
+                .Include(t => t.Participants).ThenInclude(p => p.Items)
+                .AsSplitQuery()
+                .FirstOrDefaultAsync(t => t.Id == currentParticipant.TandaId, cancellationToken);
+
+            if (tanda is null)
+                return null;
+        }
+
+        var currentWeek = CalculateCurrentWeek(tanda.StartDate);
         return new TandaViewDto
         {
             Id = tanda.Id,
@@ -420,79 +537,366 @@ public class TandaService : ITandaService
             WeeklyAmount = tanda.WeeklyAmount,
             StartDate = tanda.StartDate,
             CurrentWeek = currentWeek,
-            Participants = participants,
-            Participant = scopedParticipant != null ? participants.FirstOrDefault() : null
+            Participants = (currentParticipant is null
+                ? tanda.Participants
+                : tanda.Participants.Where(p => p.Id == currentParticipant.Id))
+            .Select(p => new TandaParticipantViewDto
+            {
+                Id = p.Id,
+                Name = AnonymizeName(p.Client?.Name ?? "Participante"),
+                AssignedTurn = p.AssignedTurn,
+                HasPaidCurrentWeek = p.Payments.Any(pay => pay.WeekNumber == currentWeek && pay.IsVerified),
+                PaidWeeks = p.Payments.Where(pay => pay.IsVerified).Select(pay => pay.WeekNumber).Distinct().OrderBy(week => week).ToList(),
+                IsWinnerThisWeek = p.AssignedTurn == currentWeek,
+                IsDelivered = p.IsDelivered,
+                Variant = p.Variant,
+                WeeklyAmount = CalculateParticipantWeeklyAmount(p, tanda),
+                Items = p.Items.Select(MapToItemDto).ToList()
+            }).OrderBy(p => p.AssignedTurn).ToList(),
+            CurrentParticipant = currentParticipant is null
+                ? null
+                : MapToPublicParticipant(currentParticipant, tanda, currentWeek)
         };
     }
 
-    public async Task<TandaDto> UpdateTandaAsync(Guid id, UpdateTandaDto dto)
+    public async Task<List<TandaPaymentProofAdminDto>> GetPaymentProofsAsync(
+        Guid tandaId,
+        string? status = null,
+        CancellationToken cancellationToken = default)
     {
-        var tanda = await _db.Tandas.FindAsync(id);
-        if (tanda == null) throw new Exception("Tanda no encontrada");
+        var query = db.TandaPaymentProofs
+            .AsNoTracking()
+            .Include(proof => proof.Participant).ThenInclude(participant => participant!.Client)
+            .Include(proof => proof.Tanda)
+            .Where(proof => proof.TandaId == tandaId);
 
-        tanda.Name = dto.Name;
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(proof => proof.Status == status.Trim());
+
+        var proofs = await query
+            .OrderByDescending(proof => proof.SubmittedAt)
+            .ToListAsync(cancellationToken);
+        return proofs.Select(MapToAdminProofDto).ToList();
+    }
+
+    public async Task<TandaPaymentProofAdminDto> ReviewPaymentProofAsync(
+        Guid proofId,
+        ReviewTandaPaymentProofDto dto,
+        string reviewer,
+        CancellationToken cancellationToken = default)
+    {
+        var proof = await db.TandaPaymentProofs
+            .Include(item => item.Participant).ThenInclude(participant => participant!.Client)
+            .Include(item => item.Participant).ThenInclude(participant => participant!.Items)
+            .Include(item => item.Tanda)
+            .FirstOrDefaultAsync(item => item.Id == proofId, cancellationToken)
+            ?? throw new InvalidOperationException("El comprobante no existe.");
+
+        if (!string.Equals(proof.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Este comprobante ya fue revisado.");
+
+        if (!dto.Approve && string.IsNullOrWhiteSpace(dto.RejectionReason))
+            throw new InvalidOperationException("Indica el motivo del rechazo.");
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        proof.ReviewedAt = DateTime.UtcNow;
+        proof.ReviewedBy = CleanOptionalText(reviewer) ?? "Admin";
+
+        if (dto.Approve)
+        {
+            var participant = proof.Participant
+                ?? throw new InvalidOperationException("La participante del comprobante no existe.");
+            var tanda = proof.Tanda
+                ?? throw new InvalidOperationException("La tanda del comprobante no existe.");
+            var weeklyAmount = CalculateParticipantWeeklyAmount(participant, tanda);
+            var paidAmount = await db.TandaPayments
+                .Where(payment => payment.ParticipantId == proof.ParticipantId
+                    && payment.WeekNumber == proof.WeekNumber
+                    && payment.IsVerified)
+                .SumAsync(payment => payment.AmountPaid, cancellationToken);
+
+            if (paidAmount >= weeklyAmount)
+                throw new InvalidOperationException("La semana ya está liquidada; no se puede registrar este comprobante.");
+            if (paidAmount + proof.AmountClaimed > weeklyAmount + tanda.PenaltyAmount)
+                throw new InvalidOperationException("El comprobante excede el saldo pendiente de la semana.");
+
+            var payment = new TandaPayment
+            {
+                Id = Guid.NewGuid(),
+                ParticipantId = proof.ParticipantId,
+                WeekNumber = proof.WeekNumber,
+                AmountPaid = proof.AmountClaimed,
+                PaymentDate = proof.DepositDate ?? proof.SubmittedAt,
+                DepositDate = proof.DepositDate,
+                OcrAmount = proof.OcrAmount,
+                ProofUrl = proof.FileUrl,
+                OcrText = proof.OcrText,
+                OcrConfidence = proof.OcrConfidence,
+                PaymentMethod = "Transferencia/Depósito",
+                IsVerified = true,
+                Notes = $"Comprobante #{proof.Id:N}"
+            };
+            db.TandaPayments.Add(payment);
+            proof.RegisteredPaymentId = payment.Id;
+            proof.Status = "Approved";
+            proof.RejectionReason = null;
+        }
+        else
+        {
+            proof.Status = "Rejected";
+            proof.RejectionReason = dto.RejectionReason!.Trim();
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return MapToAdminProofDto(proof);
+    }
+
+    public async Task<TandaPaymentProofUploadResultDto> UploadPaymentProofAsync(
+        string participantToken,
+        int weekNumber,
+        decimal amountClaimed,
+        Stream fileStream,
+        string fileName,
+        string contentType,
+        CancellationToken cancellationToken = default)
+    {
+        var participant = await db.TandaParticipants
+            .Include(p => p.Tanda)
+            .Include(p => p.PaymentProofs)
+            .Include(p => p.Items)
+            .FirstOrDefaultAsync(p => p.PublicAccessToken == participantToken, cancellationToken)
+            ?? throw new InvalidOperationException("El enlace personal no es válido.");
+        var tanda = participant.Tanda
+            ?? throw new InvalidOperationException("La tanda no existe.");
+
+        ValidateTurn(weekNumber, tanda.TotalWeeks);
+        var weeklyAmount = CalculateParticipantWeeklyAmount(participant, tanda);
+
+        if (participant.PaymentProofs.Any(proof => proof.WeekNumber == weekNumber && proof.Status == "Pending"))
+            throw new InvalidOperationException("Ya existe un comprobante en revisión para esta semana.");
+
+        var paidAmount = await db.TandaPayments
+            .Where(payment => payment.ParticipantId == participant.Id
+                && payment.WeekNumber == weekNumber
+                && payment.IsVerified)
+            .SumAsync(payment => payment.AmountPaid, cancellationToken);
+        if (paidAmount >= weeklyAmount)
+            throw new InvalidOperationException("Esta semana ya aparece como pagada.");
+
+        await using var imageBuffer = new MemoryStream();
+        await fileStream.CopyToAsync(imageBuffer, cancellationToken);
+        imageBuffer.Position = 0;
+
+        var detectedFileType = await DetectImageTypeAsync(imageBuffer, cancellationToken);
+        if (detectedFileType is null || !IsAllowedImage(contentType, detectedFileType))
+            throw new InvalidOperationException("El comprobante debe ser una imagen JPG, PNG o WEBP válida.");
+
+        imageBuffer.Position = 0;
+        var ocrResult = await paymentOcr.ExtractAsync(imageBuffer, cancellationToken);
+        if (ocrResult.Amount is > 0 && ocrResult.Amount <= weeklyAmount + tanda.PenaltyAmount)
+            amountClaimed = ocrResult.Amount.Value;
+        if (amountClaimed <= 0)
+            amountClaimed = weeklyAmount;
+        if (amountClaimed > weeklyAmount + tanda.PenaltyAmount)
+            throw new InvalidOperationException("El monto del comprobante no es válido.");
+
+        imageBuffer.Position = 0;
+        var generatedFileName = $"comprobante_{participant.Id:N}_{Guid.NewGuid():N}.{detectedFileType}";
+        string fileUrl;
+        try
+        {
+            fileUrl = await cloudinary.UploadAsync(imageBuffer, generatedFileName, "tanda-proofs");
+        }
+        catch
+        {
+            throw new InvalidOperationException("No se pudo guardar el comprobante. Intenta nuevamente.");
+        }
+
+        var proof = new TandaPaymentProof
+        {
+            Id = Guid.NewGuid(),
+            ParticipantId = participant.Id,
+            TandaId = tanda.Id,
+            WeekNumber = weekNumber,
+            AmountClaimed = amountClaimed,
+            OcrAmount = ocrResult.Amount,
+            DepositDate = ocrResult.DepositDate,
+            OcrText = ocrResult.Text,
+            OcrConfidence = ocrResult.Confidence,
+            FileUrl = fileUrl,
+            FileType = detectedFileType,
+            Status = "Pending",
+            SubmittedAt = DateTime.UtcNow
+        };
+        db.TandaPaymentProofs.Add(proof);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new TandaPaymentProofUploadResultDto
+        {
+            Proof = MapToPublicProofDto(proof),
+            TandaId = tanda.Id,
+            ParticipantName = participant.Client?.Name ?? "Participante",
+            Message = "Comprobante recibido. Quedará en revisión antes de aplicar el pago."
+        };
+    }
+
+    public async Task<TandaDto> UpdateTandaAsync(
+        Guid id,
+        UpdateTandaDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateTandaValues(dto.Name, dto.TotalWeeks, dto.WeeklyAmount, dto.PenaltyAmount);
+        var tanda = await db.Tandas
+            .Include(t => t.Product)
+            .Include(t => t.Participants).ThenInclude(p => p.Client)
+            .Include(t => t.Participants).ThenInclude(p => p.Payments)
+            .Include(t => t.Participants).ThenInclude(p => p.Items)
+            .AsSplitQuery()
+            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+            ?? throw new InvalidOperationException("Tanda no encontrada.");
+
+        if (dto.TotalWeeks < tanda.Participants.Count)
+            throw new InvalidOperationException($"La tanda tiene {tanda.Participants.Count} participantes; no puede tener menos lugares.");
+
+        TandaProduct? product = null;
+        if (dto.ProductId.HasValue && dto.ProductId.Value != tanda.ProductId)
+        {
+            product = await db.TandaProducts.FirstOrDefaultAsync(
+                p => p.Id == dto.ProductId.Value && p.IsActive,
+                cancellationToken)
+                ?? throw new InvalidOperationException("El producto seleccionado no existe o está inactivo.");
+        }
+        if (!string.IsNullOrWhiteSpace(dto.Status) && !ValidTandaStatuses.Contains(dto.Status))
+            throw new InvalidOperationException("El estado de la tanda no es válido.");
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if (dto.TotalWeeks < tanda.TotalWeeks)
+            await RelocateOverflowParticipantsAsync(tanda, dto.TotalWeeks, cancellationToken);
+
+        tanda.Name = dto.Name.Trim();
         tanda.TotalWeeks = dto.TotalWeeks;
         tanda.WeeklyAmount = dto.WeeklyAmount;
         tanda.PenaltyAmount = dto.PenaltyAmount;
-        tanda.StartDate = dto.StartDate;
+        tanda.StartDate = dto.StartDate.Date;
+        if (!string.IsNullOrWhiteSpace(dto.Currency))
+            tanda.Currency = dto.Currency.Trim().ToUpperInvariant();
+        tanda.ItemCost = dto.ItemCost;
+        tanda.ExchangeRate = dto.ExchangeRate;
+        if (product is not null)
+        {
+            tanda.ProductId = product.Id;
+            tanda.Product = product;
+        }
+        if (!string.IsNullOrWhiteSpace(dto.Status))
+            tanda.Status = NormalizeTandaStatus(dto.Status);
 
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return MapToTandaDto(tanda);
     }
 
-    // ── Mapeos ──
-    private TandaDto MapToTandaDto(Tanda t) => new TandaDto
+    public async Task UpdatePlacesAsync(
+        Guid tandaId,
+        IReadOnlyCollection<TandaPlaceAssignmentDto> assignments,
+        CancellationToken cancellationToken = default)
     {
-        Id = t.Id,
-        ProductId = t.ProductId,
-        Name = t.Name,
-        TotalWeeks = t.TotalWeeks,
-        WeeklyAmount = t.WeeklyAmount,
-        PenaltyAmount = t.PenaltyAmount,
-        StartDate = t.StartDate,
-        Status = t.Status,
-        CreatedAt = t.CreatedAt,
-        AccessToken = t.AccessToken,
-        Product = t.Product != null ? MapToProductDto(t.Product) : null,
-        Participants = t.Participants?.Select(MapToParticipantDto).ToList()
-    };
+        var tanda = await db.Tandas.Include(t => t.Participants)
+            .FirstOrDefaultAsync(t => t.Id == tandaId, cancellationToken)
+            ?? throw new InvalidOperationException("Tanda no encontrada.");
 
-    private TandaParticipantDto MapToParticipantDto(TandaParticipant p) => new TandaParticipantDto
+        var plannedAssignments = assignments
+            .Select(a => new TandaTurnPlanner.TandaPlaceAssignment(a.ParticipantId, a.AssignedTurn))
+            .ToList();
+        TandaTurnPlanner.ValidatePlaceAssignments(
+            tanda.TotalWeeks,
+            tanda.Participants.Select(p => p.Id).ToList(),
+            plannedAssignments);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        foreach (var participant in tanda.Participants)
+            participant.AssignedTurn += 1000;
+        await db.SaveChangesAsync(cancellationToken);
+
+        var turnsByParticipant = assignments.ToDictionary(a => a.ParticipantId, a => a.AssignedTurn);
+        foreach (var participant in tanda.Participants)
+            participant.AssignedTurn = turnsByParticipant[participant.Id];
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task DeletePaymentAsync(Guid paymentId, CancellationToken cancellationToken = default)
     {
-        Id = p.Id,
-        TandaId = p.TandaId,
-        CustomerId = p.CustomerId,
-        CustomerName = p.Client?.Name ?? p.CustomerName,
-        PublicToken = p.PublicToken,
-        AssignedTurn = p.AssignedTurn,
-        IsDelivered = p.IsDelivered,
-        DeliveryDate = p.DeliveryDate,
-        Status = p.Status,
-        Variant = p.Variant,
-        WeeklyAmount = p.WeeklyAmount,
-        Payments = p.Payments?.Select(MapToPaymentDto).ToList(),
-        Items = p.Items?.Select(MapToItemDto).ToList()
-    };
+        var payment = await db.TandaPayments.FindAsync([paymentId], cancellationToken)
+            ?? throw new InvalidOperationException("El registro de pago no existe.");
+        db.TandaPayments.Remove(payment);
+        await db.SaveChangesAsync(cancellationToken);
+    }
 
-    private TandaPaymentDto MapToPaymentDto(TandaPayment pay) => new TandaPaymentDto
+    public async Task ReorderParticipantsAsync(
+        Guid tandaId,
+        List<Guid> participantIdsInOrder,
+        CancellationToken cancellationToken = default)
     {
-        Id = pay.Id,
-        ParticipantId = pay.ParticipantId,
-        WeekNumber = pay.WeekNumber,
-        AmountPaid = pay.AmountPaid,
-        PenaltyPaid = pay.PenaltyPaid,
-        PaymentDate = pay.PaymentDate,
-        DepositDate = pay.DepositDate,
-        OcrAmount = pay.OcrAmount,
-        ProofUrl = pay.ProofUrl,
-        OcrText = pay.OcrText,
-        OcrConfidence = pay.OcrConfidence,
-        PaymentMethod = pay.PaymentMethod,
-        IsVerified = pay.IsVerified,
-        Notes = pay.Notes
-    };
+        var assignments = participantIdsInOrder.Select((participantId, index) => new TandaPlaceAssignmentDto
+        {
+            ParticipantId = participantId,
+            AssignedTurn = index + 1
+        }).ToList();
+        await UpdatePlacesAsync(tandaId, assignments, cancellationToken);
+    }
 
-    private TandaParticipantItemDto MapToItemDto(TandaParticipantItem item) => new TandaParticipantItemDto
+    private async Task MoveParticipantToTurnAsync(TandaParticipant participant, int newTurn, CancellationToken cancellationToken)
+    {
+        var previousTurn = participant.AssignedTurn;
+        var occupant = await db.TandaParticipants.FirstOrDefaultAsync(
+            p => p.TandaId == participant.TandaId && p.AssignedTurn == newTurn && p.Id != participant.Id,
+            cancellationToken);
+
+        participant.AssignedTurn += 1000;
+        await db.SaveChangesAsync(cancellationToken);
+        if (occupant is not null)
+        {
+            occupant.AssignedTurn = previousTurn;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        participant.AssignedTurn = newTurn;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task RelocateOverflowParticipantsAsync(Tanda tanda, int newTotalWeeks, CancellationToken cancellationToken)
+    {
+        var participantsToMove = tanda.Participants.Where(p => p.AssignedTurn > newTotalWeeks)
+            .OrderBy(p => p.AssignedTurn).ToList();
+        if (participantsToMove.Count == 0)
+            return;
+
+        var occupiedTurns = tanda.Participants.Where(p => p.AssignedTurn <= newTotalWeeks)
+            .Select(p => p.AssignedTurn).ToHashSet();
+        var availableTurns = Enumerable.Range(1, newTotalWeeks)
+            .Where(turn => !occupiedTurns.Contains(turn)).ToList();
+
+        foreach (var participant in participantsToMove)
+            participant.AssignedTurn += 1000;
+        await db.SaveChangesAsync(cancellationToken);
+        for (var index = 0; index < participantsToMove.Count; index++)
+            participantsToMove[index].AssignedTurn = availableTurns[index];
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static decimal CalculateParticipantWeeklyAmount(TandaParticipant participant, Tanda tanda)
+    {
+        if (participant.WeeklyAmount is > 0)
+            return participant.WeeklyAmount.Value;
+
+        var itemAmount = participant.Items?
+            .Where(item => item.WeeklyAmount is > 0)
+            .Sum(item => item.WeeklyAmount!.Value * Math.Max(1, item.Quantity)) ?? 0;
+
+        return itemAmount > 0 ? itemAmount : tanda.WeeklyAmount;
+    }
+
+    private static TandaParticipantItemDto MapToItemDto(TandaParticipantItem item) => new()
     {
         Id = item.Id,
         ParticipantId = item.ParticipantId,
@@ -505,133 +909,308 @@ public class TandaService : ITandaService
         Variant = item.Variant
     };
 
-    private static string NewPublicToken() => Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
-
-    private static DateTime EnsureUtc(DateTime value)
-        => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
-
-    private static decimal CalculateWeeklyAmount(Tanda tanda, TandaParticipant participant)
+    private static void ValidateParticipantItems(IEnumerable<CreateTandaParticipantItemDto> items)
     {
-        var itemAmount = participant.Items
-            .Where(item => item.WeeklyAmount.HasValue)
-            .Sum(item => item.WeeklyAmount!.Value * item.Quantity);
-        return itemAmount > 0 ? itemAmount : tanda.WeeklyAmount;
-    }
-
-    private static void ValidateItems(IEnumerable<CreateTandaParticipantItemDto> items)
-    {
-        foreach (var item in items)
-        {
-            if (string.IsNullOrWhiteSpace(item.ProductName))
-                throw new Exception("Cada artículo necesita un nombre.");
-            if (item.Quantity < 1)
-                throw new Exception("La cantidad de cada artículo debe ser mayor a cero.");
-            if (item.UnitPrice < 0 || item.WeeklyAmount < 0)
-                throw new Exception("Los importes de los artículos no pueden ser negativos.");
-        }
+        var materialized = items.ToList();
+        if (materialized.Count == 0)
+            throw new InvalidOperationException("La participante debe tener al menos un artículo.");
+        if (materialized.Any(item => string.IsNullOrWhiteSpace(item.ProductName)))
+            throw new InvalidOperationException("Cada artículo necesita un nombre.");
+        if (materialized.Any(item => item.Quantity < 1 || item.UnitPrice < 0 || item.WeeklyAmount < 0))
+            throw new InvalidOperationException("La cantidad y los cobros de los artículos no pueden ser negativos.");
     }
 
     private static List<TandaParticipantItem> BuildParticipantItems(
         IEnumerable<CreateTandaParticipantItemDto>? requestedItems,
-        TandaProduct? defaultProduct,
-        string? defaultVariant,
-        decimal defaultWeeklyAmount)
+        TandaProduct? fallbackProduct,
+        string? fallbackVariant,
+        decimal fallbackWeeklyAmount,
+        IReadOnlyDictionary<Guid, TandaProduct>? products = null)
     {
-        var items = requestedItems?.ToList() ?? new List<CreateTandaParticipantItemDto>();
-        if (items.Count == 0 && defaultProduct != null)
+        var items = requestedItems?.ToList() ?? [];
+        if (items.Count == 0)
         {
             items.Add(new CreateTandaParticipantItemDto
             {
-                ProductId = defaultProduct.Id,
-                ProductName = defaultProduct.Name,
-                UnitPrice = defaultProduct.BasePrice,
-                WeeklyAmount = defaultWeeklyAmount,
-                Variant = defaultVariant
+                ProductId = fallbackProduct?.Id,
+                ProductName = fallbackProduct?.Name ?? "Artículo de tanda",
+                Quantity = 1,
+                UnitPrice = fallbackProduct?.BasePrice ?? 0,
+                WeeklyAmount = fallbackWeeklyAmount,
+                Variant = fallbackVariant
             });
         }
 
-        ValidateItems(items);
+        ValidateParticipantItems(items);
         return items.Select(item => new TandaParticipantItem
         {
             Id = Guid.NewGuid(),
             ProductId = item.ProductId,
+            Product = item.ProductId.HasValue && products is not null && products.TryGetValue(item.ProductId.Value, out var product)
+                ? product
+                : fallbackProduct,
             ProductName = item.ProductName.Trim(),
             Quantity = item.Quantity,
             UnitPrice = item.UnitPrice,
             WeeklyAmount = item.WeeklyAmount,
-            Variant = string.IsNullOrWhiteSpace(item.Variant) ? null : item.Variant.Trim()
+            Variant = CleanOptionalText(item.Variant)
         }).ToList();
     }
 
-    private TandaProductDto MapToProductDto(TandaProduct pr) => new TandaProductDto
+    private static TandaDto MapToTandaDto(Tanda tanda)
     {
-        Id = pr.Id,
-        Name = pr.Name,
-        BasePrice = pr.BasePrice,
-        IsActive = pr.IsActive,
-        CreatedAt = pr.CreatedAt
+        var participants = tanda.Participants?.OrderBy(p => p.AssignedTurn).ToList() ?? [];
+        var expectedAmount = participants.Sum(p => CalculateParticipantWeeklyAmount(p, tanda) * tanda.TotalWeeks);
+        var collectedAmount = participants.Sum(p => p.Payments.Where(payment => payment.IsVerified).Sum(payment => payment.AmountPaid));
+        var paidInstallments = participants.Sum(p => CountPaidInstallments(p, tanda));
+        var totalInstallments = participants.Count * tanda.TotalWeeks;
+
+        return new TandaDto
+        {
+            Id = tanda.Id,
+            ProductId = tanda.ProductId,
+            Name = tanda.Name,
+            TotalWeeks = tanda.TotalWeeks,
+            WeeklyAmount = tanda.WeeklyAmount,
+            PenaltyAmount = tanda.PenaltyAmount,
+            StartDate = tanda.StartDate,
+            Currency = tanda.Currency ?? "MXN",
+            ItemCost = tanda.ItemCost,
+            ExchangeRate = tanda.ExchangeRate,
+            Status = tanda.Status,
+            CreatedAt = tanda.CreatedAt,
+            AccessToken = tanda.AccessToken,
+            CurrentWeek = CalculateCurrentWeek(tanda.StartDate),
+            ParticipantCount = participants.Count,
+            AvailablePlaces = Math.Max(0, tanda.TotalWeeks - participants.Count),
+            PaidInstallments = paidInstallments,
+            TotalInstallments = totalInstallments,
+            ExpectedAmount = expectedAmount,
+            CollectedAmount = collectedAmount,
+            BalanceDue = Math.Max(0, expectedAmount - collectedAmount),
+            ProgressPercentage = expectedAmount <= 0 ? 0 : Math.Round(Math.Min(100, collectedAmount / expectedAmount * 100), 1),
+            Product = tanda.Product is null ? null : MapToProductDto(tanda.Product),
+            Participants = participants.Select(p => MapToParticipantDto(p, tanda)).ToList()
+        };
+    }
+
+    private static TandaParticipantDto MapToParticipantDto(TandaParticipant participant, Tanda tanda)
+    {
+        var weeklyAmount = CalculateParticipantWeeklyAmount(participant, tanda);
+        var expectedAmount = weeklyAmount * tanda.TotalWeeks;
+        var collectedAmount = participant.Payments.Where(payment => payment.IsVerified).Sum(payment => payment.AmountPaid);
+        return new TandaParticipantDto
+        {
+            Id = participant.Id,
+            TandaId = participant.TandaId,
+            CustomerId = participant.CustomerId,
+            CustomerName = participant.Client?.Name ?? participant.CustomerName,
+            PublicAccessToken = participant.PublicAccessToken,
+            AssignedTurn = participant.AssignedTurn,
+            Currency = participant.Currency,
+            ItemCost = participant.ItemCost,
+            ExchangeRate = participant.ExchangeRate,
+            IsDelivered = participant.IsDelivered,
+            DeliveryDate = participant.DeliveryDate,
+            Status = participant.Status,
+            Variant = participant.Variant,
+            WeeklyAmount = participant.WeeklyAmount,
+            ExpectedAmount = expectedAmount,
+            CollectedAmount = collectedAmount,
+            BalanceDue = Math.Max(0, expectedAmount - collectedAmount),
+            PaidInstallments = CountPaidInstallments(participant, tanda),
+            Payments = participant.Payments.OrderByDescending(p => p.PaymentDate).Select(MapToPaymentDto).ToList(),
+            Items = participant.Items.Select(MapToItemDto).ToList()
+        };
+    }
+
+    private static TandaParticipantPublicViewDto MapToPublicParticipant(
+        TandaParticipant participant,
+        Tanda tanda,
+        int currentWeek)
+    {
+        var weeklyAmount = CalculateParticipantWeeklyAmount(participant, tanda);
+        var collectedAmount = participant.Payments
+            .Where(payment => payment.IsVerified)
+            .Sum(payment => payment.AmountPaid);
+
+        return new TandaParticipantPublicViewDto
+        {
+            Id = participant.Id,
+            Name = participant.Client?.Name ?? "Participante",
+            AssignedTurn = participant.AssignedTurn,
+            CurrentWeek = currentWeek,
+            TotalWeeks = tanda.TotalWeeks,
+            WeeklyAmount = weeklyAmount,
+            ExpectedAmount = weeklyAmount * tanda.TotalWeeks,
+            CollectedAmount = collectedAmount,
+            BalanceDue = Math.Max(0, weeklyAmount * tanda.TotalWeeks - collectedAmount),
+            HasPaidCurrentWeek = participant.Payments.Any(payment =>
+                payment.WeekNumber == currentWeek && payment.IsVerified
+                && payment.AmountPaid >= weeklyAmount),
+            PaidWeeks = participant.Payments
+                .Where(payment => payment.IsVerified)
+                .GroupBy(payment => payment.WeekNumber)
+                .Where(group => group.Sum(payment => payment.AmountPaid) >= weeklyAmount)
+                .Select(group => group.Key)
+                .OrderBy(week => week)
+                .ToList(),
+            Items = participant.Items.Select(MapToItemDto).ToList(),
+            PaymentProofs = participant.PaymentProofs
+                .OrderByDescending(proof => proof.SubmittedAt)
+                .Select(MapToPublicProofDto)
+                .ToList()
+        };
+    }
+
+    private static TandaPaymentProofPublicDto MapToPublicProofDto(TandaPaymentProof proof) => new()
+    {
+        Id = proof.Id,
+        WeekNumber = proof.WeekNumber,
+        AmountClaimed = proof.AmountClaimed,
+        OcrAmount = proof.OcrAmount,
+        DepositDate = proof.DepositDate,
+        OcrConfidence = proof.OcrConfidence,
+        Status = proof.Status,
+        SubmittedAt = proof.SubmittedAt,
+        ReviewedAt = proof.ReviewedAt,
+        RejectionReason = proof.RejectionReason
     };
 
-    private string AnonymizeName(string fullName)
+    private static TandaPaymentProofAdminDto MapToAdminProofDto(TandaPaymentProof proof) => new()
+    {
+        Id = proof.Id,
+        ParticipantId = proof.ParticipantId,
+        TandaId = proof.TandaId,
+        ParticipantName = proof.Participant?.Client?.Name ?? "Participante",
+        TandaName = proof.Tanda?.Name ?? "Tanda",
+        WeekNumber = proof.WeekNumber,
+        AmountClaimed = proof.AmountClaimed,
+        OcrAmount = proof.OcrAmount,
+        DepositDate = proof.DepositDate,
+        OcrText = proof.OcrText,
+        OcrConfidence = proof.OcrConfidence,
+        FileUrl = proof.FileUrl,
+        FileType = proof.FileType,
+        Status = proof.Status,
+        SubmittedAt = proof.SubmittedAt,
+        ReviewedAt = proof.ReviewedAt,
+        ReviewedBy = proof.ReviewedBy,
+        RejectionReason = proof.RejectionReason
+    };
+
+    private static int CountPaidInstallments(TandaParticipant participant, Tanda tanda)
+    {
+        var weeklyAmount = CalculateParticipantWeeklyAmount(participant, tanda);
+        return participant.Payments.Where(payment => payment.IsVerified)
+            .GroupBy(payment => payment.WeekNumber)
+            .Count(group => group.Sum(payment => payment.AmountPaid) >= weeklyAmount);
+    }
+
+    private static TandaPaymentDto MapToPaymentDto(TandaPayment payment) => new()
+    {
+        Id = payment.Id,
+        ParticipantId = payment.ParticipantId,
+        WeekNumber = payment.WeekNumber,
+        AmountPaid = payment.AmountPaid,
+        PenaltyPaid = payment.PenaltyPaid,
+        PaymentDate = payment.PaymentDate,
+        DepositDate = payment.DepositDate,
+        OcrAmount = payment.OcrAmount,
+        ProofUrl = payment.ProofUrl,
+        OcrText = payment.OcrText,
+        OcrConfidence = payment.OcrConfidence,
+        PaymentMethod = payment.PaymentMethod,
+        IsVerified = payment.IsVerified,
+        Notes = payment.Notes
+    };
+
+    private static TandaProductDto MapToProductDto(TandaProduct product) => new()
+    {
+        Id = product.Id,
+        Name = product.Name,
+        BasePrice = product.BasePrice,
+        IsActive = product.IsActive,
+        CreatedAt = product.CreatedAt
+    };
+
+    private static void ValidateTandaValues(string name, int totalWeeks, decimal weeklyAmount, decimal penaltyAmount)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("La tanda necesita un nombre.");
+        if (totalWeeks is < 1 or > 52) throw new InvalidOperationException("La tanda debe tener entre 1 y 52 semanas.");
+        if (weeklyAmount <= 0) throw new InvalidOperationException("El abono semanal debe ser mayor a cero.");
+        if (penaltyAmount < 0) throw new InvalidOperationException("La penalización no puede ser negativa.");
+    }
+
+    private static void ValidateTurn(int turn, int totalWeeks)
+    {
+        if (turn < 1 || turn > totalWeeks)
+            throw new InvalidOperationException($"El lugar debe estar entre 1 y {totalWeeks}.");
+    }
+
+    private static void ValidatePayment(int weekNumber, decimal amountPaid, decimal penaltyPaid, Tanda? tanda)
+    {
+        if (tanda is null) throw new InvalidOperationException("La tanda del participante no existe.");
+        ValidateTurn(weekNumber, tanda.TotalWeeks);
+        if (amountPaid <= 0) throw new InvalidOperationException("El monto pagado debe ser mayor a cero.");
+        if (penaltyPaid < 0) throw new InvalidOperationException("La penalización pagada no puede ser negativa.");
+    }
+
+    private static string? CleanOptionalText(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string GenerateAccessToken() =>
+        Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+
+    private static async Task<string?> DetectImageTypeAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var header = new byte[12];
+        var read = await stream.ReadAsync(header.AsMemory(0, header.Length), cancellationToken);
+        stream.Position = 0;
+
+        if (read >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF)
+            return "jpg";
+        if (read >= 8 && header.AsSpan(0, 8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }))
+            return "png";
+        if (read >= 12 && header.AsSpan(0, 4).SequenceEqual("RIFF"u8) && header.AsSpan(8, 4).SequenceEqual("WEBP"u8))
+            return "webp";
+        return null;
+    }
+
+    private static bool IsAllowedImage(string contentType, string detectedFileType) =>
+        (detectedFileType, contentType.ToLowerInvariant()) switch
+        {
+            ("jpg", "image/jpeg") => true,
+            ("png", "image/png") => true,
+            ("webp", "image/webp") => true,
+            _ => false
+        };
+
+    private static DateTime EnsureUtc(DateTime dateTime) => dateTime.Kind switch
+    {
+        DateTimeKind.Utc => dateTime,
+        DateTimeKind.Local => dateTime.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+    };
+
+    private static string NormalizeTandaStatus(string status) =>
+        ValidTandaStatuses.First(value => value.Equals(status, StringComparison.OrdinalIgnoreCase));
+
+    private static string NormalizeParticipantStatus(string status) =>
+        ValidParticipantStatuses.First(value => value.Equals(status, StringComparison.OrdinalIgnoreCase));
+
+    private static string AnonymizeName(string fullName)
     {
         var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return "Participante";
         if (parts.Length == 1) return parts[0];
-        
-        string firstName = parts[0];
-        string lastInitial = parts[1].Substring(0, 1).ToUpper() + ".";
-        return $"{firstName} {lastInitial}";
+        return $"{parts[0]} {char.ToUpperInvariant(parts[1][0])}.";
     }
 
-    private int CalculateCurrentWeek(DateTime startDate)
+    private static int CalculateCurrentWeek(DateTime startDate)
     {
-        var timeSpan = DateTime.UtcNow.Date - startDate.Date;
-        int days = (int)timeSpan.TotalDays;
-        
-        if (days <= 0) return 1;
-        // Restamos 1 día para que el cambio de semana ocurra el Lunes (día 8) 
-        // y no el Domingo (día 7), permitiendo que la entrega dominical sea el cierre de la semana.
+        var days = (int)(DateTime.UtcNow.Date - startDate.Date).TotalDays;
+        if (days < 0) return 0;
+        if (days == 0) return 1;
         return ((days - 1) / 7) + 1;
-    }
-
-    public async Task DeletePaymentAsync(Guid paymentId)
-    {
-        var payment = await _db.TandaPayments.FindAsync(paymentId);
-        if (payment == null) throw new Exception("El registro de pago no existe.");
-
-        _db.TandaPayments.Remove(payment);
-        await _db.SaveChangesAsync();
-    }
-
-    public async Task ReorderParticipantsAsync(Guid tandaId, List<Guid> participantIdsInOrder)
-    {
-        var participants = await _db.TandaParticipants
-            .Where(p => p.TandaId == tandaId)
-            .ToListAsync();
-
-        TandaTurnPlanner.ValidateExactOrder(
-            participants.Select(p => p.Id).ToList(),
-            participantIdsInOrder);
-
-        await using var transaction = await _db.Database.BeginTransactionAsync();
-        foreach (var p in participants)
-        {
-            p.AssignedTurn += 1000;
-        }
-        await _db.SaveChangesAsync();
-
-        // Ahora asignamos el orden final solicitado
-        for (int i = 0; i < participantIdsInOrder.Count; i++)
-        {
-            var pId = participantIdsInOrder[i];
-            var participant = participants.FirstOrDefault(p => p.Id == pId);
-            if (participant != null)
-            {
-                participant.AssignedTurn = i + 1;
-            }
-        }
-
-        await _db.SaveChangesAsync();
-        await transaction.CommitAsync();
     }
 }

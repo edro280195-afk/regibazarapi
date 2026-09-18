@@ -22,8 +22,6 @@ public class PublicTandaController : ControllerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IHubContext<DeliveryHub> _hub;
     private readonly IPushNotificationService _push;
-    private readonly ICloudinaryService _cloudinary;
-    private readonly ITandaPaymentOcrService _ocr;
 
     public PublicTandaController(
         ITandaService tandaService, 
@@ -31,9 +29,7 @@ public class PublicTandaController : ControllerBase
         IConfiguration config, 
         IHttpClientFactory httpClientFactory,
         IHubContext<DeliveryHub> hub,
-        IPushNotificationService push,
-        ICloudinaryService cloudinary,
-        ITandaPaymentOcrService ocr)
+        IPushNotificationService push)
     {
         _tandaService = tandaService;
         _db = db;
@@ -41,8 +37,6 @@ public class PublicTandaController : ControllerBase
         _httpClientFactory = httpClientFactory;
         _hub = hub;
         _push = push;
-        _cloudinary = cloudinary;
-        _ocr = ocr;
     }
 
     [HttpGet("{token}")]
@@ -68,27 +62,38 @@ public class PublicTandaController : ControllerBase
     [HttpPost("{token}/payment/card")]
     public async Task<IActionResult> PayWithCard(string token, [FromBody] TandaCardPaymentRequest req)
     {
-        var participant = await _db.TandaParticipants
-            .Include(p => p.Tanda)
-                .ThenInclude(t => t!.Product)
-            .Include(p => p.Items)
-            .Include(p => p.Client)
-            .FirstOrDefaultAsync(p => p.PublicToken == token);
+        var tanda = await _db.Tandas
+            .Include(t => t.Participants)
+            .ThenInclude(p => p.Client)
+            .Include(t => t.Participants)
+            .ThenInclude(p => p.Items)
+            .FirstOrDefaultAsync(t => t.AccessToken == token);
 
-        Tanda? tanda = participant?.Tanda;
-        if (tanda == null)
+        TandaParticipant? personalParticipant = null;
+        if (tanda is null)
         {
-            tanda = await _db.Tandas
-                .Include(t => t.Participants)
-                    .ThenInclude(p => p.Client)
-                .Include(t => t.Participants)
-                    .ThenInclude(p => p.Items)
-                .FirstOrDefaultAsync(t => t.AccessToken == token);
-            participant = tanda?.Participants.FirstOrDefault(p => p.Id == req.ParticipantId);
+            personalParticipant = await _db.TandaParticipants
+                .Include(p => p.Client)
+                .Include(p => p.Items)
+                .Include(p => p.Tanda)
+                    .ThenInclude(t => t!.Participants)
+                .FirstOrDefaultAsync(p => p.PublicAccessToken == token);
+            tanda = personalParticipant?.Tanda;
         }
 
         if (tanda == null) return NotFound("Tanda no encontrada.");
+
+        var participant = personalParticipant
+            ?? tanda.Participants.FirstOrDefault(p => p.Id == req.ParticipantId);
         if (participant == null) return NotFound("Participante no encontrado en esta tanda.");
+        if (personalParticipant is not null && req.ParticipantId != personalParticipant.Id)
+            return Forbid();
+        var itemWeeklyAmount = participant.Items
+            .Where(item => item.WeeklyAmount is > 0)
+            .Sum(item => item.WeeklyAmount!.Value * Math.Max(1, item.Quantity));
+        var participantWeeklyAmount = participant.WeeklyAmount is > 0
+            ? participant.WeeklyAmount.Value
+            : itemWeeklyAmount > 0 ? itemWeeklyAmount : tanda.WeeklyAmount;
 
         var mpAccessToken = _config["MercadoPago:AccessToken"]
             ?? throw new InvalidOperationException("MercadoPago:AccessToken no configurado.");
@@ -99,7 +104,7 @@ public class PublicTandaController : ControllerBase
 
         var paymentBody = new
         {
-            transaction_amount = CalculateParticipantWeeklyAmount(tanda, participant),
+            transaction_amount = participantWeeklyAmount,
             token = req.CardToken,
             description = $"Tanda {tanda.Name} - Semana {req.WeekNumber}",
             installments = 1,
@@ -133,7 +138,7 @@ public class PublicTandaController : ControllerBase
                 {
                     ParticipantId = participant.Id,
                     WeekNumber = req.WeekNumber,
-                    AmountPaid = CalculateParticipantWeeklyAmount(tanda, participant),
+                    AmountPaid = participantWeeklyAmount,
                     PaymentDate = DateTime.UtcNow,
                     IsVerified = true,
                     Notes = $"MP#{mpResult.Id} (Tarjeta)"
@@ -146,12 +151,12 @@ public class PublicTandaController : ControllerBase
                 await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
                     TandaId = tanda.Id,
                     ParticipantName = clientName,
-                    Amount = CalculateParticipantWeeklyAmount(tanda, participant),
+                    Amount = participantWeeklyAmount,
                     Type = "tanda_card_payment"
                 });
 
                 await _push.SendNotificationToAdminsAsync(
-                    $"💎 Pago Tanda: ${CalculateParticipantWeeklyAmount(tanda, participant):F2}",
+                    $"💎 Pago Tanda: ${participantWeeklyAmount:F2}",
                     $"{clientName} pagó la semana {req.WeekNumber} de {tanda.Name}.",
                     tag: "tanda-payment"
                 );
@@ -169,86 +174,57 @@ public class PublicTandaController : ControllerBase
         }
     }
 
-    [HttpPost("{token}/payment/proof")]
-    [RequestSizeLimit(10_000_000)]
-    public async Task<IActionResult> SubmitPaymentProof(
+    [HttpPost("{token}/payment-proofs")]
+    [RequestSizeLimit(8_000_000)]
+    [Consumes("multipart/form-data")]
+    public async Task<IActionResult> UploadPaymentProof(
         string token,
         [FromForm] int weekNumber,
-        [FromForm] IFormFile proof,
+        [FromForm] decimal? amountClaimed,
+        [FromForm] IFormFile? file,
         CancellationToken cancellationToken)
     {
-        if (weekNumber < 1)
-            return BadRequest(new { message = "La semana del comprobante no es válida." });
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = "Selecciona la foto de tu comprobante." });
+        if (file.Length > 8_000_000)
+            return BadRequest(new { message = "La imagen no puede superar 8 MB." });
 
-        if (proof == null || proof.Length == 0)
-            return BadRequest(new { message = "Selecciona una imagen del comprobante." });
-
-        if (!proof.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-            return BadRequest(new { message = "El comprobante debe ser una imagen." });
-
-        var participant = await _db.TandaParticipants
-            .Include(p => p.Tanda)
-            .Include(p => p.Payments)
-            .FirstOrDefaultAsync(p => p.PublicToken == token, cancellationToken);
-
-        if (participant?.Tanda == null)
-            return BadRequest(new { message = "Usa el enlace individual de tu tanda para enviar el comprobante." });
-
-        if (participant.Payments.Any(p => p.WeekNumber == weekNumber && p.IsVerified))
-            return BadRequest(new { message = "Esta semana ya tiene un pago verificado." });
-
-        await using var image = new MemoryStream();
-        await proof.CopyToAsync(image, cancellationToken);
-        image.Position = 0;
-        var ocr = await _ocr.ExtractAsync(image, cancellationToken);
-        image.Position = 0;
-        var proofUrl = await _cloudinary.UploadAsync(image, proof.FileName, "tanda-payment-proofs");
-
-        var pendingPayment = participant.Payments
-            .FirstOrDefault(p => p.WeekNumber == weekNumber && !p.IsVerified);
-        var payment = pendingPayment ?? new TandaPayment
+        try
         {
-            Id = Guid.NewGuid(),
-            ParticipantId = participant.Id,
-            WeekNumber = weekNumber,
-            PaymentDate = DateTime.UtcNow,
-            IsVerified = false
-        };
+            await using var stream = file.OpenReadStream();
+            var result = await _tandaService.UploadPaymentProofAsync(
+                token,
+                weekNumber,
+                amountClaimed ?? 0,
+                stream,
+                file.FileName,
+                file.ContentType,
+                cancellationToken);
 
-        payment.AmountPaid = ocr.Amount ?? 0;
-        payment.OcrAmount = ocr.Amount;
-        payment.DepositDate = ocr.DepositDate;
-        payment.ProofUrl = proofUrl;
-        payment.OcrText = ocr.Text;
-        payment.OcrConfidence = ocr.Confidence;
-        payment.PaymentMethod = "Transferencia/Depósito";
-        payment.Notes = string.IsNullOrWhiteSpace(ocr.Error)
-            ? "Comprobante enviado por la clienta; pendiente de verificación."
-            : $"Comprobante enviado; OCR no disponible: {ocr.Error}";
+            await _hub.Clients.Group("Admins").SendAsync("TandaPaymentProofSubmitted", new
+            {
+                result.Proof.Id,
+                result.TandaId,
+                result.ParticipantName,
+                result.Proof.WeekNumber,
+                result.Proof.AmountClaimed
+            }, cancellationToken);
 
-        if (pendingPayment == null)
-            _db.TandaPayments.Add(payment);
+            await _push.SendNotificationToAdminsAsync(
+                "💖 Nuevo comprobante de tanda",
+                $"{result.ParticipantName} envió su comprobante de la semana {result.Proof.WeekNumber}.",
+                tag: "tanda-payment-proof");
 
-        await _db.SaveChangesAsync(cancellationToken);
-
-        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+            return Ok(result);
+        }
+        catch (InvalidOperationException ex)
         {
-            TandaId = participant.TandaId,
-            ParticipantId = participant.Id,
-            WeekNumber = weekNumber,
-            Amount = ocr.Amount,
-            Type = "tanda_payment_proof"
-        }, cancellationToken);
-
-        return Ok(new
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (Exception)
         {
-            message = "Comprobante recibido. Administración revisará los datos extraídos.",
-            paymentId = payment.Id,
-            amount = ocr.Amount,
-            depositDate = ocr.DepositDate,
-            confidence = ocr.Confidence,
-            proofUrl
-        });
+            return StatusCode(500, new { message = "No se pudo recibir el comprobante." });
+        }
     }
 
     public class TandaCardPaymentRequest
@@ -257,17 +233,6 @@ public class PublicTandaController : ControllerBase
         public int WeekNumber { get; set; }
         public string CardToken { get; set; } = "";
         public string PaymentMethodId { get; set; } = "";
-    }
-
-    private static decimal CalculateParticipantWeeklyAmount(Tanda tanda, TandaParticipant participant)
-    {
-        if (participant.WeeklyAmount.HasValue)
-            return participant.WeeklyAmount.Value;
-
-        var itemAmount = participant.Items
-            .Where(item => item.WeeklyAmount.HasValue)
-            .Sum(item => item.WeeklyAmount!.Value * item.Quantity);
-        return itemAmount > 0 ? itemAmount : tanda.WeeklyAmount;
     }
 
     private class MpPaymentApiResponse

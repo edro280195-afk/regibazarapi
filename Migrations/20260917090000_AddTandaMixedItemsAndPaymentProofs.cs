@@ -13,42 +13,17 @@ public partial class AddTandaMixedItemsAndPaymentProofs : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
     {
-        migrationBuilder.AddColumn<string>(
-            name: "public_token",
-            table: "tanda_participants",
-            type: "character varying(64)",
-            maxLength: 64,
-            nullable: true);
-
-        migrationBuilder.Sql(@"
-            UPDATE ""tanda_participants""
-            SET ""public_token"" = md5(random()::text || clock_timestamp()::text || ""id""::text)
-            WHERE ""public_token"" IS NULL OR ""public_token"" = '';
-        ");
-
-        migrationBuilder.AlterColumn<string>(
-            name: "public_token",
-            table: "tanda_participants",
-            type: "character varying(64)",
-            maxLength: 64,
-            nullable: false,
-            oldClrType: typeof(string),
-            oldType: "character varying(64)",
-            oldMaxLength: 64,
-            oldNullable: true);
-
-        migrationBuilder.CreateIndex(
-            name: "IX_TandaParticipant_PublicToken",
-            table: "tanda_participants",
-            column: "public_token",
-            unique: true);
-
         migrationBuilder.AddColumn<DateTime>("deposit_date", "payments", "timestamp with time zone", nullable: true);
         migrationBuilder.AddColumn<decimal>("ocr_amount", "payments", "numeric(12,2)", nullable: true);
         migrationBuilder.AddColumn<decimal>("ocr_confidence", "payments", "numeric", nullable: true);
         migrationBuilder.AddColumn<string>("ocr_text", "payments", "text", nullable: true);
         migrationBuilder.AddColumn<string>("payment_method", "payments", "character varying(50)", maxLength: 50, nullable: true);
         migrationBuilder.AddColumn<string>("proof_url", "payments", "character varying(1000)", maxLength: 1000, nullable: true);
+
+        migrationBuilder.AddColumn<DateTime>("deposit_date", "tanda_payment_proofs", "timestamp with time zone", nullable: true);
+        migrationBuilder.AddColumn<decimal>("ocr_amount", "tanda_payment_proofs", "numeric(12,2)", nullable: true);
+        migrationBuilder.AddColumn<string>("ocr_text", "tanda_payment_proofs", "text", nullable: true);
+        migrationBuilder.AddColumn<decimal>("ocr_confidence", "tanda_payment_proofs", "numeric", nullable: true);
 
         migrationBuilder.CreateTable(
             name: "tanda_participant_items",
@@ -87,13 +62,15 @@ public partial class AddTandaMixedItemsAndPaymentProofs : Migration
     protected override void Down(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.DropTable(name: "tanda_participant_items");
+        migrationBuilder.DropColumn("deposit_date", "tanda_payment_proofs");
+        migrationBuilder.DropColumn("ocr_amount", "tanda_payment_proofs");
+        migrationBuilder.DropColumn("ocr_text", "tanda_payment_proofs");
+        migrationBuilder.DropColumn("ocr_confidence", "tanda_payment_proofs");
         migrationBuilder.DropColumn("deposit_date", "payments");
         migrationBuilder.DropColumn("ocr_amount", "payments");
         migrationBuilder.DropColumn("ocr_confidence", "payments");
         migrationBuilder.DropColumn("ocr_text", "payments");
         migrationBuilder.DropColumn("payment_method", "payments");
         migrationBuilder.DropColumn("proof_url", "payments");
-        migrationBuilder.DropIndex("IX_TandaParticipant_PublicToken", "tanda_participants");
-        migrationBuilder.DropColumn("public_token", "tanda_participants");
     }
 }

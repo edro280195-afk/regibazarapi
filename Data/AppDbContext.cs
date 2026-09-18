@@ -27,6 +27,7 @@ public class AppDbContext : DbContext
     public DbSet<Tanda> Tandas => Set<Tanda>();
     public DbSet<TandaParticipant> TandaParticipants => Set<TandaParticipant>();
     public DbSet<TandaPayment> TandaPayments => Set<TandaPayment>();
+    public DbSet<TandaPaymentProof> TandaPaymentProofs => Set<TandaPaymentProof>();
     public DbSet<TandaParticipantItem> TandaParticipantItems => Set<TandaParticipantItem>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<LoyaltyTransaction> LoyaltyTransactions => Set<LoyaltyTransaction>();
@@ -133,22 +134,53 @@ public class AppDbContext : DbContext
             .HasDatabaseName("IX_TandaParticipant_Tanda_Turn");
 
         modelBuilder.Entity<TandaParticipant>()
-            .HasIndex(tp => tp.PublicToken)
+            .HasIndex(tp => tp.PublicAccessToken)
             .IsUnique()
-            .HasDatabaseName("IX_TandaParticipant_PublicToken");
+            .HasDatabaseName("IX_TandaParticipant_PublicAccessToken");
 
-        modelBuilder.Entity<TandaParticipantItem>(entity =>
-        {
-            entity.HasIndex(item => item.ParticipantId);
-            entity.HasOne(item => item.Participant)
-                .WithMany(participant => participant.Items)
-                .HasForeignKey(item => item.ParticipantId)
-                .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(item => item.Product)
-                .WithMany()
-                .HasForeignKey(item => item.ProductId)
-                .OnDelete(DeleteBehavior.SetNull);
-        });
+        modelBuilder.Entity<TandaParticipant>()
+            .HasMany(tp => tp.PaymentProofs)
+            .WithOne(proof => proof.Participant)
+            .HasForeignKey(proof => proof.ParticipantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<TandaParticipant>()
+            .HasMany(tp => tp.Items)
+            .WithOne(item => item.Participant)
+            .HasForeignKey(item => item.ParticipantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<TandaParticipantItem>()
+            .HasIndex(item => item.ParticipantId);
+
+        modelBuilder.Entity<TandaParticipantItem>()
+            .HasIndex(item => item.ProductId);
+
+        modelBuilder.Entity<TandaParticipantItem>()
+            .HasOne(item => item.Product)
+            .WithMany()
+            .HasForeignKey(item => item.ProductId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasOne(proof => proof.Tanda)
+            .WithMany()
+            .HasForeignKey(proof => proof.TandaId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasOne(proof => proof.RegisteredPayment)
+            .WithMany()
+            .HasForeignKey(proof => proof.RegisteredPaymentId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasIndex(proof => new { proof.ParticipantId, proof.WeekNumber })
+            .HasDatabaseName("IX_TandaPaymentProof_Participant_Week");
+
+        modelBuilder.Entity<TandaPaymentProof>()
+            .HasIndex(proof => proof.Status)
+            .HasDatabaseName("IX_TandaPaymentProof_Status");
 
         // --- RELACIONES & CONFIGURACIONES ---
 
