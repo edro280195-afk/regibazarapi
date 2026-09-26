@@ -360,9 +360,7 @@ public class DriverController : ControllerBase
         }
         else if (req.Action.Equals("Deliver", StringComparison.OrdinalIgnoreCase))
         {
-            if (package.Status != PackageTrackingStatus.Loaded && package.Status != PackageTrackingStatus.Delivered)
-                return BadRequest(new { message = $"¡Alerta! La bolsa #{package.PackageNumber} no fue cargada al vehículo." });
-
+            // No se exige escaneo previo de carga: si la bolsa está en mano del chofer, se puede entregar.
             if (package.Status == PackageTrackingStatus.Delivered)
                 return BadRequest(new { message = $"La bolsa #{package.PackageNumber} ya fue entregada anteriormente." });
 

@@ -1865,9 +1865,7 @@ public class OrdersController : ControllerBase
         }
         else if (req.Action.Equals("Deliver", StringComparison.OrdinalIgnoreCase))
         {
-            if (package.Status != PackageTrackingStatus.Loaded && package.Status != PackageTrackingStatus.Delivered)
-                return BadRequest(new { message = $"¡Peligro! Intentas entregar la bolsa {package.PackageNumber} pero el sistema no registra que la hayas subido a la camioneta." });
-
+            // No se exige escaneo previo de carga: si la bolsa está en mano del chofer, se puede entregar.
             if (package.Status == PackageTrackingStatus.Delivered)
                 return BadRequest(new { message = $"La bolsa {package.PackageNumber} ya había sido entregada." });
 
