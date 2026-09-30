@@ -58,6 +58,11 @@ public class Order
     public string? PickupDate { get; set; }
     public string? DeliveryInstructions { get; set; }
 
+    /// <summary>
+    /// Número de bolsas del pedido. Es el REFLEJO de <see cref="Packages"/>: las bolsas reales
+    /// (con QR) son la fuente de verdad. Los cambios pasan por OrderPackagePolicy para que el
+    /// número del Kanban, las etiquetas y lo que escanea el chofer nunca se separen.
+    /// </summary>
     public int? TotalPackages { get; set; }
 
     /// <summary>

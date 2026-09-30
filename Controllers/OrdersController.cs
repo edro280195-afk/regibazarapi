@@ -357,6 +357,10 @@ public class OrdersController : ControllerBase
     [HttpPost("manual")]
     public async Task<ActionResult<OrderSummaryDto>> CreateManual(ManualOrderRequest req)
     {
+        // Ahora el número de bolsas crea bolsas reales con QR: validamos antes de tocar nada.
+        if (OrderPackagePolicy.ValidateTotal(req.TotalPackages) is { } packagesError)
+            return BadRequest(packagesError);
+
         var settings = await _db.AppSettings.FirstAsync();
         var typedName = req.ClientName?.Trim() ?? string.Empty;
 
@@ -449,6 +453,7 @@ public class OrdersController : ControllerBase
             //     Validamos que sea de esta clienta y que no esté cancelado.
             existingOrder = await _db.Orders
                 .Include(o => o.Items) // Importante traer los items para no borrarlos
+                .Include(o => o.Packages) // Para crear solo las bolsas que falten
                 .FirstOrDefaultAsync(o => o.Id == targetId
                                        && o.ClientId == client.Id
                                        && o.Status != Models.OrderStatus.Canceled);
@@ -462,6 +467,7 @@ public class OrdersController : ControllerBase
             //     uno nuevo. Tomamos el más reciente cuando hay varios.
             existingOrder = await _db.Orders
                 .Include(o => o.Items)
+                .Include(o => o.Packages)
                 .Where(o => o.ClientId == client.Id
                          && (o.Status == Models.OrderStatus.Pending
                           || o.Status == Models.OrderStatus.Confirmed))
@@ -557,16 +563,26 @@ public class OrdersController : ControllerBase
         }
 
         // 🛍️ Bolsas capturadas en el alta. Si la dueña tocó un número (incluido 0 =
-        // "va sin bolsas") lo guardamos y lo marcamos confirmado. Si eligió "No sé
+        // "va sin bolsas") se crean las bolsas reales con su QR, así el pedido, el Kanban y
+        // "Logística y Etiquetas" cuentan lo mismo desde el primer momento. Si eligió "No sé
         // todavía" no llega nada y el pedido queda como bolsas pendientes.
+        // En un pedido abierto el número es el TOTAL deseado: se crean solo las que faltan y
+        // nunca se borran las existentes.
+        PackageSyncResult? packagesSync = null;
         if (req.PackagesConfirmed || req.TotalPackages.HasValue)
         {
-            existingOrder.TotalPackages = req.TotalPackages;
-            existingOrder.PackagesConfirmed = true;
-            existingOrder.PackagesReminderSentAt = null;
+            // Pedido y bolsas van juntos: si algo falla no queda un pedido a medias.
+            await using var tx = await _db.Database.BeginTransactionAsync();
+            await _db.SaveChangesAsync(); // el pedido nuevo necesita su Id para armar los QR
+            packagesSync = OrderPackagePolicy.ApplyDeclaration(existingOrder, req.TotalPackages, true, DateTime.UtcNow);
+            _db.OrderPackages.AddRange(packagesSync.Created);
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
         }
-
-        await _db.SaveChangesAsync();
+        else
+        {
+            await _db.SaveChangesAsync();
+        }
 
         // 🤝 Auto-merge: si la clienta resultante choca con otra por teléfono+nombre muy parecido,
         // las fusionamos automáticamente y registramos el evento. No bloqueamos la creación
@@ -578,6 +594,26 @@ public class OrdersController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Auto-merge attempt failed for client {Id}", client.Id);
+        }
+
+        // Si se crearon bolsas, los demás tableros admin (y un "Logística y Etiquetas" abierto
+        // sobre este mismo pedido) se refrescan solos, igual que al generar bolsas a mano.
+        // El pedido ya está guardado: un fallo del aviso en vivo no debe convertirse en un error de captura.
+        if (packagesSync is { Created.Count: > 0 })
+        {
+            try
+            {
+                await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+                {
+                    OrderId = existingOrder.Id,
+                    Status = existingOrder.Status.ToString(),
+                    UpdatedBy = "Admin"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "No se pudo avisar a los tableros admin de las bolsas del pedido {OrderId}", existingOrder.Id);
+            }
         }
 
         return Ok(ExcelService.MapToSummary(existingOrder, client, FrontendUrl));
@@ -1197,6 +1233,9 @@ public class OrdersController : ControllerBase
 
         if (order == null) return NotFound("Orden no encontrada");
 
+        if (OrderPackagePolicy.ValidateTotal(req.TotalPackages) is { } packagesError)
+            return BadRequest(packagesError);
+
         // Actualizamos datos del Cliente
         if (order.Client != null)
         {
@@ -1267,18 +1306,18 @@ public class OrdersController : ControllerBase
             order.SalesPeriodId = null;
         }
 
-        // 🛍️ Bolsas. Si viene un número lo guardamos y confirmamos. Si viene
-        // PackagesConfirmed explícito lo respetamos (permite "va sin bolsas" con 0).
-        if (req.TotalPackages.HasValue)
+        // 🛍️ Bolsas. Si viene un número lo confirmamos y creamos las bolsas reales que falten;
+        // si viene PackagesConfirmed explícito lo respetamos (permite "va sin bolsas" con 0).
+        // Las bolsas reales mandan: con bolsas ya generadas no se puede regresar a "pendiente".
+        if (req.TotalPackages.HasValue || req.PackagesConfirmed.HasValue)
         {
-            order.TotalPackages = req.TotalPackages;
-            order.PackagesConfirmed = req.PackagesConfirmed ?? true;
-            order.PackagesReminderSentAt = null;
-        }
-        else if (req.PackagesConfirmed.HasValue)
-        {
-            order.PackagesConfirmed = req.PackagesConfirmed.Value;
-            if (order.PackagesConfirmed) order.PackagesReminderSentAt = null;
+            await _db.Entry(order).Collection(o => o.Packages).LoadAsync();
+            var packagesSync = OrderPackagePolicy.ApplyDeclaration(
+                order,
+                req.TotalPackages ?? order.TotalPackages,
+                req.PackagesConfirmed ?? true,
+                DateTime.UtcNow);
+            _db.OrderPackages.AddRange(packagesSync.Created);
         }
 
         order.PostponedAt = req.PostponedAt;
@@ -1339,10 +1378,12 @@ public class OrdersController : ControllerBase
 
     /// <summary>
     /// PATCH /api/orders/{id}/packages - Set rápido del número de bolsas.
-    /// Lo usan el badge del Kanban, el resolver antes de mandar a ruta y el deep-link
-    /// del recordatorio push. TotalPackages = 0 con Confirmed = true significa
+    /// Lo usan el badge del Kanban, el resolver antes de mandar a ruta, el deep-link
+    /// del recordatorio push y la app Android. El número crea las bolsas reales con QR que
+    /// falten (nunca borra las existentes: si se pide menos, gana lo ya generado y el resumen
+    /// devuelto trae el total real). TotalPackages = 0 con Confirmed = true significa
     /// "va sin bolsas" (queda resuelto). TotalPackages = null con Confirmed = false
-    /// lo regresa a estado pendiente.
+    /// lo regresa a estado pendiente, solo si el pedido aún no tiene bolsas generadas.
     /// </summary>
     [HttpPatch("{id}/packages")]
     public async Task<ActionResult<OrderSummaryDto>> SetPackages(int id, [FromBody] SetPackagesRequest req)
@@ -1352,14 +1393,16 @@ public class OrdersController : ControllerBase
             .Include(o => o.Items)
             .Include(o => o.Payments)
             .Include(o => o.SalesPeriod)
+            .Include(o => o.Packages)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null) return NotFound("Orden no encontrada");
-        if (req.TotalPackages is int n && n < 0) return BadRequest("El número de bolsas no puede ser negativo 🥺");
+        if (OrderPackagePolicy.ValidateTotal(req.TotalPackages) is { } packagesError)
+            return BadRequest(packagesError);
 
-        order.TotalPackages = req.TotalPackages;
-        order.PackagesConfirmed = req.Confirmed;
-        if (req.Confirmed) order.PackagesReminderSentAt = null;
+        var packagesSync = OrderPackagePolicy.ApplyDeclaration(order, req.TotalPackages, req.Confirmed, DateTime.UtcNow);
+        _db.OrderPackages.AddRange(packagesSync.Created);
 
         await _db.SaveChangesAsync();
 
@@ -1732,45 +1775,13 @@ public class OrdersController : ControllerBase
 
         if (order == null) return NotFound("Pedido no encontrado.");
 
-        // Tomamos una foto del estado ANTES de agregar. Es clave: al hacer Add() de las
-        // bolsas nuevas, EF Core hace "fixup" y las mete en order.Packages, así que leer
-        // order.Packages.Count después del loop las contaría dos veces (el bug del badge
-        // que decía 3 cuando en el detalle solo había 2).
-        int existingCount = order.Packages.Count;
+        if (OrderPackagePolicy.ValidateAddition(order.Packages.Count, req.Count) is { } tooManyMessage)
+            return BadRequest(tooManyMessage);
 
-        // Averiguamos en qué número de bolsa nos quedamos (por si Miel agrega más días después)
-        int startingNumber = order.Packages.Any() ? order.Packages.Max(p => p.PackageNumber) + 1 : 1;
-
-        var newPackages = new List<OrderPackage>();
-
-        for (int i = 0; i < req.Count; i++)
-        {
-            var packageId = Guid.NewGuid();
-            // Creamos el QR infalible: RB-ORD[Id]-PKG[Primeros 8 chars del Guid]
-            string qrText = $"RB-ORD{order.Id}-PKG{packageId.ToString().Substring(0, 8).ToUpper()}";
-
-            var package = new OrderPackage
-            {
-                Id = packageId,
-                OrderId = order.Id,
-                PackageNumber = startingNumber + i,
-                QrCodeValue = qrText,
-                Status = PackageTrackingStatus.Packed,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            newPackages.Add(package);
-            _db.OrderPackages.Add(package);
-        }
-
-        // Actualizamos las banderas rápidas de la orden principal.
-        // Usamos existingCount (la foto previa) + las nuevas para no duplicar por el fixup de EF.
-        order.TotalPackages = existingCount + newPackages.Count;
-        order.PackagesConfirmed = true; // generar bolsas con QR también resuelve el pendiente
-        order.PackagesReminderSentAt = null;
-        order.IsFullyPacked = true;
-        // Si agregamos nuevas bolsas, automáticamente ya no está "completamente cargada"
-        order.IsFullyLoaded = false;
+        // La numeración, el QR y las banderas del pedido (TotalPackages, PackagesConfirmed,
+        // IsFullyPacked/IsFullyLoaded) las resuelve la regla única de bolsas.
+        var newPackages = OrderPackagePolicy.AddPackages(order, req.Count, DateTime.UtcNow).Created;
+        _db.OrderPackages.AddRange(newPackages);
 
         await _db.SaveChangesAsync();
 

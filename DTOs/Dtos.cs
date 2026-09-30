@@ -356,7 +356,8 @@ public record ManualOrderRequest(
     // siempre se crea uno nuevo aunque existan pedidos abiertos.
     bool ForceNew = false,
     // Bolsas capturadas en el alta. Null = "no sé todavía" (queda pendiente).
-    // Un número (incluido 0 = "va sin bolsas") marca PackagesConfirmed = true.
+    // Un número (incluido 0 = "va sin bolsas") marca PackagesConfirmed = true y crea las
+    // bolsas reales con QR que falten hasta ese total (OrderPackagePolicy). Nunca borra.
     int? TotalPackages = null,
     bool PackagesConfirmed = false
 );
@@ -996,13 +997,16 @@ public record UpdateOrderDetailsRequest(
     string? AlternativeAddress = null,
     DateTime? ScheduledDeliveryDate = null,
     string? ClientFacebookProfileUrl = null,
-    // Bolsas. Null = no tocar el valor existente. Si viene un número se guarda y
-    // marca PackagesConfirmed = true.
+    // Bolsas. Null = no tocar el valor existente. Si viene un número marca
+    // PackagesConfirmed = true y crea las bolsas con QR que falten (OrderPackagePolicy).
     int? TotalPackages = null,
     bool? PackagesConfirmed = null
 );
 
-/// <summary>Payload del set rápido de bolsas (badge en Kanban, resolver de ruta, deep-link del recordatorio).</summary>
+/// <summary>
+/// Payload del set rápido de bolsas (badge en Kanban, resolver de ruta, deep-link del recordatorio).
+/// Crea las bolsas con QR que falten hasta TotalPackages; nunca borra las existentes.
+/// </summary>
 public record SetPackagesRequest(int? TotalPackages, bool Confirmed = true);
 
 // DTO para actualizar un producto individual
