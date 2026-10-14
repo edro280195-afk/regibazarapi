@@ -18,8 +18,10 @@ public record OptimizedRoute(
     int DurationSeconds,
     /// <summary>Origen real usado por el optimizador (sirve para mostrar al usuario).</summary>
     string Source,
-    /// <summary>Polyline encoded de Google (siguiendo calles reales). Null si fallback Haversine.</summary>
-    string? PolylineEncoded = null
+    /// <summary>Polyline codificada de la ruta por calles. Null si se usó Haversine.</summary>
+    string? PolylineEncoded = null,
+    /// <summary>Mensaje para explicar la selección del optimizador o un fallback.</summary>
+    string? Message = null
 );
 
 public interface IRouteOptimizerService
@@ -28,6 +30,16 @@ public interface IRouteOptimizerService
     /// Calcula el orden óptimo de paradas. Por default usa Haversine local para evitar costos.
     /// </summary>
     Task<OptimizedRoute> OptimizeAsync(
+        List<RouteStop> stops,
+        double startLat,
+        double startLng,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Intenta optimizar por calles con ORS. Si el proveedor no está disponible o
+    /// no asigna todas las paradas, devuelve el resultado del optimizador local.
+    /// </summary>
+    Task<OptimizedRoute> OptimizeWithRoadNetworkAsync(
         List<RouteStop> stops,
         double startLat,
         double startLng,

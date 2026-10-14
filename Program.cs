@@ -127,7 +127,10 @@ builder.Services.AddScoped<IGoogleTtsService, GoogleTtsService>();
 // mantiene registrado para que ElevenLabs lo use como fallback automático
 // si la API key no está configurada o ElevenLabs falla.
 builder.Services.AddScoped<IElevenLabsTtsService, ElevenLabsTtsService>();
-builder.Services.AddScoped<IRouteOptimizerService, RouteOptimizerService>();
+builder.Services.AddHttpClient<IRouteOptimizerService, RouteOptimizerService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
 builder.Services.AddScoped<IGeocodingService, GeocodingService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPosService, PosService>();

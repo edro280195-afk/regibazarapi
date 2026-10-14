@@ -416,7 +416,7 @@ public record CreateRouteRequest(
     /// <summary>
     /// Si es true, OrderIds y TandaParticipantIds vienen en el orden óptimo deseado
     /// (típicamente desde un preview del frontend) y se respeta sin re-optimizar.
-    /// Si es false (default), el backend re-optimiza usando Google Routes API.
+    /// Si es false (default), el backend vuelve a calcular el orden con el optimizador local.
     /// </summary>
     bool PreOptimized = false
 );
@@ -451,7 +451,8 @@ public record PreviewRouteRequest(
     List<int>? OrderIds,
     List<Guid>? TandaParticipantIds,
     double? StartLat,
-    double? StartLng
+    double? StartLng,
+    bool UseRoadOptimizer = false
 );
 
 public record PreviewStopDto(
@@ -491,12 +492,15 @@ public record PreviewRouteResponse(
     int StopsWithoutCoords,
     string? PolylineEncoded = null,
     double? DepotLatitude = null,
-    double? DepotLongitude = null
+    double? DepotLongitude = null,
+    string? OptimizerMessage = null
 );
 
 public record RecomposeRouteRequest(
     List<int> OrderIds,
-    List<Guid>? TandaParticipantIds = null
+    List<Guid>? TandaParticipantIds = null,
+    List<string>? OrderedStopIds = null,
+    bool UseRoadOptimizer = false
 );
 
 public record RecomposeRouteResponse(

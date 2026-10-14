@@ -40,7 +40,7 @@ public class RoutesController : ControllerBase
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
 
-    /// <summary>POST /api/routes - Crear ruta con órdenes y/o tandas seleccionadas. Optimiza localmente por coordenadas.</summary>
+    /// <summary>POST /api/routes - Crear ruta con órdenes y/o tandas seleccionadas.</summary>
     [HttpPost]
     public async Task<ActionResult<CreateRouteResponse>> Create(CreateRouteRequest req)
     {
@@ -91,7 +91,7 @@ public class RoutesController : ControllerBase
         foreach (var p in tandas)
             allStops.Add(new RouteStop($"tanda:{p.Id}", p.Client?.Latitude, p.Client?.Longitude));
 
-        // Si el frontend ya optimizó, respetamos su orden. Si no, llamamos a Google Routes.
+        // Si el frontend ya optimizó, respetamos el orden confirmado. Si no, usamos el motor local.
         List<string> orderedIds;
         if (req.PreOptimized)
         {
@@ -219,7 +219,11 @@ public class RoutesController : ControllerBase
         var centerLat = req.StartLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
         var centerLng = req.StartLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
 
-        var optimized = await _optimizer.OptimizeAsync(allStops, centerLat, centerLng);
+        var optimized = req.UseRoadOptimizer
+            ? await _optimizer.OptimizeWithRoadNetworkAsync(
+                allStops, centerLat, centerLng, HttpContext.RequestAborted)
+            : await _optimizer.OptimizeAsync(
+                allStops, centerLat, centerLng, HttpContext.RequestAborted);
 
         var stopsDto = new List<PreviewStopDto>();
         int idx = 1;
@@ -339,7 +343,8 @@ public class RoutesController : ControllerBase
             StopsWithoutCoords: withoutCoords,
             PolylineEncoded: optimized.PolylineEncoded,
             DepotLatitude: centerLat,
-            DepotLongitude: centerLng
+            DepotLongitude: centerLng,
+            OptimizerMessage: optimized.Message
         ));
     }
 
@@ -1061,13 +1066,24 @@ public class RoutesController : ControllerBase
     public async Task<IActionResult> OptimizeRoute(
         int id,
         [FromQuery] double? lat = null,
-        [FromQuery] double? lng = null)
+        [FromQuery] double? lng = null,
+        [FromQuery] bool useRoadOptimizer = false)
     {
-        await OptimizeRouteInternal(id, lat, lng);
-        return Ok(new { Message = "Ruta optimizada correctamente" });
+        var optimized = await OptimizeRouteInternal(
+            id, lat, lng, useRoadOptimizer, HttpContext.RequestAborted);
+        return Ok(new
+        {
+            Message = optimized?.Message ?? "Ruta optimizada correctamente",
+            OptimizerSource = optimized?.Source
+        });
     }
 
-    private async Task OptimizeRouteInternal(int routeId, double? startLat = null, double? startLng = null)
+    private async Task<OptimizedRoute?> OptimizeRouteInternal(
+        int routeId,
+        double? startLat = null,
+        double? startLng = null,
+        bool useRoadOptimizer = false,
+        CancellationToken cancellationToken = default)
     {
         var route = await _db.DeliveryRoutes
             .Include(r => r.Deliveries)
@@ -1081,7 +1097,7 @@ public class RoutesController : ControllerBase
                     .ThenInclude(p => p!.Client)
             .FirstOrDefaultAsync(r => r.Id == routeId);
 
-        if (route == null) return;
+        if (route == null) return null;
 
         var ordersInRoute = await _db.Orders
             .Include(order => order.Client)
@@ -1109,8 +1125,8 @@ public class RoutesController : ControllerBase
         }
         if (fixedAny) await _db.SaveChangesAsync();
 
-        if (!route.Deliveries.Any()) return;
-        if (route.Status == RouteStatus.Completed) return;
+        if (!route.Deliveries.Any()) return null;
+        if (route.Status == RouteStatus.Completed) return null;
 
         var lat = startLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
         var lng = startLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
@@ -1136,7 +1152,9 @@ public class RoutesController : ControllerBase
                 consolidation?.PrimaryLongitude ?? primaryClient?.Longitude);
         }).ToList();
 
-        var optimized = await _optimizer.OptimizeAsync(stops, lat, lng);
+        var optimized = useRoadOptimizer
+            ? await _optimizer.OptimizeWithRoadNetworkAsync(stops, lat, lng, cancellationToken)
+            : await _optimizer.OptimizeAsync(stops, lat, lng, cancellationToken);
 
         var nextSortOrder = 1;
         foreach (var stopId in optimized.OrderedStopIds)
@@ -1148,6 +1166,7 @@ public class RoutesController : ControllerBase
 
         await _db.SaveChangesAsync();
         await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+        return optimized;
     }
 
     private static string StopIdFor(Delivery d) =>
@@ -1177,6 +1196,24 @@ public class RoutesController : ControllerBase
                 consolidation?.PrimaryLatitude ?? primaryClient?.Latitude,
                 consolidation?.PrimaryLongitude ?? primaryClient?.Longitude);
         }).ToList();
+    }
+
+    private static OptimizedRoute? TryUseRequestedStopOrder(
+        IReadOnlyCollection<RouteStop> stops,
+        IReadOnlyCollection<string>? requestedStopIds)
+    {
+        if (requestedStopIds == null) return null;
+
+        var expectedIds = stops.Select(stop => stop.Id).ToHashSet(StringComparer.Ordinal);
+        var requestedIds = requestedStopIds.ToList();
+        if (requestedIds.Count != expectedIds.Count
+            || requestedIds.Distinct(StringComparer.Ordinal).Count() != expectedIds.Count
+            || requestedIds.Any(stopId => !expectedIds.Contains(stopId)))
+        {
+            return null;
+        }
+
+        return new OptimizedRoute(requestedIds, 0, 0, "confirmed-preview");
     }
 
     private static List<Delivery> KeepConsolidatedDeliveriesTogether(
@@ -1528,7 +1565,12 @@ public class RoutesController : ControllerBase
                 var centerLat = _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
                 var centerLng = _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
                 var stops = BuildDeliveryRouteStops(pendingToOptimize);
-                var optimized = await _optimizer.OptimizeAsync(stops, centerLat, centerLng);
+                var optimized = TryUseRequestedStopOrder(stops, req.OrderedStopIds)
+                    ?? (req.UseRoadOptimizer
+                        ? await _optimizer.OptimizeWithRoadNetworkAsync(
+                            stops, centerLat, centerLng, HttpContext.RequestAborted)
+                        : await _optimizer.OptimizeAsync(
+                            stops, centerLat, centerLng, HttpContext.RequestAborted));
                 var byStopId = pendingToOptimize.GroupBy(StopIdFor)
                     .ToDictionary(group => group.Key, group => group
                         .OrderBy(delivery => delivery.OrderId ?? int.MaxValue)
