@@ -148,7 +148,9 @@ public class DriverController : ControllerBase
             AlternativeAddress: order.AlternativeAddress,
             ClientTag: order.Client.Tag.ToString() == "None" ? null : order.Client.Tag.ToString(),
             ClientType: order.Client.Type,
-            Kind: "Order"
+            Kind: "Order",
+            ScheduledDeliveryDate: order.ScheduledDeliveryDate,
+            DeliveryTime: order.DeliveryTime
         );
     }
 

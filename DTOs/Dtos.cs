@@ -295,7 +295,8 @@ public record OrderSummaryDto(
     // Pedido consolidado (sin cambiar la propiedad de sus artículos ni sus pagos)
     int? OrderConsolidationId = null,
     int? ConsolidationOwnerClientId = null,
-    string? ConsolidationOwnerNameSnapshot = null
+    string? ConsolidationOwnerNameSnapshot = null,
+    string? DeliveryTime = null
 );
 
 public record CreateOrderConsolidationRequest(
@@ -554,7 +555,9 @@ public record RouteDeliveryDto(
     string? TandaProductName = null,
     int? TandaWeek = null,
     int? TandaTotalWeeks = null,
-    string? TandaVariant = null
+    string? TandaVariant = null,
+    DateTime? ScheduledDeliveryDate = null,
+    string? DeliveryTime = null
 )
 {
     public int Id => DeliveryId;
@@ -647,7 +650,8 @@ public record ClientOrderView(
     /// <summary>Fecha límite del enlace cuando no existe un flujo público abierto.</summary>
     DateTime? PublicAccessUntil = null,
     /// <summary>Indica si la clienta puede liquidar el saldo desde el enlace.</summary>
-    bool PaymentVisible = false
+    bool PaymentVisible = false,
+    string? DeliveryTime = null
 );
 
 // ── OrderPayment ──
@@ -1032,7 +1036,8 @@ public record UpdateOrderDetailsRequest(
     // Bolsas. Null = no tocar el valor existente. Si viene un número marca
     // PackagesConfirmed = true y crea las bolsas con QR que falten (OrderPackagePolicy).
     int? TotalPackages = null,
-    bool? PackagesConfirmed = null
+    bool? PackagesConfirmed = null,
+    bool ApplyDeliverySchedule = false
 );
 
 /// <summary>

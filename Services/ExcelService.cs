@@ -312,7 +312,8 @@ public class ExcelService : IExcelService
             PackagesConfirmed: order.PackagesConfirmed,
             OrderConsolidationId: order.OrderConsolidationId,
             ConsolidationOwnerClientId: order.ConsolidationOwnerClientId,
-            ConsolidationOwnerNameSnapshot: order.ConsolidationOwnerNameSnapshot
+            ConsolidationOwnerNameSnapshot: order.ConsolidationOwnerNameSnapshot,
+            DeliveryTime: order.DeliveryTime
         );
     }
 }

@@ -51,20 +51,25 @@ public class OrderService : IOrderService
 
         if (manualDate.HasValue)
         {
-            // Si hay fecha manual (asumimos que viene como Date local sin hora)
+            // Los valores UTC se convierten a la zona de negocio; los valores sin zona
+            // se interpretan como hora local de Nuevo Laredo.
             DateTime localDelivery;
             if (manualDate.Value.Kind == DateTimeKind.Utc)
             {
-                localDelivery = TimeZoneInfo.ConvertTimeFromUtc(manualDate.Value, mexicoZone).Date;
+                localDelivery = TimeZoneInfo.ConvertTimeFromUtc(manualDate.Value, mexicoZone);
+            }
+            else if (manualDate.Value.Kind == DateTimeKind.Local)
+            {
+                localDelivery = TimeZoneInfo.ConvertTime(manualDate.Value, mexicoZone);
             }
             else
             {
-                localDelivery = manualDate.Value.Date;
+                localDelivery = manualDate.Value;
             }
 
             // El vencimiento es 2 días después de la entrega (martes 23:59 si
             // la entrega es domingo, pero aplica a cualquier día manual).
-            var localExpiration = localDelivery.AddDays(2);
+            var localExpiration = localDelivery.Date.AddDays(2);
 
             return (
                 TimeZoneInfo.ConvertTimeToUtc(localExpiration, mexicoZone),

@@ -1227,6 +1227,9 @@ public class OrdersController : ControllerBase
     [HttpPut("{id}")]
     public async Task<ActionResult<OrderSummaryDto>> UpdateOrderDetails(int id, [FromBody] UpdateOrderDetailsRequest req)
     {
+        if (req.DeliveryTime?.Length > 120)
+            return BadRequest("El horario acordado no puede exceder 120 caracteres.");
+
         var order = await _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Items)
@@ -1325,14 +1328,26 @@ public class OrdersController : ControllerBase
         order.PostponedAt = req.PostponedAt;
         order.PostponedNote = req.PostponedNote;
         order.Tags = req.Tags != null ? System.Text.Json.JsonSerializer.Serialize(req.Tags) : null;
-        order.DeliveryTime = req.DeliveryTime;
+        if (req.DeliveryTime != null)
+        {
+            order.DeliveryTime = string.IsNullOrWhiteSpace(req.DeliveryTime)
+                ? null
+                : req.DeliveryTime.Trim();
+        }
         order.PickupDate = req.PickupDate;
         order.DeliveryInstructions = req.DeliveryInstructions;
 
-        // Re-calculamos expiración si cambió la fecha de entrega o el tipo de clienta
-        var finalDates = _orderService.CalculateOrderDates(order.Client?.Type ?? "Nueva", order.CreatedAt, req.ScheduledDeliveryDate);
-        order.ExpiresAt = finalDates.ExpiresAt;
-        order.ScheduledDeliveryDate = finalDates.ScheduledDeliveryDate;
+        // Los cambios de otros datos no deben borrar una cita programada.
+        // Si la fecha se manda o el cliente marca ApplyDeliverySchedule, recalculamos.
+        if (req.ApplyDeliverySchedule || req.ScheduledDeliveryDate.HasValue)
+        {
+            var finalDates = _orderService.CalculateOrderDates(
+                order.Client?.Type ?? "Nueva",
+                order.CreatedAt,
+                req.ScheduledDeliveryDate);
+            order.ExpiresAt = finalDates.ExpiresAt;
+            order.ScheduledDeliveryDate = finalDates.ScheduledDeliveryDate;
+        }
 
         order.Total = order.Subtotal + order.ShippingCost;
 
@@ -1340,6 +1355,12 @@ public class OrdersController : ControllerBase
 
         // ✨ Sincronización Admin-a-Admin
         await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new { OrderId = order.Id, Status = order.Status.ToString(), UpdatedBy = "Admin" });
+        await _hub.Clients.Group($"Order_{order.AccessToken}").SendAsync("OrderDataChanged", new
+        {
+            OrderId = order.Id,
+            ScheduledDeliveryDate = order.ScheduledDeliveryDate,
+            DeliveryTime = order.DeliveryTime
+        });
 
         // ✨ Notificar al conductor si el pedido está en ruta activa
         if (order.DeliveryRouteId.HasValue)

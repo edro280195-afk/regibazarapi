@@ -167,7 +167,8 @@ public class ClientViewController : ControllerBase
                 .Select(e => e.ImagePath).ToList(),
             PublicViewMode: publicViewMode,
             PublicAccessUntil: publicAccessUntil,
-            PaymentVisible: paymentVisible
+            PaymentVisible: paymentVisible,
+            DeliveryTime: order.DeliveryTime
         ));
     }
 
