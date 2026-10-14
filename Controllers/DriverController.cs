@@ -44,6 +44,7 @@ public class DriverController : ControllerBase
 
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(d => d.Order).ThenInclude(o => o!.OrderConsolidation)
             .Include(d => d.Order).ThenInclude(o => o!.Payments)
             .Include(d => d.Order).ThenInclude(o => o!.Items)
             .Include(d => d.Order).ThenInclude(o => o!.Packages)
@@ -117,14 +118,18 @@ public class DriverController : ControllerBase
         }
 
         var order = d.Order!;
+        var consolidation = order.OrderConsolidation;
+        var isConsolidated = consolidation != null;
         return new RouteDeliveryDto(
             DeliveryId: d.Id,
             OrderId: d.OrderId,
             SortOrder: d.SortOrder,
-            ClientName: order.Client.Name,
-            ClientAddress: order.Client.Address,
-            Latitude: order.Client.Latitude,
-            Longitude: order.Client.Longitude,
+            ClientName: order.ConsolidationOwnerNameSnapshot ?? order.Client.Name,
+            ClientAddress: isConsolidated
+                ? consolidation!.PrimaryAddressSnapshot
+                : ClientDataPolicy.ResolveDeliveryAddress(order.Client.Address, order.AlternativeAddress),
+            Latitude: isConsolidated ? consolidation!.PrimaryLatitude : order.Client.Latitude,
+            Longitude: isConsolidated ? consolidation!.PrimaryLongitude : order.Client.Longitude,
             Status: d.Status.ToString(),
             Total: order.Total,
             DeliveredAt: d.DeliveredAt,
@@ -139,18 +144,22 @@ public class DriverController : ControllerBase
                 .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
             AmountPaid: order.AmountPaid,
             BalanceDue: order.BalanceDue,
-            DeliveryInstructions: order.Client.DeliveryInstructions,
+            DeliveryInstructions: isConsolidated ? consolidation!.DeliveryInstructionsSnapshot : order.Client.DeliveryInstructions,
             ArrivedAt: d.ArrivedAt,
             Packages: (order.Packages ?? new List<OrderPackage>()).Any()
                 ? (order.Packages ?? new List<OrderPackage>())
                     .Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList()
                 : null,
-            AlternativeAddress: order.AlternativeAddress,
+            AlternativeAddress: isConsolidated ? null : order.AlternativeAddress,
             ClientTag: order.Client.Tag.ToString() == "None" ? null : order.Client.Tag.ToString(),
             ClientType: order.Client.Type,
             Kind: "Order",
             ScheduledDeliveryDate: order.ScheduledDeliveryDate,
-            DeliveryTime: order.DeliveryTime
+            DeliveryTime: order.DeliveryTime,
+            ConsolidationId: order.OrderConsolidationId,
+            ConsolidationOwnerName: order.ConsolidationOwnerNameSnapshot ?? order.Client.Name,
+            ConsolidationPrimaryClientName: consolidation?.PrimaryClientNameSnapshot,
+            IsConsolidationPrimaryOrder: consolidation?.PrimaryOrderId == order.Id
         );
     }
 
@@ -270,6 +279,8 @@ public class DriverController : ControllerBase
             return BadRequest("No se puede reordenar una ruta completada.");
 
         var deliveries = await _db.Deliveries
+            .Include(delivery => delivery.Order)
+                .ThenInclude(order => order!.OrderConsolidation)
             .Where(d => d.DeliveryRouteId == route.Id)
             .ToListAsync();
 
@@ -278,11 +289,12 @@ public class DriverController : ControllerBase
             return BadRequest("La lista de IDs proporcionada no coincide con los pedidos de la ruta.");
         }
 
-        // Aplicamos el nuevo orden a todos
-        for (int i = 0; i < orderedDeliveryIds.Count; i++)
+        // El cliente móvil puede reordenar pedidos individuales, pero el servidor
+        // mantiene juntas todas las órdenes de una misma bolsa física.
+        var normalizedOrder = KeepConsolidatedDeliveriesTogether(deliveries, orderedDeliveryIds);
+        for (int i = 0; i < normalizedOrder.Count; i++)
         {
-            var delivery = deliveries.First(d => d.Id == orderedDeliveryIds[i]);
-            delivery.SortOrder = i + 1;
+            normalizedOrder[i].SortOrder = i + 1;
         }
 
         // Identificamos al primero de la lista (que esté pendiente) para forzarlo a InTransit si la ruta ya está activa
@@ -316,6 +328,39 @@ public class DriverController : ControllerBase
         await _hub.Clients.Group("Admins").SendAsync("RouteUpdated", route.Id);
 
         return Ok(new { message = "Ruta reordenada exitosamente por el repartidor." });
+    }
+
+    private static List<Delivery> KeepConsolidatedDeliveriesTogether(
+        IEnumerable<Delivery> source,
+        IReadOnlyList<int> requestedOrder)
+    {
+        var deliveries = source.ToList();
+        var byId = deliveries.ToDictionary(delivery => delivery.Id);
+        var includedDeliveryIds = new HashSet<int>();
+        var includedConsolidationIds = new HashSet<int>();
+        var ordered = new List<Delivery>(deliveries.Count);
+
+        foreach (var deliveryId in requestedOrder)
+        {
+            if (!byId.TryGetValue(deliveryId, out var delivery) || includedDeliveryIds.Contains(delivery.Id)) continue;
+            var consolidationId = delivery.Order?.OrderConsolidationId;
+            if (consolidationId is not int groupId)
+            {
+                if (includedDeliveryIds.Add(delivery.Id)) ordered.Add(delivery);
+                continue;
+            }
+
+            if (!includedConsolidationIds.Add(groupId)) continue;
+            foreach (var memberDelivery in deliveries
+                .Where(candidate => candidate.Order?.OrderConsolidationId == groupId)
+                .OrderBy(candidate => candidate.SortOrder)
+                .ThenBy(candidate => candidate.Id))
+            {
+                if (includedDeliveryIds.Add(memberDelivery.Id)) ordered.Add(memberDelivery);
+            }
+        }
+
+        return ordered;
     }
 
     /// <summary>POST /api/driver/{token}/packages/scan — Escanear bolsa al cargar o entregar</summary>

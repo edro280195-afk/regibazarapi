@@ -85,10 +85,9 @@ public class RoutesController : ControllerBase
             }
         }
 
-        // Resolver coordenadas: stops para el optimizer
-        var allStops = new List<RouteStop>();
-        foreach (var o in orders)
-            allStops.Add(new RouteStop($"order:{o.Id}", o.Client?.Latitude, o.Client?.Longitude));
+        // Una bolsa consolidada cuenta como una sola parada y toma el destino
+        // congelado de la clienta principal. Sus pedidos se conservan separados.
+        var allStops = BuildOrderRouteStops(orders);
         foreach (var p in tandas)
             allStops.Add(new RouteStop($"tanda:{p.Id}", p.Client?.Latitude, p.Client?.Longitude));
 
@@ -97,7 +96,11 @@ public class RoutesController : ControllerBase
         if (req.PreOptimized)
         {
             // El orden recibido en req.OrderIds + req.TandaParticipantIds es el deseado.
-            orderedIds = distinctOrderIds.Select(i => $"order:{i}")
+            var orderById = orders.ToDictionary(order => order.Id);
+            orderedIds = distinctOrderIds
+                .Where(orderById.ContainsKey)
+                .Select(id => StopIdForOrder(orderById[id]))
+                .Distinct()
                 .Concat(distinctTandaIds.Select(g => $"tanda:{g}"))
                 .Where(id => allStops.Any(s => s.Id == id))
                 .ToList();
@@ -139,6 +142,17 @@ public class RoutesController : ControllerBase
                     _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, sortOrder++));
                     createdOrderClientIds.Add(order.ClientId);
                 }
+                else if (stopId.StartsWith("bag:"))
+                {
+                    var consolidationId = int.Parse(stopId.Substring(4));
+                    foreach (var order in orders
+                        .Where(candidate => candidate.OrderConsolidationId == consolidationId)
+                        .OrderBy(candidate => candidate.Id))
+                    {
+                        _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, sortOrder++));
+                        createdOrderClientIds.Add(order.ClientId);
+                    }
+                }
                 else if (stopId.StartsWith("tanda:"))
                 {
                     var tandaId = Guid.Parse(stopId.Substring(6));
@@ -160,7 +174,7 @@ public class RoutesController : ControllerBase
             await transaction.CommitAsync();
 
             // 🔔 Notificaciones Push (después de commit)
-            int totalStops = sortOrder - 1;
+            int totalStops = orderedIds.Count;
             try { await _push.NotifyDriversNewRouteAsync(route.Name ?? "Nueva ruta", route.DriverToken, totalStops); }
             catch (Exception ex) { _logger.LogError(ex, "Error enviando FCM a repartidores"); }
 
@@ -198,9 +212,7 @@ public class RoutesController : ControllerBase
 
         var (orders, tandas, skipped) = await ValidateAndPartitionAsync(orderIds, tandaIds);
 
-        var allStops = new List<RouteStop>();
-        foreach (var o in orders)
-            allStops.Add(new RouteStop($"order:{o.Id}", o.Client?.Latitude, o.Client?.Longitude));
+        var allStops = BuildOrderRouteStops(orders);
         foreach (var p in tandas)
             allStops.Add(new RouteStop($"tanda:{p.Id}", p.Client?.Latitude, p.Client?.Longitude));
 
@@ -233,6 +245,60 @@ public class RoutesController : ControllerBase
                     HasCoords: o.Client?.Latitude.HasValue == true && o.Client?.Longitude.HasValue == true,
                     TandaName: null,
                     TandaWeek: null
+                ));
+            }
+            else if (stopId.StartsWith("bag:"))
+            {
+                var consolidationId = int.Parse(stopId.Substring(4));
+                var members = orders
+                    .Where(order => order.OrderConsolidationId == consolidationId)
+                    .OrderBy(order => order.Id)
+                    .ToList();
+                if (members.Count == 0) continue;
+
+                var consolidation = members[0].OrderConsolidation;
+                var primaryOrder = members.FirstOrDefault(order => order.Id == consolidation?.PrimaryOrderId) ?? members[0];
+                var owners = members
+                    .GroupBy(order => new
+                    {
+                        ClientId = order.ConsolidationOwnerClientId ?? order.ClientId,
+                        Name = order.ConsolidationOwnerNameSnapshot ?? order.Client?.Name ?? "Clienta"
+                    })
+                    .Select(group => new ConsolidationOwnerSummaryDto(
+                        group.Key.ClientId,
+                        group.Key.Name,
+                        group.Select(order => order.Id).ToList(),
+                        group.Sum(order => order.Total),
+                        group.Sum(order => order.BalanceDue)))
+                    .OrderBy(owner => owner.OwnerName)
+                    .ToList();
+                var address = consolidation?.PrimaryAddressSnapshot ?? ClientDataPolicy.ResolveDeliveryAddress(
+                    primaryOrder.Client?.Address,
+                    primaryOrder.AlternativeAddress);
+                var latitude = consolidation?.PrimaryLatitude ?? primaryOrder.Client?.Latitude;
+                var longitude = consolidation?.PrimaryLongitude ?? primaryOrder.Client?.Longitude;
+                var primaryName = consolidation?.PrimaryClientNameSnapshot ?? primaryOrder.Client?.Name ?? "Clienta principal";
+                var total = members.Sum(order => order.Total);
+                var balanceDue = members.Sum(order => order.BalanceDue);
+
+                stopsDto.Add(new PreviewStopDto(
+                    Kind: "Order",
+                    OrderId: primaryOrder.Id,
+                    TandaParticipantId: null,
+                    SortOrder: idx++,
+                    ClientName: $"Bolsa #{consolidationId} · {primaryName}",
+                    ClientAddress: address,
+                    Latitude: latitude,
+                    Longitude: longitude,
+                    Total: total,
+                    HasCoords: latitude.HasValue && longitude.HasValue,
+                    TandaName: null,
+                    TandaWeek: null,
+                    ConsolidationId: consolidationId,
+                    MemberOrderIds: members.Select(order => order.Id).ToList(),
+                    Owners: owners,
+                    AggregateTotal: total,
+                    AggregateBalanceDue: balanceDue
                 ));
             }
             else if (stopId.StartsWith("tanda:"))
@@ -286,11 +352,28 @@ public class RoutesController : ControllerBase
     {
         var skipped = new List<SkippedStopDto>();
 
-        var ordersInDb = orderIds.Count > 0
+        var selectedOrders = orderIds.Count > 0
+            ? await _db.Orders.Where(order => orderIds.Contains(order.Id)).ToListAsync()
+            : new List<Order>();
+        var selectedConsolidationIds = selectedOrders
+            .Where(order => order.OrderConsolidationId.HasValue)
+            .Select(order => order.OrderConsolidationId!.Value)
+            .Distinct()
+            .ToList();
+        var consolidatedMemberIds = selectedConsolidationIds.Count > 0
+            ? await _db.Orders
+                .Where(order => order.OrderConsolidationId.HasValue
+                    && selectedConsolidationIds.Contains(order.OrderConsolidationId.Value))
+                .Select(order => order.Id)
+                .ToListAsync()
+            : new List<int>();
+        var expandedOrderIds = orderIds.Concat(consolidatedMemberIds).Distinct().ToList();
+        var ordersInDb = expandedOrderIds.Count > 0
             ? await _db.Orders
                 .Include(o => o.Client)
                 .Include(o => o.Packages)
-                .Where(o => orderIds.Contains(o.Id))
+                .Include(o => o.OrderConsolidation)
+                .Where(o => expandedOrderIds.Contains(o.Id))
                 .ToListAsync()
             : new List<Order>();
 
@@ -298,22 +381,39 @@ public class RoutesController : ControllerBase
         foreach (var id in orderIds.Where(id => ordersInDb.All(o => o.Id != id)))
             skipped.Add(new SkippedStopDto("Order", id.ToString(), $"Pedido #{id}", "No existe"));
 
-        var validOrders = new List<Order>();
+        var orderReasons = new Dictionary<int, string>();
         foreach (var o in ordersInDb)
         {
             string? reason = null;
             if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
             else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
-            else if (o.OrderConsolidationId != null) reason = $"Forma parte de la bolsa #{o.OrderConsolidationId}; agrega la bolsa completa a una ruta";
             else if (o.DeliveryRouteId != null) reason = "Ya en otra ruta";
             else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
             else if (o.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded)) reason = "Sus bolsas siguen cargadas en una ruta anterior";
 
-            if (reason != null)
-                skipped.Add(new SkippedStopDto("Order", o.Id.ToString(), o.Client?.Name ?? $"#{o.Id}", reason));
-            else
-                validOrders.Add(o);
+            if (reason != null) orderReasons[o.Id] = reason;
         }
+
+        // Una bolsa entra completa o no entra. La selección de un miembro expande
+        // automáticamente todos sus pedidos y cualquier bloqueo invalida el grupo entero.
+        foreach (var group in ordersInDb.Where(order => order.OrderConsolidationId.HasValue)
+            .GroupBy(order => order.OrderConsolidationId!.Value))
+        {
+            var blockedMember = group.FirstOrDefault(order => orderReasons.ContainsKey(order.Id));
+            if (blockedMember == null) continue;
+            var blockedReason = orderReasons[blockedMember.Id];
+            var groupReason = $"La bolsa #{group.Key} debe viajar completa; el pedido de {blockedMember.Client?.Name ?? $"#{blockedMember.Id}"} no puede agregarse ({blockedReason})";
+            foreach (var member in group)
+            {
+                if (!orderReasons.ContainsKey(member.Id)) orderReasons[member.Id] = groupReason;
+            }
+        }
+
+        foreach (var order in ordersInDb.Where(order => orderReasons.ContainsKey(order.Id)))
+            skipped.Add(new SkippedStopDto("Order", order.Id.ToString(),
+                order.ConsolidationOwnerNameSnapshot ?? order.Client?.Name ?? $"#{order.Id}", orderReasons[order.Id]));
+
+        var validOrders = ordersInDb.Where(order => !orderReasons.ContainsKey(order.Id)).ToList();
 
         var tandasInDb = tandaIds.Count > 0
             ? await _db.TandaParticipants
@@ -352,6 +452,53 @@ public class RoutesController : ControllerBase
         return (validOrders, validTandas, skipped);
     }
 
+    private static List<RouteStop> BuildOrderRouteStops(IEnumerable<Order> orders)
+    {
+        var orderList = orders.ToList();
+        var stops = orderList
+            .Where(order => !order.OrderConsolidationId.HasValue)
+            .Select(order => new RouteStop($"order:{order.Id}", order.Client?.Latitude, order.Client?.Longitude))
+            .ToList();
+
+        foreach (var group in orderList.Where(order => order.OrderConsolidationId.HasValue)
+            .GroupBy(order => order.OrderConsolidationId!.Value))
+        {
+            var members = group.ToList();
+            var consolidation = members[0].OrderConsolidation;
+            var primaryOrder = members.FirstOrDefault(order => order.Id == consolidation?.PrimaryOrderId) ?? members[0];
+            stops.Add(new RouteStop($"bag:{group.Key}",
+                consolidation?.PrimaryLatitude ?? primaryOrder.Client?.Latitude,
+                consolidation?.PrimaryLongitude ?? primaryOrder.Client?.Longitude));
+        }
+
+        return stops;
+    }
+
+    private async Task<List<int>> ExpandConsolidatedOrderIdsAsync(List<int> orderIds)
+    {
+        if (orderIds.Count == 0) return new List<int>();
+
+        var consolidationIds = await _db.Orders
+            .Where(order => orderIds.Contains(order.Id) && order.OrderConsolidationId.HasValue)
+            .Select(order => order.OrderConsolidationId!.Value)
+            .Distinct()
+            .ToListAsync();
+        var memberIds = consolidationIds.Count > 0
+            ? await _db.Orders
+                .Where(order => order.OrderConsolidationId.HasValue
+                    && consolidationIds.Contains(order.OrderConsolidationId.Value))
+                .Select(order => order.Id)
+                .ToListAsync()
+            : new List<int>();
+
+        return orderIds.Concat(memberIds).Distinct().ToList();
+    }
+
+    private static string StopIdForOrder(Order order) =>
+        order.OrderConsolidationId.HasValue
+            ? $"bag:{order.OrderConsolidationId.Value}"
+            : $"order:{order.Id}";
+
     /// <summary>POST /api/routes/ai-select - Gemini elige rutas por voz</summary>
     [HttpPost("ai-select")]
     public async Task<ActionResult<AiRouteSelectionResponse>> AiSelectRoute([FromBody] AiRouteSelectionRequest request)
@@ -389,6 +536,7 @@ public class RoutesController : ControllerBase
         // 1. Traer las últimas 50 rutas con sus relaciones principales en una sola consulta
         var routes = await _db.DeliveryRoutes
             .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.OrderConsolidation)
             .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Payments)
             .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Items)
             .Include(r => r.Deliveries).ThenInclude(d => d.Order).ThenInclude(o => o!.Packages)
@@ -491,14 +639,19 @@ public class RoutesController : ControllerBase
 
         // Default: pedido regular (Order)
         var order = d.Order!;
+        var consolidation = order.OrderConsolidation;
+        var isConsolidated = consolidation != null;
+        var primaryOrder = isConsolidated && consolidation!.PrimaryOrderId == order.Id;
         return new RouteDeliveryDto(
             DeliveryId: d.Id,
             OrderId: d.OrderId,
             SortOrder: d.SortOrder,
-            ClientName: order.Client.Name,
-            ClientAddress: order.Client.Address,
-            Latitude: order.Client.Latitude,
-            Longitude: order.Client.Longitude,
+            ClientName: order.ConsolidationOwnerNameSnapshot ?? order.Client.Name,
+            ClientAddress: isConsolidated
+                ? consolidation!.PrimaryAddressSnapshot
+                : ClientDataPolicy.ResolveDeliveryAddress(order.Client.Address, order.AlternativeAddress),
+            Latitude: isConsolidated ? consolidation!.PrimaryLatitude : order.Client.Latitude,
+            Longitude: isConsolidated ? consolidation!.PrimaryLongitude : order.Client.Longitude,
             Status: d.Status.ToString(),
             Total: order.Total,
             DeliveredAt: d.DeliveredAt,
@@ -513,15 +666,19 @@ public class RoutesController : ControllerBase
                 .Select(i => new OrderItemDto(i.Id, i.ProductName, i.Quantity, i.UnitPrice, i.LineTotal)).ToList(),
             AmountPaid: order.AmountPaid,
             BalanceDue: order.BalanceDue,
-            DeliveryInstructions: order.Client.DeliveryInstructions,
+            DeliveryInstructions: isConsolidated ? consolidation!.DeliveryInstructionsSnapshot : order.Client.DeliveryInstructions,
             ArrivedAt: d.ArrivedAt,
             Packages: order.Packages.Select(p => new OrderPackageDto(p.Id, p.PackageNumber, p.QrCodeValue, p.Status.ToString(), p.CreatedAt, p.LoadedAt, p.DeliveredAt, p.ReturnedAt)).ToList(),
-            AlternativeAddress: order.AlternativeAddress,
+            AlternativeAddress: isConsolidated ? null : order.AlternativeAddress,
             ClientTag: order.Client.Tag.ToString(),
             ClientType: order.Client.Type,
             Kind: "Order",
             ScheduledDeliveryDate: order.ScheduledDeliveryDate,
-            DeliveryTime: order.DeliveryTime
+            DeliveryTime: order.DeliveryTime,
+            ConsolidationId: order.OrderConsolidationId,
+            ConsolidationOwnerName: order.ConsolidationOwnerNameSnapshot ?? order.Client.Name,
+            ConsolidationPrimaryClientName: consolidation?.PrimaryClientNameSnapshot,
+            IsConsolidationPrimaryOrder: primaryOrder
         );
     }
 
@@ -658,15 +815,23 @@ public class RoutesController : ControllerBase
     {
         var route = await _db.DeliveryRoutes
             .Include(r => r.Deliveries)
+                .ThenInclude(d => d.Order)
+                    .ThenInclude(o => o!.OrderConsolidation)
             .FirstOrDefaultAsync(r => r.Id == id);
 
         if (route == null) return NotFound("Ruta no encontrada");
 
+        var currentDeliveryIds = route.Deliveries.Select(delivery => delivery.Id).ToHashSet();
+        if (deliveryIdsInOrder.Distinct().Count() != currentDeliveryIds.Count
+            || deliveryIdsInOrder.Any(deliveryId => !currentDeliveryIds.Contains(deliveryId)))
+            return BadRequest("La lista de entregas no coincide con las paradas de la ruta.");
+
+        var normalizedOrder = KeepConsolidatedDeliveriesTogether(route.Deliveries, deliveryIdsInOrder);
+
         int newOrder = 1;
-        foreach (var deliveryId in deliveryIdsInOrder)
+        foreach (var delivery in normalizedOrder)
         {
-            var delivery = route.Deliveries.FirstOrDefault(d => d.Id == deliveryId);
-            if (delivery != null) delivery.SortOrder = newOrder++;
+            delivery.SortOrder = newOrder++;
         }
 
         await _db.SaveChangesAsync();
@@ -709,41 +874,54 @@ public class RoutesController : ControllerBase
         var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
         if (route == null) return NotFound("Ruta no encontrada");
 
-        var order = await _db.Orders
+        var selectedOrder = await _db.Orders
             .Include(o => o.Client)
             .Include(o => o.Packages)
             .FirstOrDefaultAsync(o => o.Id == orderId);
-        if (order == null) return NotFound("Orden no encontrada");
+        if (selectedOrder == null) return NotFound("Orden no encontrada");
 
-        if (order.OrderConsolidationId != null)
-            return BadRequest($"El pedido forma parte de la bolsa #{order.OrderConsolidationId}. Agrega la bolsa completa a una ruta.");
-        if (order.DeliveryRouteId != null) return BadRequest("La orden ya tiene una ruta asignada.");
-        if (order.Status is Models.OrderStatus.Delivered or Models.OrderStatus.Canceled)
-            return BadRequest("La orden no se puede agregar a una ruta.");
-        if (order.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded))
-            return BadRequest("No se puede agregar: sus bolsas siguen cargadas en una ruta anterior.");
+        var ordersToAdd = selectedOrder.OrderConsolidationId is int consolidationId
+            ? await _db.Orders
+                .Include(order => order.Client)
+                .Include(order => order.Packages)
+                .Where(order => order.OrderConsolidationId == consolidationId)
+                .OrderBy(order => order.Id)
+                .ToListAsync()
+            : new List<Order> { selectedOrder };
+
+        var unavailable = ordersToAdd.FirstOrDefault(order =>
+            order.DeliveryRouteId != null
+            || order.Status is Models.OrderStatus.Delivered or Models.OrderStatus.Canceled
+            || order.OrderType == OrderType.PickUp
+            || order.Packages.Any(package => package.Status == PackageTrackingStatus.Loaded));
+        if (unavailable != null)
+            return BadRequest($"No se puede agregar la bolsa completa: el pedido de {unavailable.Client?.Name ?? $"#{unavailable.Id}"} ya está cerrado, asignado o no es una entrega disponible.");
 
         // 🛍️ Puerta de bolsas también al agregar a una ruta existente.
-        if (!order.PackagesConfirmed)
+        var missingPackages = ordersToAdd.Where(order => !order.PackagesConfirmed).ToList();
+        if (missingPackages.Count > 0)
         {
-            var clientName = await _db.Clients.Where(c => c.Id == order.ClientId).Select(c => c.Name).FirstOrDefaultAsync();
             return BadRequest(new
             {
                 code = "PACKAGES_REQUIRED",
-                message = $"El pedido de {clientName ?? "esta clienta"} no tiene bolsas capturadas. Agrégalas antes de mandarlo a ruta 🛍️",
-                orders = new[]
+                message = $"{missingPackages.Count} pedidos de la bolsa no tienen bolsas capturadas. Agrégalas antes de mandarlos a ruta 🛍️",
+                orders = missingPackages.Select(order => new
                 {
-                    new { id = order.Id, clientName = clientName ?? $"#{order.Id}", totalPackages = order.TotalPackages }
-                }
+                    id = order.Id,
+                    clientName = order.ConsolidationOwnerNameSnapshot ?? order.Client?.Name ?? $"#{order.Id}",
+                    totalPackages = order.TotalPackages
+                }).ToList()
             });
         }
 
-        _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, route.Deliveries.Count + 1));
+        var sortOrder = route.Deliveries.Count == 0 ? 1 : route.Deliveries.Max(delivery => delivery.SortOrder) + 1;
+        foreach (var order in ordersToAdd)
+            _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, sortOrder++));
         await _db.SaveChangesAsync();
 
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
-            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"Se agregaron entregas. Nueva cuenta: {route.Deliveries.Count + 1}", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"Se agregó una parada con {ordersToAdd.Count} pedidos. La ruta ya está actualizada.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
             await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
         }
 
@@ -812,13 +990,20 @@ public class RoutesController : ControllerBase
                 .ThenInclude(d => d.Order)
                     .ThenInclude(o => o!.Client)
             .Include(r => r.Deliveries)
+                .ThenInclude(d => d.Order)
+                    .ThenInclude(o => o!.OrderConsolidation)
+            .Include(r => r.Deliveries)
                 .ThenInclude(d => d.TandaParticipant)
                     .ThenInclude(p => p!.Client)
             .FirstOrDefaultAsync(r => r.Id == routeId);
 
         if (route == null) return;
 
-        var ordersInRoute = await _db.Orders.Where(o => o.DeliveryRouteId == routeId).ToListAsync();
+        var ordersInRoute = await _db.Orders
+            .Include(order => order.Client)
+            .Include(order => order.OrderConsolidation)
+            .Where(order => order.DeliveryRouteId == routeId)
+            .ToListAsync();
 
         bool fixedAny = false;
         foreach (var order in ordersInRoute)
@@ -846,19 +1031,35 @@ public class RoutesController : ControllerBase
         var lat = startLat ?? _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
         var lng = startLng ?? _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
 
-        var deliveryById = route.Deliveries.ToDictionary(d => StopIdFor(d), d => d);
-        var stops = route.Deliveries.Select(d =>
+        var deliveryGroups = route.Deliveries.GroupBy(StopIdFor).ToList();
+        var deliveriesByStopId = deliveryGroups.ToDictionary(group => group.Key, group => group
+            .OrderBy(delivery => delivery.OrderId ?? int.MaxValue)
+            .ThenBy(delivery => delivery.Id)
+            .ToList());
+        var stops = deliveryGroups.Select(group =>
         {
-            var client = d.Kind == DeliveryKind.Tanda ? d.TandaParticipant?.Client : d.Order?.Client;
-            return new RouteStop(StopIdFor(d), client?.Latitude, client?.Longitude);
+            var first = group.First();
+            if (first.Kind == DeliveryKind.Tanda)
+                return new RouteStop(group.Key, first.TandaParticipant?.Client?.Latitude, first.TandaParticipant?.Client?.Longitude);
+
+            var groupDeliveries = group.ToList();
+            var consolidation = groupDeliveries.Select(delivery => delivery.Order?.OrderConsolidation).FirstOrDefault(value => value != null);
+            var primaryOrder = groupDeliveries.Select(delivery => delivery.Order)
+                .FirstOrDefault(order => order?.Id == consolidation?.PrimaryOrderId);
+            var primaryClient = primaryOrder?.Client ?? first.Order?.Client;
+            return new RouteStop(group.Key,
+                consolidation?.PrimaryLatitude ?? primaryClient?.Latitude,
+                consolidation?.PrimaryLongitude ?? primaryClient?.Longitude);
         }).ToList();
 
         var optimized = await _optimizer.OptimizeAsync(stops, lat, lng);
 
-        for (int i = 0; i < optimized.OrderedStopIds.Count; i++)
+        var nextSortOrder = 1;
+        foreach (var stopId in optimized.OrderedStopIds)
         {
-            if (deliveryById.TryGetValue(optimized.OrderedStopIds[i], out var d))
-                d.SortOrder = i + 1;
+            if (!deliveriesByStopId.TryGetValue(stopId, out var groupDeliveries)) continue;
+            foreach (var delivery in groupDeliveries)
+                delivery.SortOrder = nextSortOrder++;
         }
 
         await _db.SaveChangesAsync();
@@ -866,29 +1067,105 @@ public class RoutesController : ControllerBase
     }
 
     private static string StopIdFor(Delivery d) =>
-        d.Kind == DeliveryKind.Tanda ? $"tanda:{d.TandaParticipantId}" : $"order:{d.OrderId}";
+        d.Kind == DeliveryKind.Tanda
+            ? $"tanda:{d.TandaParticipantId}"
+            : d.Order?.OrderConsolidationId is int consolidationId
+                ? $"bag:{consolidationId}"
+                : $"order:{d.OrderId}";
+
+    private static List<RouteStop> BuildDeliveryRouteStops(IEnumerable<Delivery> deliveries)
+    {
+        return deliveries.GroupBy(StopIdFor).Select(group =>
+        {
+            var first = group.First();
+            if (first.Kind == DeliveryKind.Tanda)
+                return new RouteStop(group.Key,
+                    first.TandaParticipant?.Client?.Latitude,
+                    first.TandaParticipant?.Client?.Longitude);
+
+            var groupDeliveries = group.ToList();
+            var consolidation = groupDeliveries.Select(delivery => delivery.Order?.OrderConsolidation)
+                .FirstOrDefault(value => value != null);
+            var primaryOrder = groupDeliveries.Select(delivery => delivery.Order)
+                .FirstOrDefault(order => order?.Id == consolidation?.PrimaryOrderId);
+            var primaryClient = primaryOrder?.Client ?? first.Order?.Client;
+            return new RouteStop(group.Key,
+                consolidation?.PrimaryLatitude ?? primaryClient?.Latitude,
+                consolidation?.PrimaryLongitude ?? primaryClient?.Longitude);
+        }).ToList();
+    }
+
+    private static List<Delivery> KeepConsolidatedDeliveriesTogether(
+        IEnumerable<Delivery> source,
+        IReadOnlyList<int> requestedOrder)
+    {
+        var deliveries = source.ToList();
+        var byId = deliveries.ToDictionary(delivery => delivery.Id);
+        var includedDeliveryIds = new HashSet<int>();
+        var includedConsolidationIds = new HashSet<int>();
+        var ordered = new List<Delivery>(deliveries.Count);
+
+        foreach (var deliveryId in requestedOrder)
+        {
+            if (!byId.TryGetValue(deliveryId, out var delivery) || includedDeliveryIds.Contains(delivery.Id)) continue;
+            var consolidationId = delivery.Order?.OrderConsolidationId;
+            if (consolidationId is not int groupId)
+            {
+                if (includedDeliveryIds.Add(delivery.Id)) ordered.Add(delivery);
+                continue;
+            }
+
+            if (!includedConsolidationIds.Add(groupId)) continue;
+            foreach (var memberDelivery in deliveries
+                .Where(candidate => candidate.Order?.OrderConsolidationId == groupId)
+                .OrderBy(candidate => candidate.SortOrder)
+                .ThenBy(candidate => candidate.Id))
+            {
+                if (includedDeliveryIds.Add(memberDelivery.Id)) ordered.Add(memberDelivery);
+            }
+        }
+
+        return ordered;
+    }
 
     [HttpDelete("{id}/remove-order/{orderId}")]
     public async Task<IActionResult> RemoveOrderFromRoute(int id, int orderId)
     {
-        var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries).ThenInclude(delivery => delivery.Order)
+            .FirstOrDefaultAsync(r => r.Id == id);
         if (route == null) return NotFound("Ruta no encontrada");
 
-        var delivery = await _db.Deliveries.FirstOrDefaultAsync(d => d.DeliveryRouteId == id && d.OrderId == orderId);
+        var delivery = route.Deliveries.FirstOrDefault(d => d.OrderId == orderId);
         if (delivery == null) return NotFound("Entrega no encontrada en esta ruta.");
-        if (delivery.Status is DeliveryStatus.Delivered or DeliveryStatus.NotDelivered)
-            return BadRequest("No se puede eliminar un intento cerrado porque conserva el historial de entrega.");
 
-        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
-        if (order != null) { order.DeliveryRouteId = null; order.Status = Models.OrderStatus.Pending; }
+        var consolidationId = delivery.Order?.OrderConsolidationId;
+        var deliveriesToRemove = consolidationId.HasValue
+            ? route.Deliveries.Where(candidate => candidate.Order?.OrderConsolidationId == consolidationId).ToList()
+            : new List<Delivery> { delivery };
+        if (deliveriesToRemove.Any(candidate => candidate.Status is DeliveryStatus.Delivered or DeliveryStatus.NotDelivered))
+            return BadRequest(consolidationId.HasValue
+                ? "No se puede quitar la bolsa completa porque uno de sus pedidos ya tiene un intento cerrado."
+                : "No se puede eliminar un intento cerrado porque conserva el historial de entrega.");
 
-        _db.Deliveries.Remove(delivery);
+        foreach (var orderIdToRemove in deliveriesToRemove.Where(candidate => candidate.OrderId.HasValue).Select(candidate => candidate.OrderId!.Value))
+        {
+            var order = await _db.Orders.FirstOrDefaultAsync(candidate => candidate.Id == orderIdToRemove);
+            if (order != null)
+            {
+                order.DeliveryRouteId = null;
+                if (order.Status == Models.OrderStatus.InRoute) order.Status = Models.OrderStatus.Pending;
+            }
+        }
+
+        _db.Deliveries.RemoveRange(deliveriesToRemove);
         await _db.SaveChangesAsync();
 
         await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
-        await _push.BroadcastToAllDriversAsync("📦 Pedido eliminado de ruta", $"Se eliminó un pedido de {route.Name}.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+        var removedDescription = consolidationId.HasValue ? $"la bolsa #{consolidationId}" : "un pedido";
+        await _push.BroadcastToAllDriversAsync("📦 Entrega eliminada de ruta", $"Se eliminó {removedDescription} de {route.Name}.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
 
-        return Ok(new { Message = "Orden eliminada de la ruta correctamente" });
+        return Ok(new { Message = consolidationId.HasValue ? $"Bolsa #{consolidationId} eliminada de la ruta correctamente" : "Orden eliminada de la ruta correctamente" });
     }
 
     [HttpDelete("{id}/remove-tanda/{tandaParticipantId}")]
@@ -975,6 +1252,8 @@ public class RoutesController : ControllerBase
     {
         var route = await _db.DeliveryRoutes
             .Include(r => r.Deliveries)
+                .ThenInclude(delivery => delivery.Order)
+                    .ThenInclude(order => order!.OrderConsolidation)
             .FirstOrDefaultAsync(r => r.Id == id);
 
         if (route == null) return NotFound("Ruta no encontrada.");
@@ -991,32 +1270,48 @@ public class RoutesController : ControllerBase
             .Select(d => d.OrderId!.Value)
             .ToHashSet();
 
-        var ordersInDb = distinctOrderIds.Count > 0
+        var expandedOrderIds = await ExpandConsolidatedOrderIdsAsync(distinctOrderIds);
+        var ordersInDb = expandedOrderIds.Count > 0
             ? await _db.Orders.Include(o => o.Client)
                 .Include(o => o.Packages)
-                .Where(o => distinctOrderIds.Contains(o.Id))
+                .Include(o => o.OrderConsolidation)
+                .Where(o => expandedOrderIds.Contains(o.Id))
                 .ToListAsync()
             : new List<Order>();
 
         foreach (var oid in distinctOrderIds.Where(i => ordersInDb.All(o => o.Id != i)))
             skipped.Add(new SkippedStopDto("Order", oid.ToString(), $"Pedido #{oid}", "No existe"));
 
-        var validOrders = new List<Order>();
+        var orderReasons = new Dictionary<int, string>();
         foreach (var o in ordersInDb)
         {
             string? reason = null;
             if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
             else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
-            else if (o.OrderConsolidationId != null) reason = $"Forma parte de la bolsa #{o.OrderConsolidationId}; agrega la bolsa completa a una ruta";
             else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
             else if (failedOrderIdsInThisRoute.Contains(o.Id)) reason = "Tuvo un intento fallido en esta ruta; reintentalo en una ruta nueva";
             else if (o.DeliveryRouteId != null && o.DeliveryRouteId != id) reason = "En otra ruta";
             else if (o.DeliveryRouteId != id && o.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded)) reason = "Sus bolsas siguen cargadas en una ruta anterior";
-            if (reason != null)
-                skipped.Add(new SkippedStopDto("Order", o.Id.ToString(), o.Client?.Name ?? $"#{o.Id}", reason));
-            else
-                validOrders.Add(o);
+            if (reason != null) orderReasons[o.Id] = reason;
         }
+
+        foreach (var group in ordersInDb.Where(order => order.OrderConsolidationId.HasValue)
+            .GroupBy(order => order.OrderConsolidationId!.Value))
+        {
+            var blockedMember = group.FirstOrDefault(order => orderReasons.ContainsKey(order.Id));
+            if (blockedMember == null) continue;
+            var groupReason = $"La bolsa #{group.Key} debe viajar completa; el pedido de {blockedMember.Client?.Name ?? $"#{blockedMember.Id}"} no puede agregarse ({orderReasons[blockedMember.Id]})";
+            foreach (var member in group)
+            {
+                if (!orderReasons.ContainsKey(member.Id)) orderReasons[member.Id] = groupReason;
+            }
+        }
+
+        foreach (var order in ordersInDb.Where(order => orderReasons.ContainsKey(order.Id)))
+            skipped.Add(new SkippedStopDto("Order", order.Id.ToString(),
+                order.ConsolidationOwnerNameSnapshot ?? order.Client?.Name ?? $"#{order.Id}", orderReasons[order.Id]));
+
+        var validOrders = ordersInDb.Where(order => !orderReasons.ContainsKey(order.Id)).ToList();
 
         var tandasInDb = distinctTandaIds.Count > 0
             ? await _db.TandaParticipants
@@ -1053,6 +1348,7 @@ public class RoutesController : ControllerBase
 
         var existingDeliveries = await _db.Deliveries
             .Include(d => d.Order)
+                .ThenInclude(order => order!.OrderConsolidation)
             .Where(d => d.DeliveryRouteId == id)
             .ToListAsync();
 
@@ -1065,6 +1361,18 @@ public class RoutesController : ControllerBase
         {
             var newOrderIdSet = new HashSet<int>(validOrders.Select(o => o.Id));
             var newTandaIdSet = new HashSet<Guid>(validTandas.Select(p => p.Id));
+            var consolidationsWithClosedAttempts = route.Deliveries
+                .Where(delivery => delivery.Status is DeliveryStatus.Delivered or DeliveryStatus.NotDelivered)
+                .Select(delivery => delivery.Order?.OrderConsolidationId)
+                .Where(consolidationId => consolidationId.HasValue)
+                .Select(consolidationId => consolidationId!.Value)
+                .ToHashSet();
+            foreach (var delivery in currentPendingDeliveries.Where(delivery =>
+                delivery.Order?.OrderConsolidationId is int consolidationId
+                && consolidationsWithClosedAttempts.Contains(consolidationId)))
+            {
+                if (delivery.OrderId.HasValue) newOrderIdSet.Add(delivery.OrderId.Value);
+            }
 
             foreach (var d in currentPendingDeliveries)
             {
@@ -1100,15 +1408,32 @@ public class RoutesController : ControllerBase
 
             var allCurrent = await _db.Deliveries
                 .Include(d => d.Order).ThenInclude(o => o!.Client)
+                .Include(d => d.Order).ThenInclude(o => o!.OrderConsolidation)
                 .Include(d => d.TandaParticipant).ThenInclude(p => p!.Client)
                 .Where(d => d.DeliveryRouteId == id)
                 .ToListAsync();
 
-            var locked = allCurrent
+            var closedDeliveries = allCurrent
                 .Where(d => d.Status == DeliveryStatus.Delivered || d.Status == DeliveryStatus.NotDelivered)
                 .OrderBy(d => d.SortOrder).ToList();
-            var pendingToOptimize = allCurrent
+            var pendingDeliveries = allCurrent
                 .Where(d => d.Status != DeliveryStatus.Delivered && d.Status != DeliveryStatus.NotDelivered)
+                .ToList();
+            var closedConsolidationIds = closedDeliveries
+                .Select(delivery => delivery.Order?.OrderConsolidationId)
+                .Where(consolidationId => consolidationId.HasValue)
+                .Select(consolidationId => consolidationId!.Value)
+                .ToHashSet();
+            var pendingBagMembersAtClosedStops = pendingDeliveries
+                .Where(delivery => delivery.Order?.OrderConsolidationId is int consolidationId
+                    && closedConsolidationIds.Contains(consolidationId))
+                .ToList();
+            var fixedDeliveries = closedDeliveries.Concat(pendingBagMembersAtClosedStops).ToList();
+            var locked = KeepConsolidatedDeliveriesTogether(
+                fixedDeliveries,
+                fixedDeliveries.OrderBy(delivery => delivery.SortOrder).Select(delivery => delivery.Id).ToList());
+            var pendingToOptimize = pendingDeliveries
+                .Except(pendingBagMembersAtClosedStops)
                 .ToList();
 
             for (int i = 0; i < locked.Count; i++) locked[i].SortOrder = i + 1;
@@ -1118,15 +1443,19 @@ public class RoutesController : ControllerBase
             {
                 var centerLat = _config.GetValue<double>("Cami:RouteCenterLat", 27.4861);
                 var centerLng = _config.GetValue<double>("Cami:RouteCenterLng", -99.5069);
-                var stops = pendingToOptimize.Select(d =>
-                {
-                    var client = d.Kind == DeliveryKind.Tanda ? d.TandaParticipant?.Client : d.Order?.Client;
-                    return new RouteStop(StopIdFor(d), client?.Latitude, client?.Longitude);
-                }).ToList();
+                var stops = BuildDeliveryRouteStops(pendingToOptimize);
                 var optimized = await _optimizer.OptimizeAsync(stops, centerLat, centerLng);
-                var byStopId = pendingToOptimize.ToDictionary(StopIdFor, d => d);
-                for (int i = 0; i < optimized.OrderedStopIds.Count; i++)
-                    if (byStopId.TryGetValue(optimized.OrderedStopIds[i], out var d)) d.SortOrder = offsetForPending + i;
+                var byStopId = pendingToOptimize.GroupBy(StopIdFor)
+                    .ToDictionary(group => group.Key, group => group
+                        .OrderBy(delivery => delivery.OrderId ?? int.MaxValue)
+                        .ThenBy(delivery => delivery.Id)
+                        .ToList());
+                var nextSortOrder = offsetForPending;
+                foreach (var stopId in optimized.OrderedStopIds)
+                {
+                    if (!byStopId.TryGetValue(stopId, out var group)) continue;
+                    foreach (var delivery in group) delivery.SortOrder = nextSortOrder++;
+                }
             }
 
             await _db.SaveChangesAsync();
@@ -1160,6 +1489,7 @@ public class RoutesController : ControllerBase
 
         var deliveries = await _db.Deliveries
             .Include(d => d.Order).ThenInclude(o => o!.Client)
+            .Include(d => d.Order).ThenInclude(o => o!.OrderConsolidation)
             .Include(d => d.Order).ThenInclude(o => o!.Payments)
             .Include(d => d.Order).ThenInclude(o => o!.Items)
             .Include(d => d.Order).ThenInclude(o => o!.Packages)

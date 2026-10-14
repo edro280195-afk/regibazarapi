@@ -466,7 +466,20 @@ public record PreviewStopDto(
     decimal Total,
     bool HasCoords,
     string? TandaName,
-    int? TandaWeek
+    int? TandaWeek,
+    int? ConsolidationId = null,
+    List<int>? MemberOrderIds = null,
+    List<ConsolidationOwnerSummaryDto>? Owners = null,
+    decimal? AggregateTotal = null,
+    decimal? AggregateBalanceDue = null
+);
+
+public record ConsolidationOwnerSummaryDto(
+    int OwnerClientId,
+    string OwnerName,
+    List<int> OrderIds,
+    decimal Total,
+    decimal BalanceDue
 );
 
 public record PreviewRouteResponse(
@@ -557,7 +570,11 @@ public record RouteDeliveryDto(
     int? TandaTotalWeeks = null,
     string? TandaVariant = null,
     DateTime? ScheduledDeliveryDate = null,
-    string? DeliveryTime = null
+    string? DeliveryTime = null,
+    int? ConsolidationId = null,
+    string? ConsolidationOwnerName = null,
+    string? ConsolidationPrimaryClientName = null,
+    bool IsConsolidationPrimaryOrder = false
 )
 {
     public int Id => DeliveryId;
