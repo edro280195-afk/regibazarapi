@@ -1271,6 +1271,13 @@ namespace EntregasApi.Migrations
                     b.Property<int>("ClientId")
                         .HasColumnType("integer");
 
+                    b.Property<int?>("ConsolidationOwnerClientId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ConsolidationOwnerNameSnapshot")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1297,6 +1304,9 @@ namespace EntregasApi.Migrations
 
                     b.Property<DateTime?>("NotifiedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("OrderConsolidationId")
+                        .HasColumnType("integer");
 
                     b.Property<int>("OrderType")
                         .HasColumnType("integer");
@@ -1352,9 +1362,55 @@ namespace EntregasApi.Migrations
 
                     b.HasIndex("DeliveryRouteId");
 
+                    b.HasIndex("OrderConsolidationId");
+
                     b.HasIndex("SalesPeriodId");
 
                     b.ToTable("Orders");
+                });
+
+            modelBuilder.Entity("EntregasApi.Models.OrderConsolidation", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DeliveryInstructionsSnapshot")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("PrimaryAddressSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("PrimaryClientId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PrimaryClientNameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<double?>("PrimaryLatitude")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("PrimaryLongitude")
+                        .HasColumnType("double precision");
+
+                    b.Property<int>("PrimaryOrderId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.ToTable("OrderConsolidations");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.OrderItem", b =>
@@ -2611,6 +2667,11 @@ namespace EntregasApi.Migrations
                         .WithMany("Orders")
                         .HasForeignKey("DeliveryRouteId");
 
+                    b.HasOne("EntregasApi.Models.OrderConsolidation", "OrderConsolidation")
+                        .WithMany("Orders")
+                        .HasForeignKey("OrderConsolidationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("EntregasApi.Models.SalesPeriod", "SalesPeriod")
                         .WithMany("Orders")
                         .HasForeignKey("SalesPeriodId")
@@ -2619,6 +2680,8 @@ namespace EntregasApi.Migrations
                     b.Navigation("Client");
 
                     b.Navigation("DeliveryRoute");
+
+                    b.Navigation("OrderConsolidation");
 
                     b.Navigation("SalesPeriod");
                 });
@@ -2895,6 +2958,11 @@ namespace EntregasApi.Migrations
                     b.Navigation("Packages");
 
                     b.Navigation("Payments");
+                });
+
+            modelBuilder.Entity("EntregasApi.Models.OrderConsolidation", b =>
+                {
+                    b.Navigation("Orders");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.Raffle", b =>

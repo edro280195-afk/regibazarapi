@@ -304,6 +304,7 @@ public class RoutesController : ControllerBase
             string? reason = null;
             if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
             else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
+            else if (o.OrderConsolidationId != null) reason = $"Forma parte de la bolsa #{o.OrderConsolidationId}; agrega la bolsa completa a una ruta";
             else if (o.DeliveryRouteId != null) reason = "Ya en otra ruta";
             else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
             else if (o.Packages.Any(p => p.Status == PackageTrackingStatus.Loaded)) reason = "Sus bolsas siguen cargadas en una ruta anterior";
@@ -712,6 +713,8 @@ public class RoutesController : ControllerBase
             .FirstOrDefaultAsync(o => o.Id == orderId);
         if (order == null) return NotFound("Orden no encontrada");
 
+        if (order.OrderConsolidationId != null)
+            return BadRequest($"El pedido forma parte de la bolsa #{order.OrderConsolidationId}. Agrega la bolsa completa a una ruta.");
         if (order.DeliveryRouteId != null) return BadRequest("La orden ya tiene una ruta asignada.");
         if (order.Status is Models.OrderStatus.Delivered or Models.OrderStatus.Canceled)
             return BadRequest("La orden no se puede agregar a una ruta.");
@@ -1002,6 +1005,7 @@ public class RoutesController : ControllerBase
             string? reason = null;
             if (o.Status == Models.OrderStatus.Canceled) reason = "Cancelado";
             else if (o.Status == Models.OrderStatus.Delivered) reason = "Ya entregado";
+            else if (o.OrderConsolidationId != null) reason = $"Forma parte de la bolsa #{o.OrderConsolidationId}; agrega la bolsa completa a una ruta";
             else if (o.OrderType == OrderType.PickUp) reason = "Es pickup, no delivery";
             else if (failedOrderIdsInThisRoute.Contains(o.Id)) reason = "Tuvo un intento fallido en esta ruta; reintentalo en una ruta nueva";
             else if (o.DeliveryRouteId != null && o.DeliveryRouteId != id) reason = "En otra ruta";

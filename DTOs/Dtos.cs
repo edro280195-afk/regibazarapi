@@ -291,7 +291,39 @@ public record OrderSummaryDto(
     double? ClientLongitude = null,
     // Bolsas / logística
     int? TotalPackages = null,
-    bool PackagesConfirmed = false
+    bool PackagesConfirmed = false,
+    // Pedido consolidado (sin cambiar la propiedad de sus artículos ni sus pagos)
+    int? OrderConsolidationId = null,
+    int? ConsolidationOwnerClientId = null,
+    string? ConsolidationOwnerNameSnapshot = null
+);
+
+public record CreateOrderConsolidationRequest(
+    [Required, MinLength(2), MaxLength(100)] List<int> OrderIds,
+    [Range(1, int.MaxValue)] int PrimaryOrderId
+);
+
+public record OrderConsolidationMemberDto(
+    int OrderId,
+    int OwnerClientId,
+    string OwnerNameSnapshot,
+    OrderSummaryDto Order
+);
+
+public record OrderConsolidationDto(
+    int Id,
+    int PrimaryOrderId,
+    int PrimaryClientId,
+    string PrimaryClientName,
+    string PrimaryAddress,
+    double? PrimaryLatitude,
+    double? PrimaryLongitude,
+    string? DeliveryInstructions,
+    DateTime CreatedAtUtc,
+    List<OrderConsolidationMemberDto> Orders,
+    decimal Total,
+    decimal AmountPaid,
+    decimal BalanceDue
 );
 
 

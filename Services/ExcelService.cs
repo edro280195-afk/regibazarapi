@@ -309,7 +309,10 @@ public class ExcelService : IExcelService
             ClientLatitude: client?.Latitude,
             ClientLongitude: client?.Longitude,
             TotalPackages: order.TotalPackages,
-            PackagesConfirmed: order.PackagesConfirmed
+            PackagesConfirmed: order.PackagesConfirmed,
+            OrderConsolidationId: order.OrderConsolidationId,
+            ConsolidationOwnerClientId: order.ConsolidationOwnerClientId,
+            ConsolidationOwnerNameSnapshot: order.ConsolidationOwnerNameSnapshot
         );
     }
 }

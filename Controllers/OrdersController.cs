@@ -629,6 +629,8 @@ public class OrdersController : ControllerBase
     {
         var order = await _db.Orders.FindAsync(id);
         if (order == null) return NotFound();
+        if (order.OrderConsolidationId != null)
+            return Conflict($"El pedido forma parte de la bolsa #{order.OrderConsolidationId}. No se puede borrar sin perder su historial.");
 
         // Usamos 'Delivery' (tu modelo) en lugar de 'RouteDelivery'
         var delivery = order.DeliveryRouteId.HasValue

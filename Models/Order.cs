@@ -19,6 +19,14 @@ public class Order
     [ForeignKey(nameof(DeliveryRouteId))]
     public DeliveryRoute? DeliveryRoute { get; set; }
 
+    /// <summary>Grupo de bolsa al que pertenece este pedido, conservando su clienta e historial originales.</summary>
+    public int? OrderConsolidationId { get; set; }
+    [ForeignKey(nameof(OrderConsolidationId))]
+    public OrderConsolidation? OrderConsolidation { get; set; }
+    public int? ConsolidationOwnerClientId { get; set; }
+    [MaxLength(200)]
+    public string? ConsolidationOwnerNameSnapshot { get; set; }
+
     public int? SalesPeriodId { get; set; }
     [ForeignKey(nameof(SalesPeriodId))]
     public virtual SalesPeriod? SalesPeriod { get; set; }

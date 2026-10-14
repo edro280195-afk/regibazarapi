@@ -12,6 +12,7 @@ public class AppDbContext : DbContext
     public DbSet<Client> Clients => Set<Client>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<OrderConsolidation> OrderConsolidations => Set<OrderConsolidation>();
     public DbSet<DeliveryRoute> DeliveryRoutes => Set<DeliveryRoute>();
     public DbSet<Delivery> Deliveries => Set<Delivery>();
     public DbSet<DeliveryEvidence> DeliveryEvidences => Set<DeliveryEvidence>();
@@ -80,6 +81,21 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Order>()
             .HasIndex(o => o.AccessToken)
             .IsUnique();
+
+        modelBuilder.Entity<OrderConsolidation>(entity =>
+        {
+            entity.Property(consolidation => consolidation.PrimaryClientNameSnapshot).IsRequired().HasMaxLength(200);
+            entity.Property(consolidation => consolidation.PrimaryAddressSnapshot).IsRequired().HasMaxLength(500);
+            entity.Property(consolidation => consolidation.DeliveryInstructionsSnapshot).HasMaxLength(1000);
+            entity.HasIndex(consolidation => consolidation.CreatedAtUtc);
+            entity.HasMany(consolidation => consolidation.Orders)
+                .WithOne(order => order.OrderConsolidation)
+                .HasForeignKey(order => order.OrderConsolidationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<Order>()
+            .HasIndex(order => order.OrderConsolidationId);
 
         modelBuilder.Entity<DeliveryRoute>()
             .HasIndex(r => r.DriverToken)
