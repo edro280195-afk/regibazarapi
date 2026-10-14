@@ -869,10 +869,18 @@ public class RoutesController : ControllerBase
     // ═══════════════════════════════════════════
 
     [HttpPost("{id}/add-order")]
-    public async Task<IActionResult> AddOrderToRoute(int id, [FromBody] int orderId, [FromQuery] double? lat = null, [FromQuery] double? lng = null)
+    public async Task<IActionResult> AddOrderToRoute(
+        int id,
+        [FromBody] int orderId,
+        [FromQuery] int? afterDeliveryId = null)
     {
-        var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries)
+                .ThenInclude(delivery => delivery.Order)
+            .FirstOrDefaultAsync(r => r.Id == id);
         if (route == null) return NotFound("Ruta no encontrada");
+        if (route.Status is RouteStatus.Completed or RouteStatus.Canceled)
+            return BadRequest("No se pueden agregar entregas a una ruta finalizada o cancelada.");
 
         var selectedOrder = await _db.Orders
             .Include(o => o.Client)
@@ -914,28 +922,52 @@ public class RoutesController : ControllerBase
             });
         }
 
-        var sortOrder = route.Deliveries.Count == 0 ? 1 : route.Deliveries.Max(delivery => delivery.SortOrder) + 1;
-        foreach (var order in ordersToAdd)
-            _db.Deliveries.Add(DeliveryRetryPolicy.CreateForRoute(order, route, sortOrder++));
+        var newDeliveries = ordersToAdd
+            .Select(order => DeliveryRetryPolicy.CreateForRoute(order, route, 0))
+            .ToList();
+        var insertionError = InsertDeliveriesAtPosition(route, afterDeliveryId, newDeliveries);
+        if (insertionError != null) return BadRequest(insertionError);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        _db.Deliveries.AddRange(newDeliveries);
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
-            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"Se agregó una parada con {ordersToAdd.Count} pedidos. La ruta ya está actualizada.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
-            await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+            try
+            {
+                await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada", $"Se agregó una parada con {ordersToAdd.Count} pedidos en la posición elegida. El orden de las demás paradas se conservó.", new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "La entrega se insertó en la ruta {RouteId}, pero no se pudo notificar al chofer.", route.Id);
+            }
         }
 
-        await OptimizeRouteInternal(id, lat, lng);
-
-        return Ok(new { Message = "Orden agregada y ruta optimizada correctamente" });
+        return Ok(new
+        {
+            Message = "Orden agregada en la posición elegida; el resto de la ruta conservó su orden.",
+            InsertedDeliveryIds = newDeliveries.Select(delivery => delivery.Id).ToList(),
+            LastDeliveryId = newDeliveries[^1].Id
+        });
     }
 
     /// <summary>POST /api/routes/{id}/add-tanda - Añade un TandaParticipant a la ruta como entrega.</summary>
     [HttpPost("{id}/add-tanda")]
-    public async Task<IActionResult> AddTandaParticipantToRoute(int id, [FromBody] Guid tandaParticipantId, [FromQuery] double? lat = null, [FromQuery] double? lng = null)
+    public async Task<IActionResult> AddTandaParticipantToRoute(
+        int id,
+        [FromBody] Guid tandaParticipantId,
+        [FromQuery] int? afterDeliveryId = null)
     {
-        var route = await _db.DeliveryRoutes.Include(r => r.Deliveries).FirstOrDefaultAsync(r => r.Id == id);
+        var route = await _db.DeliveryRoutes
+            .Include(r => r.Deliveries)
+                .ThenInclude(delivery => delivery.Order)
+            .FirstOrDefaultAsync(r => r.Id == id);
         if (route == null) return NotFound("Ruta no encontrada");
+        if (route.Status is RouteStatus.Completed or RouteStatus.Canceled)
+            return BadRequest("No se pueden agregar entregas a una ruta finalizada o cancelada.");
 
         var participant = await _db.TandaParticipants
             .Include(p => p.Client)
@@ -954,23 +986,76 @@ public class RoutesController : ControllerBase
             TandaParticipantId = tandaParticipantId,
             Kind = DeliveryKind.Tanda,
             DeliveryRouteId = id,
-            SortOrder = route.Deliveries.Count + 1,
+            SortOrder = 0,
             Status = DeliveryStatus.Pending
         };
+        var insertionError = InsertDeliveriesAtPosition(route, afterDeliveryId, new[] { delivery });
+        if (insertionError != null) return BadRequest(insertionError);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync();
         _db.Deliveries.Add(delivery);
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         if (!string.IsNullOrEmpty(route.DriverToken))
         {
-            await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada",
-                $"Se agregó una tanda. Nueva cuenta: {route.Deliveries.Count + 1}",
-                new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
-            await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+            try
+            {
+                await _push.NotifyDriverFcmAsync(route.DriverToken, route.Name ?? "Ruta actualizada",
+                    "Se agregó una tanda en la posición elegida. El orden de las demás paradas se conservó.",
+                    new Dictionary<string, string> { { "action", "REFRESH_ROUTE" } });
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("RouteUpdated", new { id = route.Id });
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "La tanda se insertó en la ruta {RouteId}, pero no se pudo notificar al chofer.", route.Id);
+            }
         }
 
-        await OptimizeRouteInternal(id, lat, lng);
+        return Ok(new
+        {
+            Message = "Tanda agregada en la posición elegida; el resto de la ruta conservó su orden.",
+            InsertedDeliveryIds = new[] { delivery.Id },
+            LastDeliveryId = delivery.Id
+        });
+    }
 
-        return Ok(new { Message = "Tanda agregada y ruta optimizada correctamente" });
+    private string? InsertDeliveriesAtPosition(
+        DeliveryRoute route,
+        int? afterDeliveryId,
+        IReadOnlyList<Delivery> deliveriesToInsert)
+    {
+        var ordered = route.Deliveries
+            .Where(delivery => delivery.Id > 0)
+            .OrderBy(delivery => delivery.SortOrder)
+            .ThenBy(delivery => delivery.Id)
+            .ToList();
+
+        int insertionIndex;
+        if (afterDeliveryId is null)
+        {
+            // Compatibilidad con clientes anteriores: sin referencia significa agregar al final.
+            insertionIndex = ordered.Count;
+        }
+        else if (afterDeliveryId == 0)
+        {
+            insertionIndex = 0;
+        }
+        else
+        {
+            var anchor = ordered.FirstOrDefault(delivery => delivery.Id == afterDeliveryId.Value);
+            if (anchor == null)
+                return "La parada elegida ya no pertenece a esta ruta. Actualiza la ruta y vuelve a intentarlo.";
+
+            var anchorStopId = StopIdFor(anchor);
+            insertionIndex = ordered.FindLastIndex(delivery => StopIdFor(delivery) == anchorStopId) + 1;
+        }
+
+        ordered.InsertRange(insertionIndex, deliveriesToInsert);
+        for (var index = 0; index < ordered.Count; index++)
+            ordered[index].SortOrder = index + 1;
+
+        return null;
     }
 
     [HttpPost("{id}/optimize")]
