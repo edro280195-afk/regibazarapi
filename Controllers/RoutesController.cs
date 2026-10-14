@@ -872,7 +872,7 @@ public class RoutesController : ControllerBase
     public async Task<IActionResult> AddOrderToRoute(
         int id,
         [FromBody] int orderId,
-        [FromQuery] int? afterDeliveryId = null)
+        [FromQuery] int afterDeliveryId)
     {
         var route = await _db.DeliveryRoutes
             .Include(r => r.Deliveries)
@@ -959,7 +959,7 @@ public class RoutesController : ControllerBase
     public async Task<IActionResult> AddTandaParticipantToRoute(
         int id,
         [FromBody] Guid tandaParticipantId,
-        [FromQuery] int? afterDeliveryId = null)
+        [FromQuery] int afterDeliveryId)
     {
         var route = await _db.DeliveryRoutes
             .Include(r => r.Deliveries)
@@ -1022,7 +1022,7 @@ public class RoutesController : ControllerBase
 
     private string? InsertDeliveriesAtPosition(
         DeliveryRoute route,
-        int? afterDeliveryId,
+        int afterDeliveryId,
         IReadOnlyList<Delivery> deliveriesToInsert)
     {
         var ordered = route.Deliveries
@@ -1032,10 +1032,9 @@ public class RoutesController : ControllerBase
             .ToList();
 
         int insertionIndex;
-        if (afterDeliveryId is null)
+        if (afterDeliveryId < 0)
         {
-            // Compatibilidad con clientes anteriores: sin referencia significa agregar al final.
-            insertionIndex = ordered.Count;
+            return "Elige una posición válida para esta entrega.";
         }
         else if (afterDeliveryId == 0)
         {
@@ -1043,7 +1042,7 @@ public class RoutesController : ControllerBase
         }
         else
         {
-            var anchor = ordered.FirstOrDefault(delivery => delivery.Id == afterDeliveryId.Value);
+            var anchor = ordered.FirstOrDefault(delivery => delivery.Id == afterDeliveryId);
             if (anchor == null)
                 return "La parada elegida ya no pertenece a esta ruta. Actualiza la ruta y vuelve a intentarlo.";
 
