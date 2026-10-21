@@ -1321,3 +1321,26 @@ public record ClientMergeAuditDto(
     int OrdersMoved,
     int AliasesMoved,
     DateTime MergedAt);
+
+
+// ── Reportes de Colonias y Distribución Geográfica (Nuevo Laredo) ──
+
+public record ColoniaStatsDto(
+    string ColoniaName,
+    int OrdersCount,
+    double Percentage,
+    double Latitude,
+    double Longitude,
+    int Rank,
+    bool IsPickup,
+    int ClientsCount
+);
+
+public record ColoniaReportDto(
+    int TotalOrders,
+    int TotalColoniaOrders,
+    int TotalPickupOrders,
+    string TopColoniaName,
+    double TopColoniaPercentage,
+    List<ColoniaStatsDto> Colonias
+);

@@ -141,6 +141,7 @@ builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
 builder.Services.AddSingleton<ILabelTemplateDesignValidator, LabelTemplateDesignValidator>();
 builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
 builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
+builder.Services.AddScoped<IColoniaClassifierService, ColoniaClassifierService>();
 
 // ── Recordatorios de bolsas pendientes (background) ──
 builder.Services.AddHostedService<PackagesReminderService>();

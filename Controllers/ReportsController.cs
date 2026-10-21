@@ -17,12 +17,14 @@ public class ReportsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ISalesPeriodService _periodService;
     private readonly IGeminiService _geminiService;
+    private readonly IColoniaClassifierService _coloniaService;
 
-    public ReportsController(AppDbContext db, ISalesPeriodService periodService, IGeminiService geminiService)
+    public ReportsController(AppDbContext db, ISalesPeriodService periodService, IGeminiService geminiService, IColoniaClassifierService coloniaService)
     {
         _db = db;
         _periodService = periodService;
         _geminiService = geminiService;
+        _coloniaService = coloniaService;
     }
 
     /// <summary>GET /api/reports/period/{id} — Reporte exacto por Corte de Venta</summary>
@@ -95,6 +97,35 @@ public class ReportsController : ControllerBase
         catch (Exception ex)
         {
             return StatusCode(500, new { message = "Error generando Insights con IA.", details = ex.Message });
+        }
+    }
+
+    /// <summary>GET /api/reports/colonias - Estadisticas de compras por colonia y Pickup en Nuevo Laredo</summary>
+    [HttpGet("colonias")]
+    public async Task<ActionResult<ColoniaReportDto>> GetColonias(
+        [FromQuery] string? start = null,
+        [FromQuery] string? end = null,
+        [FromQuery] int? salesPeriodId = null)
+    {
+        try
+        {
+            var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+            var startDate = !string.IsNullOrWhiteSpace(start) && DateTime.TryParse(start, out var s)
+                ? DateTime.SpecifyKind(s.Date, DateTimeKind.Utc)
+                : DateTime.SpecifyKind(new DateTime(now.Year, now.Month, 1), DateTimeKind.Utc);
+
+            var endDate = !string.IsNullOrWhiteSpace(end) && DateTime.TryParse(end, out var e)
+                ? DateTime.SpecifyKind(e.Date, DateTimeKind.Utc)
+                : DateTime.SpecifyKind(now.Date, DateTimeKind.Utc);
+
+            var endDateExclusive = endDate.AddDays(1);
+
+            var report = await _coloniaService.GetColoniaReportAsync(startDate, endDateExclusive, salesPeriodId);
+            return Ok(report);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = "Error generando reporte de colonias.", details = ex.Message });
         }
     }
 }
