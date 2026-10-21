@@ -19,64 +19,68 @@ public class ColoniaClassifierService : IColoniaClassifierService
     public const double DepotLongitude = -99.56885;
     public const string PickupName = "Pickup (Matriz Regi Bazar)";
 
-    private record NldColonia(string Name, double Latitude, double Longitude, string[] Keywords);
+    private record NldColonia(string Name, double Latitude, double Longitude, string Zone, string[] Keywords);
 
     private static readonly List<NldColonia> Catalog = new()
     {
-        // Matriz / Voluntad y Trabajo
-        new("Col. Voluntad y Trabajo", 27.5120, -99.5690, new[] { "voluntad y trabajo", "borreguera", "la borreguera", "voluntad", "vyt" }),
-        // Poniente
-        new("Col. Francisco Villa", 27.4366, -99.6078, new[] { "francisco villa", "pancho villa", "fco villa" }),
-        new("Col. Buena Vista", 27.5015, -99.5550, new[] { "buena vista", "buenavista" }),
-        new("Col. Nueva Era", 27.4808, -99.5625, new[] { "nueva era" }),
-        new("Villas de San Miguel", 27.4740, -99.6050, new[] { "villas de san miguel", "san miguel", "villas de sn miguel", "v. san miguel" }),
-        new("Fracc. El Campanario", 27.4580, -99.5910, new[] { "campanario", "el campanario" }),
-        new("Col. Solidaridad", 27.4920, -99.5870, new[] { "solidaridad" }),
-        new("Col. La Fe", 27.4790, -99.5620, new[] { "la fe", "fracc la fe" }),
-        new("Col. Las Torres", 27.4730, -99.5480, new[] { "torres", "las torres" }),
-        new("Reservas Territoriales", 27.4640, -99.5760, new[] { "reservas", "reservas territoriales" }),
-        new("Col. 150 Aniversario", 27.4790, -99.6220, new[] { "150 aniversario", "aniversario" }),
-        new("Fracc. El Progreso", 27.4700, -99.6150, new[] { "progreso", "el progreso" }),
-        new("Col. Cavazos Lerma", 27.4390, -99.6050, new[] { "cavazos lerma", "cavazos", "manuel cavazos" }),
+        // ── ZONA PONIENTE (❤️ Corazón) ──
+        new("Col. Voluntad y Trabajo", 27.5120, -99.5690, "Poniente", new[] { "voluntad y trabajo", "borreguera", "la borreguera", "voluntad", "vyt" }),
+        new("Col. Francisco Villa", 27.4366, -99.6078, "Poniente", new[] { "francisco villa", "pancho villa", "fco villa" }),
+        new("Col. Buena Vista", 27.5015, -99.5550, "Poniente", new[] { "buena vista", "buenavista" }),
+        new("Col. Nueva Era", 27.4808, -99.5625, "Poniente", new[] { "nueva era" }),
+        new("Villas de San Miguel", 27.4740, -99.6050, "Poniente", new[] { "villas de san miguel", "san miguel", "villas de sn miguel", "v. san miguel" }),
+        new("Fracc. El Campanario", 27.4580, -99.5910, "Poniente", new[] { "campanario", "el campanario", "campanario y oradel" }),
+        new("Col. Solidaridad", 27.4920, -99.5870, "Poniente", new[] { "solidaridad" }),
+        new("Col. La Fe", 27.4790, -99.5620, "Poniente", new[] { "la fe", "fracc la fe" }),
+        new("Col. Las Torres", 27.4730, -99.5480, "Poniente", new[] { "torres", "las torres" }),
+        new("Reservas Territoriales", 27.4640, -99.5760, "Poniente", new[] { "reservas", "reservas territoriales" }),
+        new("Col. 150 Aniversario", 27.4790, -99.6220, "Poniente", new[] { "150 aniversario", "aniversario" }),
+        new("Fracc. El Progreso", 27.4700, -99.6150, "Poniente", new[] { "progreso", "el progreso" }),
+        new("Col. Cavazos Lerma", 27.4390, -99.6050, "Poniente", new[] { "cavazos lerma", "cavazos", "manuel cavazos" }),
+        new("Valles de San Agustín", 27.4560, -99.6120, "Poniente", new[] { "valles de san agustin", "san agustin", "san agustín" }),
+        new("Valles de Anáhuac", 27.4950, -99.6200, "Poniente", new[] { "valles de anahuac", "anahuac", "anáhuac" }),
 
-        // Centro / Oriente
-        new("Sector Centro", 27.4950, -99.5075, new[] { "centro", "sector centro", "primer cuadro" }),
-        new("Col. Madero", 27.4880, -99.5100, new[] { "madero", "fracc madero" }),
-        new("Col. Viveros", 27.4940, -99.4990, new[] { "viveros" }),
-        new("Col. Jardín", 27.4785, -99.5130, new[] { "jardin", "jardín" }),
-        new("Col. Campestre", 27.4690, -99.5240, new[] { "campestre", "fracc campestre" }),
-        new("Col. Juárez", 27.4840, -99.5290, new[] { "juarez", "juárez", "benito juarez", "benito juárez" }),
-        new("Col. Guerrero", 27.4770, -99.5030, new[] { "guerrero" }),
-        new("Col. Mirador", 27.4610, -99.5170, new[] { "mirador", "el mirador" }),
-        new("Col. San Rafael", 27.4635, -99.5060, new[] { "san rafael" }),
-        new("Col. Palacios", 27.4990, -99.5330, new[] { "palacios" }),
-        new("Col. Victoria", 27.4910, -99.5220, new[] { "victoria" }),
-        new("Col. Hidalgo", 27.4995, -99.5220, new[] { "hidalgo" }),
-        new("Col. Militar", 27.4705, -99.5090, new[] { "militar", "cuartel militar" }),
-        new("Col. Longoria", 27.4850, -99.5050, new[] { "longoria" }),
-        new("Col. Hipódromo", 27.4950, -99.5400, new[] { "hipodromo", "hipódromo" }),
-        new("Col. 20 de Noviembre", 27.4920, -99.5140, new[] { "20 de noviembre", "veinte de noviembre" }),
-        new("Col. La Rosita", 27.4890, -99.5350, new[] { "rosita", "la rosita" }),
+        // ── ZONA ORIENTE / CENTRO (⭐ Estrella) ──
+        new("Sector Centro", 27.4950, -99.5075, "Oriente", new[] { "centro", "sector centro", "primer cuadro" }),
+        new("Col. Madero", 27.4880, -99.5100, "Oriente", new[] { "madero", "fracc madero" }),
+        new("Col. Viveros", 27.4940, -99.4990, "Oriente", new[] { "viveros" }),
+        new("Col. Jardín", 27.4785, -99.5130, "Oriente", new[] { "jardin", "jardín" }),
+        new("Col. Campestre", 27.4690, -99.5240, "Oriente", new[] { "campestre", "fracc campestre" }),
+        new("Col. Juárez", 27.4840, -99.5290, "Oriente", new[] { "juarez", "juárez", "benito juarez", "benito juárez" }),
+        new("Col. Guerrero", 27.4770, -99.5030, "Oriente", new[] { "guerrero" }),
+        new("Col. Mirador", 27.4610, -99.5170, "Oriente", new[] { "mirador", "el mirador" }),
+        new("Col. San Rafael", 27.4635, -99.5060, "Oriente", new[] { "san rafael" }),
+        new("Col. Palacios", 27.4990, -99.5330, "Oriente", new[] { "palacios" }),
+        new("Col. Victoria", 27.4910, -99.5220, "Oriente", new[] { "victoria" }),
+        new("Col. Hidalgo", 27.4995, -99.5220, "Oriente", new[] { "hidalgo" }),
+        new("Col. Militar", 27.4705, -99.5090, "Oriente", new[] { "militar", "cuartel militar" }),
+        new("Col. Longoria", 27.4850, -99.5050, "Oriente", new[] { "longoria" }),
+        new("Col. Hipódromo", 27.4950, -99.5400, "Oriente", new[] { "hipodromo", "hipódromo" }),
+        new("Col. 20 de Noviembre", 27.4920, -99.5140, "Oriente", new[] { "20 de noviembre", "veinte de noviembre" }),
+        new("Col. La Rosita", 27.4890, -99.5350, "Oriente", new[] { "rosita", "la rosita" }),
 
-        // Sur
-        new("Infonavit Fundadores", 27.4482, -99.5114, new[] { "fundadores", "infonavit fundadores", "infonavit" }),
-        new("Fracc. Los Fresnos", 27.4465, -99.5525, new[] { "fresnos", "los fresnos" }),
-        new("Col. Concordia", 27.4370, -99.5260, new[] { "concordia", "la concordia", "haciendas de la concordia" }),
-        new("Col. Santa Fe", 27.4470, -99.5110, new[] { "santa fe" }),
-        new("Col. Los Presidentes", 27.4290, -99.5360, new[] { "presidentes", "los presidentes" }),
-        new("Col. Roma", 27.4570, -99.5390, new[] { "roma", "fracc roma" }),
-        new("Col. Los Encinos", 27.4310, -99.5530, new[] { "encinos", "los encinos" }),
-        new("Col. Las Alamedas", 27.4600, -99.5560, new[] { "alamedas", "las alamedas" }),
-        new("Colinas del Sur", 27.4140, -99.5340, new[] { "colinas del sur", "colinas" }),
-        new("Fracc. Los Aztecas", 27.4800, -99.5360, new[] { "aztecas", "los aztecas" }),
-        new("Km 10 a Km 18", 27.3800, -99.5300, new[] { "km 10", "km 12", "km 13", "km 14", "km 15", "km 18", "kilometro" }),
-        new("Fracc. Los Cántaros", 27.4180, -99.5390, new[] { "cantaros", "los cantaros", "cántaros" }),
-        new("Col. ISSSTE", 27.4700, -99.5180, new[] { "issste", "fovissste" }),
-        new("Fracc. San José", 27.4550, -99.5150, new[] { "san jose", "san josé" }),
-        new("Fracc. Las Américas", 27.4680, -99.5380, new[] { "americas", "las americas", "las américas" }),
-        new("Col. Alianza", 27.4860, -99.5530, new[] { "alianza", "alianza para la produccion" }),
-        new("Valles de San Agustín", 27.4560, -99.6120, new[] { "valles de san agustin", "san agustin", "san agustín" }),
-        new("Valles de Anáhuac", 27.4950, -99.6200, new[] { "valles de anahuac", "anahuac", "anáhuac" })
+        // ── ZONA SUR (👍 Manita Arriba) ──
+        new("Infonavit Fundadores", 27.4482, -99.5114, "Sur", new[] { "fundadores", "infonavit fundadores", "infonavit" }),
+        new("Fracc. Los Fresnos", 27.4465, -99.5525, "Sur", new[] { "fresnos", "los fresnos" }),
+        new("Col. Concordia", 27.4370, -99.5260, "Sur", new[] { "concordia", "la concordia", "haciendas de la concordia" }),
+        new("Col. Santa Fe", 27.4470, -99.5110, "Sur", new[] { "santa fe" }),
+        new("Col. Los Presidentes", 27.4290, -99.5360, "Sur", new[] { "presidentes", "los presidentes" }),
+        new("Col. Roma", 27.4570, -99.5390, "Sur", new[] { "roma", "fracc roma" }),
+        new("Col. Los Encinos", 27.4310, -99.5530, "Sur", new[] { "encinos", "los encinos" }),
+        new("Col. Las Alamedas", 27.4600, -99.5560, "Sur", new[] { "alamedas", "las alamedas" }),
+        new("Colinas del Sur", 27.4140, -99.5340, "Sur", new[] { "colinas del sur", "colinas" }),
+        new("Fracc. Los Aztecas", 27.4800, -99.5360, "Sur", new[] { "aztecas", "los aztecas" }),
+        new("Col. ISSSTE", 27.4700, -99.5180, "Sur", new[] { "issste", "fovissste" }),
+        new("Fracc. San José", 27.4550, -99.5150, "Sur", new[] { "san jose", "san josé" }),
+        new("Fracc. Las Américas", 27.4680, -99.5380, "Sur", new[] { "americas", "las americas", "las américas" }),
+        new("Col. Alianza", 27.4860, -99.5530, "Sur", new[] { "alianza", "alianza para la produccion" }),
+
+        // ── ZONA KILÓMETROS (👏 Aplauso) ──
+        new("Valle Elizondo", 27.3450, -99.5550, "Kilometros", new[] { "valle elizondo", "elizondo" }),
+        new("Km 10 a Km 18", 27.3800, -99.5300, "Kilometros", new[] { "km 10", "km 12", "km 13", "km 14", "km 15", "km 18", "kilometro", "kilometros" }),
+        new("Fracc. Los Cántaros", 27.4180, -99.5390, "Kilometros", new[] { "cantaros", "los cantaros", "cántaros" }),
+        new("Granjas Treviño", 27.3600, -99.5400, "Kilometros", new[] { "granjas trevino", "granjas treviño", "trevino", "treviño" }),
+        new("Granjas Regina", 27.3550, -99.5450, "Kilometros", new[] { "granjas regina" })
     };
 
     private static readonly List<(string Keyword, NldColonia Colonia)> SortedKeywords = Catalog
@@ -94,7 +98,7 @@ public class ColoniaClassifierService : IColoniaClassifierService
     {
         if (order.OrderType == OrderType.PickUp)
         {
-            return new ColoniaMatch(PickupName, DepotLatitude, DepotLongitude, true);
+            return new ColoniaMatch(PickupName, DepotLatitude, DepotLongitude, true, "Pickup");
         }
 
         var address = !string.IsNullOrWhiteSpace(order.AlternativeAddress)
@@ -112,7 +116,7 @@ public class ColoniaClassifierService : IColoniaClassifierService
         // Sin dirección capturada o explícitamente pickup -> Pickup en Matriz
         if (orderType == OrderType.PickUp || string.IsNullOrWhiteSpace(address))
         {
-            return new ColoniaMatch(PickupName, DepotLatitude, DepotLongitude, true);
+            return new ColoniaMatch(PickupName, DepotLatitude, DepotLongitude, true, "Pickup");
         }
 
         var normalized = Normalize(address);
@@ -120,7 +124,7 @@ public class ColoniaClassifierService : IColoniaClassifierService
         // Si menciona la matriz de Regi Bazar (C. Rio Indo 1601, Voluntad y Trabajo 3) o palabras de pickup
         if (IsPickupKeyword(normalized))
         {
-            return new ColoniaMatch(PickupName, DepotLatitude, DepotLongitude, true);
+            return new ColoniaMatch(PickupName, DepotLatitude, DepotLongitude, true, "Pickup");
         }
 
         // Búsqueda en el catálogo por palabras clave (priorizando frases más largas)
@@ -129,7 +133,7 @@ public class ColoniaClassifierService : IColoniaClassifierService
             var normKw = Normalize(entry.Keyword);
             if (Regex.IsMatch(normalized, $@"\b{Regex.Escape(normKw)}\b", RegexOptions.IgnoreCase))
             {
-                return new ColoniaMatch(entry.Colonia.Name, entry.Colonia.Latitude, entry.Colonia.Longitude, false);
+                return new ColoniaMatch(entry.Colonia.Name, entry.Colonia.Latitude, entry.Colonia.Longitude, false, entry.Colonia.Zone);
             }
         }
 
@@ -143,12 +147,12 @@ public class ColoniaClassifierService : IColoniaClassifierService
 
             if (closest != null && closest.Distance <= 2.8)
             {
-                return new ColoniaMatch(closest.Colonia.Name, closest.Colonia.Latitude, closest.Colonia.Longitude, false);
+                return new ColoniaMatch(closest.Colonia.Name, closest.Colonia.Latitude, closest.Colonia.Longitude, false, closest.Colonia.Zone);
             }
         }
 
         // Fallback
-        return new ColoniaMatch("Otras Colonias (NLD)", 27.4861, -99.5150, false);
+        return new ColoniaMatch("Otras Colonias (NLD)", 27.4861, -99.5150, false, "Oriente");
     }
 
     public async Task<ColoniaReportDto> GetColoniaReportAsync(DateTime startDate, DateTime endDateExclusive, int? salesPeriodId = null)
@@ -178,7 +182,8 @@ public class ColoniaClassifierService : IColoniaClassifierService
                 TotalPickupOrders: 0,
                 TopColoniaName: "Sin datos",
                 TopColoniaPercentage: 0.0,
-                Colonias: new List<ColoniaStatsDto>()
+                Colonias: new List<ColoniaStatsDto>(),
+                Zones: new List<ZoneSummaryDto>()
             );
         }
 
@@ -209,7 +214,8 @@ public class ColoniaClassifierService : IColoniaClassifierService
                     Latitude = first.Latitude,
                     Longitude = first.Longitude,
                     IsPickup = first.IsPickup,
-                    ClientsCount = clientCount
+                    ClientsCount = clientCount,
+                    Zone = first.Zone
                 };
             })
             .OrderByDescending(x => x.Count)
@@ -242,7 +248,8 @@ public class ColoniaClassifierService : IColoniaClassifierService
                 Longitude: c.Longitude,
                 Rank: currentRank++,
                 IsPickup: false,
-                ClientsCount: c.ClientsCount
+                ClientsCount: c.ClientsCount,
+                Zone: c.Zone
             ));
         }
 
@@ -258,7 +265,8 @@ public class ColoniaClassifierService : IColoniaClassifierService
                 Longitude: others.Longitude,
                 Rank: currentRank++,
                 IsPickup: false,
-                ClientsCount: others.ClientsCount
+                ClientsCount: others.ClientsCount,
+                Zone: "Oriente"
             ));
         }
 
@@ -274,7 +282,40 @@ public class ColoniaClassifierService : IColoniaClassifierService
                 Longitude: DepotLongitude,
                 Rank: 0,
                 IsPickup: true,
-                ClientsCount: pickupGroup.ClientsCount
+                ClientsCount: pickupGroup.ClientsCount,
+                Zone: "Pickup"
+            ));
+        }
+
+        // ── CÁLCULO DE RESUMEN POR ZONAS (PARTIDAS DE NUEVO LAREDO) ──
+        var zoneDefs = new[]
+        {
+            (Key: "Poniente", Label: "Poniente", Emoji: "❤️"),
+            (Key: "Oriente", Label: "Oriente / Centro", Emoji: "⭐"),
+            (Key: "Sur", Label: "Sur", Emoji: "👍"),
+            (Key: "Kilometros", Label: "Kilómetros", Emoji: "👏"),
+            (Key: "Pickup", Label: "Pickup (Matriz)", Emoji: "🛍️")
+        };
+
+        var zoneSummaries = new List<ZoneSummaryDto>();
+        foreach (var z in zoneDefs)
+        {
+            var inZone = rankedList.Where(c => c.Zone == z.Key).ToList();
+            var zOrders = inZone.Sum(c => c.OrdersCount);
+            var zClients = inZone.Sum(c => c.ClientsCount);
+            var zPct = Math.Round((double)zOrders / totalOrders * 100.0, 1);
+            var topInZone = inZone.Where(c => !c.IsPickup && c.ColoniaName != "Otras Colonias (NLD)").OrderByDescending(c => c.OrdersCount).FirstOrDefault()
+                            ?? inZone.OrderByDescending(c => c.OrdersCount).FirstOrDefault();
+
+            zoneSummaries.Add(new ZoneSummaryDto(
+                Zone: z.Key,
+                DisplayName: z.Label,
+                Emoji: z.Emoji,
+                OrdersCount: zOrders,
+                Percentage: zPct,
+                TopColoniaName: topInZone?.ColoniaName ?? "Sin datos",
+                TopColoniaPercentage: topInZone?.Percentage ?? 0.0,
+                ClientsCount: zClients
             ));
         }
 
@@ -284,7 +325,8 @@ public class ColoniaClassifierService : IColoniaClassifierService
             TotalPickupOrders: totalPickup,
             TopColoniaName: topName,
             TopColoniaPercentage: topPct,
-            Colonias: rankedList
+            Colonias: rankedList,
+            Zones: zoneSummaries
         );
     }
 

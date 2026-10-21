@@ -1325,6 +1325,20 @@ public record ClientMergeAuditDto(
 
 // ── Reportes de Colonias y Distribución Geográfica (Nuevo Laredo) ──
 
+public record ZoneSummaryDto(
+    string Zone,
+    string DisplayName,
+    string Emoji,
+    int OrdersCount,
+    double Percentage,
+    string TopColoniaName,
+    double TopColoniaPercentage,
+    int ClientsCount = 0
+)
+{
+    public string ZoneLabel => DisplayName;
+}
+
 public record ColoniaStatsDto(
     string ColoniaName,
     int OrdersCount,
@@ -1333,7 +1347,8 @@ public record ColoniaStatsDto(
     double Longitude,
     int Rank,
     bool IsPickup,
-    int ClientsCount
+    int ClientsCount,
+    string Zone = "Poniente"
 );
 
 public record ColoniaReportDto(
@@ -1342,5 +1357,6 @@ public record ColoniaReportDto(
     int TotalPickupOrders,
     string TopColoniaName,
     double TopColoniaPercentage,
-    List<ColoniaStatsDto> Colonias
+    List<ColoniaStatsDto> Colonias,
+    List<ZoneSummaryDto>? Zones = null
 );

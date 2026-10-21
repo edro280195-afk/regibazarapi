@@ -7,7 +7,8 @@ public record ColoniaMatch(
     string Name,
     double Latitude,
     double Longitude,
-    bool IsPickup
+    bool IsPickup,
+    string Zone = "Poniente"
 );
 
 public interface IColoniaClassifierService
