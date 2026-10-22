@@ -292,6 +292,7 @@ public record OrderSummaryDto(
     // Bolsas / logística
     int? TotalPackages = null,
     bool PackagesConfirmed = false,
+    bool IsOpenDate = false,
     // Pedido consolidado (sin cambiar la propiedad de sus artículos ni sus pagos)
     int? OrderConsolidationId = null,
     int? ConsolidationOwnerClientId = null,
@@ -392,7 +393,11 @@ public record ManualOrderRequest(
     // Un número (incluido 0 = "va sin bolsas") marca PackagesConfirmed = true y crea las
     // bolsas reales con QR que falten hasta ese total (OrderPackagePolicy). Nunca borra.
     int? TotalPackages = null,
-    bool PackagesConfirmed = false
+    bool PackagesConfirmed = false,
+    string? Tags = null,
+    bool IsOpenDate = false,
+    decimal? InitialPaymentAmount = null,
+    string? InitialPaymentMethod = null
 );
 public record ManualOrderItem(
     string ProductName,

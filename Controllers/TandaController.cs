@@ -271,7 +271,24 @@ public class TandaController : ControllerBase
     {
         try
         {
-            var product = await _tandaService.CreateProductAsync(dto.Name, dto.BasePrice, cancellationToken);
+            var product = await _tandaService.CreateProductAsync(dto.Name, dto.BasePrice, dto.CashPrice, cancellationToken);
+            return Ok(product);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("products/{id}/price")]
+    public async Task<IActionResult> UpdateProductPrice(
+        Guid id,
+        [FromBody] UpdateTandaProductPriceDto dto,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var product = await _tandaService.UpdateProductPriceAsync(id, dto.CashPrice, dto.BasePrice, cancellationToken);
             return Ok(product);
         }
         catch (Exception ex)

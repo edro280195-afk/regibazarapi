@@ -2208,6 +2208,53 @@ namespace EntregasApi.Migrations
                     b.ToTable("tanda_participants");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.TandaParticipantItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ParticipantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("participant_id");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.Property<string>("ProductName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("product_name");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer")
+                        .HasColumnName("quantity");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasColumnType("decimal(12, 2)")
+                        .HasColumnName("unit_price");
+
+                    b.Property<string>("Variant")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("variant");
+
+                    b.Property<decimal?>("WeeklyAmount")
+                        .HasColumnType("decimal(12, 2)")
+                        .HasColumnName("weekly_amount");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParticipantId");
+
+                    b.HasIndex("ProductId");
+
+                    b.ToTable("tanda_participant_items");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.TandaPayment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2219,6 +2266,10 @@ namespace EntregasApi.Migrations
                         .HasColumnType("decimal(12, 2)")
                         .HasColumnName("amount_paid");
 
+                    b.Property<DateTime?>("DepositDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deposit_date");
+
                     b.Property<bool>("IsVerified")
                         .HasColumnType("boolean")
                         .HasColumnName("is_verified");
@@ -2226,6 +2277,18 @@ namespace EntregasApi.Migrations
                     b.Property<string>("Notes")
                         .HasColumnType("text")
                         .HasColumnName("notes");
+
+                    b.Property<decimal?>("OcrAmount")
+                        .HasColumnType("decimal(12, 2)")
+                        .HasColumnName("ocr_amount");
+
+                    b.Property<decimal?>("OcrConfidence")
+                        .HasColumnType("numeric")
+                        .HasColumnName("ocr_confidence");
+
+                    b.Property<string>("OcrText")
+                        .HasColumnType("text")
+                        .HasColumnName("ocr_text");
 
                     b.Property<Guid>("ParticipantId")
                         .HasColumnType("uuid")
@@ -2235,9 +2298,19 @@ namespace EntregasApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("payment_date");
 
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("payment_method");
+
                     b.Property<decimal>("PenaltyPaid")
                         .HasColumnType("decimal(12, 2)")
                         .HasColumnName("penalty_paid");
+
+                    b.Property<string>("ProofUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("proof_url");
 
                     b.Property<int>("WeekNumber")
                         .HasColumnType("integer")
@@ -2261,6 +2334,10 @@ namespace EntregasApi.Migrations
                         .HasColumnType("decimal(12, 2)")
                         .HasColumnName("amount_claimed");
 
+                    b.Property<DateTime?>("DepositDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deposit_date");
+
                     b.Property<string>("FileType")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -2272,6 +2349,18 @@ namespace EntregasApi.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)")
                         .HasColumnName("file_url");
+
+                    b.Property<decimal?>("OcrAmount")
+                        .HasColumnType("decimal(12, 2)")
+                        .HasColumnName("ocr_amount");
+
+                    b.Property<decimal?>("OcrConfidence")
+                        .HasColumnType("numeric")
+                        .HasColumnName("ocr_confidence");
+
+                    b.Property<string>("OcrText")
+                        .HasColumnType("text")
+                        .HasColumnName("ocr_text");
 
                     b.Property<Guid>("ParticipantId")
                         .HasColumnType("uuid")
@@ -2338,6 +2427,10 @@ namespace EntregasApi.Migrations
                     b.Property<decimal>("BasePrice")
                         .HasColumnType("decimal(12, 2)")
                         .HasColumnName("base_price");
+
+                    b.Property<decimal?>("CashPrice")
+                        .HasColumnType("decimal(12, 2)")
+                        .HasColumnName("cash_price");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -2850,6 +2943,24 @@ namespace EntregasApi.Migrations
                     b.Navigation("Tanda");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.TandaParticipantItem", b =>
+                {
+                    b.HasOne("EntregasApi.Models.TandaParticipant", "Participant")
+                        .WithMany("Items")
+                        .HasForeignKey("ParticipantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("EntregasApi.Models.TandaProduct", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Participant");
+
+                    b.Navigation("Product");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.TandaPayment", b =>
                 {
                     b.HasOne("EntregasApi.Models.TandaParticipant", "Participant")
@@ -2993,6 +3104,8 @@ namespace EntregasApi.Migrations
 
             modelBuilder.Entity("EntregasApi.Models.TandaParticipant", b =>
                 {
+                    b.Navigation("Items");
+
                     b.Navigation("PaymentProofs");
 
                     b.Navigation("Payments");

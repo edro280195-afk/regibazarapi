@@ -510,7 +510,19 @@ public class OrdersController : ControllerBase
             // Actualizamos fechas basándonos en si mandó una fecha manual o no
             var dates = _orderService.CalculateOrderDates(client.Type, existingOrder.CreatedAt, req.ScheduledDeliveryDate);
             existingOrder.ExpiresAt = dates.ExpiresAt;
-            existingOrder.ScheduledDeliveryDate = dates.ScheduledDeliveryDate;
+            if (req.IsOpenDate)
+            {
+                existingOrder.ScheduledDeliveryDate = null;
+                existingOrder.ExpiresAt = DateTime.UtcNow.AddDays(90);
+                if (!string.IsNullOrWhiteSpace(req.Tags)) existingOrder.Tags = req.Tags;
+                else if (string.IsNullOrEmpty(existingOrder.Tags) || !existingOrder.Tags.Contains("ContadoTanda"))
+                    existingOrder.Tags = string.IsNullOrEmpty(existingOrder.Tags) ? "ContadoTanda,FechaAbierta" : $"{existingOrder.Tags},ContadoTanda,FechaAbierta";
+            }
+            else
+            {
+                existingOrder.ScheduledDeliveryDate = dates.ScheduledDeliveryDate;
+                if (!string.IsNullOrWhiteSpace(req.Tags)) existingOrder.Tags = req.Tags;
+            }
 
             var alternativeAddress = ClientDataPolicy.NormalizeOptionalAddress(req.AlternativeAddress);
             if (alternativeAddress != null)
@@ -524,7 +536,23 @@ public class OrdersController : ControllerBase
             // No tiene pendientes, creamos uno nuevo.
 
             var accessToken = _tokenService.GenerateAccessToken();
-            var dates = _orderService.CalculateOrderDates(client.Type, DateTime.UtcNow, req.ScheduledDeliveryDate);
+            DateTime expiresAt;
+            DateTime? scheduledDate;
+            if (req.IsOpenDate)
+            {
+                scheduledDate = null;
+                expiresAt = DateTime.UtcNow.AddDays(90);
+            }
+            else
+            {
+                var dates = _orderService.CalculateOrderDates(client.Type, DateTime.UtcNow, req.ScheduledDeliveryDate);
+                expiresAt = dates.ExpiresAt;
+                scheduledDate = dates.ScheduledDeliveryDate;
+            }
+
+            var tags = !string.IsNullOrWhiteSpace(req.Tags)
+                ? req.Tags
+                : (req.IsOpenDate ? "ContadoTanda,FechaAbierta" : null);
 
             // 6. Creamos la orden con la fecha calculada
             var newOrder = new Order
@@ -532,8 +560,9 @@ public class OrdersController : ControllerBase
                 ClientId      = client.Id,
                 AccessToken   = accessToken,
                 ShippingCost  = (reqOrderType == OrderType.PickUp) ? 0 : settings.DefaultShippingCost,
-                ExpiresAt     = dates.ExpiresAt,
-                ScheduledDeliveryDate = dates.ScheduledDeliveryDate,
+                ExpiresAt     = expiresAt,
+                Tags          = tags,
+                ScheduledDeliveryDate = scheduledDate,
                 Status        = Models.OrderStatus.Pending,
                 OrderType     = reqOrderType,
                 AlternativeAddress = ClientDataPolicy.NormalizeOptionalAddress(req.AlternativeAddress),
@@ -560,6 +589,21 @@ public class OrdersController : ControllerBase
 
             _db.Orders.Add(newOrder);
             existingOrder = newOrder; // Referencia para el return
+        }
+
+        if (req.InitialPaymentAmount.HasValue && req.InitialPaymentAmount.Value > 0)
+        {
+            var initialPayment = new OrderPayment
+            {
+                OrderId = existingOrder.Id,
+                Amount = req.InitialPaymentAmount.Value,
+                Method = req.InitialPaymentMethod ?? "Efectivo",
+                RegisteredBy = "Admin",
+                Date = DateTime.UtcNow,
+                Notes = "Pago venta al contado"
+            };
+            existingOrder.Payments.Add(initialPayment);
+            _db.OrderPayments.Add(initialPayment);
         }
 
         // 🛍️ Bolsas capturadas en el alta. Si la dueña tocó un número (incluido 0 =

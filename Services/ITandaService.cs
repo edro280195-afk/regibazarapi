@@ -22,7 +22,8 @@ public interface ITandaService
     
     // Catalogo de productos
     Task<List<TandaProductDto>> GetProductsAsync(CancellationToken cancellationToken = default);
-    Task<TandaProductDto> CreateProductAsync(string name, decimal basePrice, CancellationToken cancellationToken = default);
+    Task<TandaProductDto> CreateProductAsync(string name, decimal basePrice, decimal? cashPrice = null, CancellationToken cancellationToken = default);
+    Task<TandaProductDto> UpdateProductPriceAsync(Guid productId, decimal? cashPrice, decimal? basePrice, CancellationToken cancellationToken = default);
 
     // Consultas de Tandas
     Task<List<TandaDto>> GetTandasAsync(CancellationToken cancellationToken = default);

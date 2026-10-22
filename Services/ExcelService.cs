@@ -310,6 +310,7 @@ public class ExcelService : IExcelService
             ClientLongitude: client?.Longitude,
             TotalPackages: order.TotalPackages,
             PackagesConfirmed: order.PackagesConfirmed,
+            IsOpenDate: order.ScheduledDeliveryDate == null || (tags != null && tags.Contains("FechaAbierta")),
             OrderConsolidationId: order.OrderConsolidationId,
             ConsolidationOwnerClientId: order.ConsolidationOwnerClientId,
             ConsolidationOwnerNameSnapshot: order.ConsolidationOwnerNameSnapshot,

@@ -127,6 +127,7 @@ public class CreateTandaProductDto
     public string Name { get; set; } = string.Empty;
 
     public decimal BasePrice { get; set; } = 0;
+    public decimal? CashPrice { get; set; }
 }
 
 public class TandaViewDto
@@ -275,8 +276,15 @@ public class TandaProductDto
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public decimal BasePrice { get; set; }
+    public decimal? CashPrice { get; set; }
     public bool IsActive { get; set; }
     public DateTime CreatedAt { get; set; }
+}
+
+public class UpdateTandaProductPriceDto
+{
+    public decimal? CashPrice { get; set; }
+    public decimal? BasePrice { get; set; }
 }
 
 public class UpdateTurnDto

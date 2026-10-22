@@ -21,6 +21,9 @@ public class TandaProduct
     [Column("base_price", TypeName = "decimal(12, 2)")]
     public decimal BasePrice { get; set; }
 
+    [Column("cash_price", TypeName = "decimal(12, 2)")]
+    public decimal? CashPrice { get; set; }
+
     [Column("is_active")]
     public bool IsActive { get; set; } = true;
 

@@ -423,6 +423,7 @@ public class TandaService(AppDbContext db, ICloudinaryService cloudinary, ITanda
     public async Task<TandaProductDto> CreateProductAsync(
         string name,
         decimal basePrice,
+        decimal? cashPrice = null,
         CancellationToken cancellationToken = default)
     {
         var cleanName = name.Trim();
@@ -448,10 +449,35 @@ public class TandaService(AppDbContext db, ICloudinaryService cloudinary, ITanda
             Id = Guid.NewGuid(),
             Name = cleanName,
             BasePrice = basePrice,
+            CashPrice = cashPrice,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
         db.TandaProducts.Add(product);
+        await db.SaveChangesAsync(cancellationToken);
+        return MapToProductDto(product);
+    }
+
+    public async Task<TandaProductDto> UpdateProductPriceAsync(
+        Guid productId,
+        decimal? cashPrice,
+        decimal? basePrice,
+        CancellationToken cancellationToken = default)
+    {
+        var product = await db.TandaProducts.FindAsync([productId], cancellationToken)
+            ?? throw new InvalidOperationException("El producto no existe.");
+
+        if (cashPrice.HasValue)
+        {
+            if (cashPrice.Value < 0) throw new InvalidOperationException("El precio de contado no puede ser negativo.");
+            product.CashPrice = cashPrice.Value;
+        }
+        if (basePrice.HasValue)
+        {
+            if (basePrice.Value < 0) throw new InvalidOperationException("El precio base no puede ser negativo.");
+            product.BasePrice = basePrice.Value;
+        }
+
         await db.SaveChangesAsync(cancellationToken);
         return MapToProductDto(product);
     }
@@ -1130,6 +1156,7 @@ public class TandaService(AppDbContext db, ICloudinaryService cloudinary, ITanda
         Id = product.Id,
         Name = product.Name,
         BasePrice = product.BasePrice,
+        CashPrice = product.CashPrice,
         IsActive = product.IsActive,
         CreatedAt = product.CreatedAt
     };

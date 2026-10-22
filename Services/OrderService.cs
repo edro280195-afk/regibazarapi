@@ -29,6 +29,7 @@ public class OrderService : IOrderService
 
             foreach (var order in pendingOrders)
             {
+                if (order.ScheduledDeliveryDate == null) continue; // Preservar pedidos con fecha abierta
                 var dates = CalculateOrderDates(client.Type, order.CreatedAt, order.ScheduledDeliveryDate);
                 order.ExpiresAt = dates.ExpiresAt;
                 order.ScheduledDeliveryDate = dates.ScheduledDeliveryDate;
