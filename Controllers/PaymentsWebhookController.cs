@@ -167,8 +167,9 @@ public class PaymentsWebhookController : ControllerBase
             return;
         }
 
-        // Verificar si ya registramos este ID de pago
-        var existingPayment = order.Payments?.FirstOrDefault(p => p.Notes != null && p.Notes.Contains($"MP#{mpPayment.Id}"));
+        // Verificar si ya registramos este ID de pago (comparación exacta del id: "MP#12" no debe
+        // coincidir con "MP#123", sobre todo ahora que un pago puede borrarse por esta vía).
+        var existingPayment = order.Payments?.FirstOrDefault(p => OrderPaymentPolicy.TryGetMercadoPagoId(p.Notes) == mpPayment.Id);
 
         if (mpPayment.Status == "approved")
         {
@@ -210,15 +211,50 @@ public class PaymentsWebhookController : ControllerBase
                 await NotifyAdmins(order, mpPayment.TransactionAmount, "confirmado (era pendiente)");
             }
         }
-        else if (mpPayment.Status == "rejected")
+        else if (OrderPaymentPolicy.ShouldRevertCardPayment(mpPayment.Status))
         {
+            // Rechazado / cancelado / reembolsado / contracargo: el dinero NO está. Antes solo se
+            // cambiaba la nota y el monto seguía sumando, así que el pedido se quedaba "pagado".
+            // El pago sale del pedido para que el saldo vuelva a ser el real.
             if (existingPayment != null)
             {
-                existingPayment.Notes = $"MP#{mpPayment.Id} | rejected (Webhook)";
+                var removedAmount = existingPayment.Amount;
+                Console.WriteLine($"[Webhook] MP#{mpPayment.Id} quedó '{mpPayment.Status}': se quita el pago #{existingPayment.Id} (${removedAmount:F2}) del pedido #{order.Id}.");
+
+                _db.OrderPayments.Remove(existingPayment);
                 await _db.SaveChangesAsync();
-                // Opcional: Notificar rechazo
+
+                var remainingPaid = order.Payments!.Where(p => p.Id != existingPayment.Id).Sum(p => p.Amount);
+                await NotifyDriverBalanceChanged(order, remainingPaid);
+
+                var action = mpPayment.Status switch
+                {
+                    "rejected" => "rechazado (se quitó del pedido)",
+                    "cancelled" => "cancelado (se quitó del pedido)",
+                    "refunded" => "reembolsado (se quitó del pedido)",
+                    _ => "con contracargo (se quitó del pedido)"
+                };
+                await NotifyAdmins(order, removedAmount, action);
             }
         }
+    }
+
+    /// <summary>Avisa al chofer de la ruta del pedido que su saldo a cobrar cambió.</summary>
+    private async Task NotifyDriverBalanceChanged(Order order, decimal totalPaid)
+    {
+        if (!order.DeliveryRouteId.HasValue) return;
+
+        var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+        if (route == null) return;
+
+        await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new
+        {
+            OrderId = order.Id,
+            ClientName = order.Client?.Name ?? "",
+            NewTotal = order.Total,
+            BalanceDue = Math.Max(0, order.Total - totalPaid),
+            ChangeType = "payment"
+        });
     }
 
     private async Task NotifyAdmins(Order order, decimal amount, string action)

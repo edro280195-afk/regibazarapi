@@ -1698,14 +1698,43 @@ public class OrdersController : ControllerBase
         return Ok(new OrderPaymentDto(payment.Id, payment.OrderId, payment.Amount, payment.Method, payment.Date, payment.RegisteredBy, payment.Notes));
     }
 
-    /// <summary>DELETE /api/orders/{orderId}/payments/{paymentId}</summary>
+    /// <summary>
+    /// DELETE /api/orders/{orderId}/payments/{paymentId} - Quita un pago/abono del pedido (borrado definitivo).
+    /// Se bloquea si el pago es de una caja de POS ya cerrada, o si es de Mercado Pago y MP lo tiene
+    /// aprobado (el dinero sí llegó: hay que reembolsarlo allá primero).
+    /// </summary>
     [HttpDelete("{orderId}/payments/{paymentId}")]
-    public async Task<IActionResult> DeletePayment(int orderId, int paymentId)
+    public async Task<IActionResult> DeletePayment(
+        int orderId, int paymentId,
+        [FromServices] IHttpClientFactory httpClientFactory)
     {
         var payment = await _db.OrderPayments
+            .Include(p => p.CashRegisterSession)
             .FirstOrDefaultAsync(p => p.Id == paymentId && p.OrderId == orderId);
 
         if (payment == null) return NotFound("Pago no encontrado");
+
+        // Si es un pago con tarjeta de Mercado Pago, consultamos su estado REAL antes de borrarlo.
+        // Si no, borrar un pago que MP luego aprueba haría que el webhook lo vuelva a crear solo.
+        string? mpStatus = null;
+        var mpId = OrderPaymentPolicy.TryGetMercadoPagoId(payment.Notes);
+        if (mpId.HasValue)
+        {
+            var lookup = await GetMercadoPagoStatusAsync(httpClientFactory, mpId.Value);
+            if (lookup.Failed)
+                return StatusCode(502, new { message = "No pude verificar este pago con Mercado Pago. Intenta de nuevo en un momento." });
+            mpStatus = lookup.Status;
+        }
+
+        var decision = OrderPaymentPolicy.EvaluateRemoval(payment.CashRegisterSession?.Status, mpStatus);
+        var blockMessage = OrderPaymentPolicy.BlockMessage(decision);
+        if (blockMessage != null)
+            return Conflict(new { message = blockMessage });
+
+        _logger.LogWarning(
+            "[Payments] Pago #{PaymentId} (${Amount} {Method}, registrado por {RegisteredBy}, notas: {Notes}, MP: {MpStatus}) eliminado del pedido #{OrderId} por {User}",
+            payment.Id, payment.Amount, payment.Method, payment.RegisteredBy, payment.Notes ?? "-",
+            mpStatus ?? "n/a", orderId, User.Identity?.Name ?? "Admin");
 
         _db.OrderPayments.Remove(payment);
         await _db.SaveChangesAsync();
@@ -1715,6 +1744,15 @@ public class OrdersController : ControllerBase
             .Include(o => o.Payments)
             .Include(o => o.Client)
             .FirstOrDefaultAsync(o => o.Id == orderId);
+
+        // ✨ Sincronización Admin-a-Admin (otros admins con el pedido abierto refrescan)
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new {
+            OrderId = orderId,
+            Status = affectedOrder?.Status.ToString(),
+            PaymentRemoved = true,
+            Amount = payment.Amount,
+            UpdatedBy = "Admin"
+        });
 
         if (affectedOrder?.DeliveryRouteId.HasValue == true)
         {
@@ -1733,7 +1771,54 @@ public class OrdersController : ControllerBase
             }
         }
 
-        return NoContent();
+        return Ok(new
+        {
+            message = decision == OrderPaymentPolicy.RemovalDecision.AllowButMayReturn
+                ? "Pago quitado. Ojo: Mercado Pago aún lo tiene en revisión; si lo aprueba, se volverá a registrar solo."
+                : "Pago quitado.",
+            mercadoPagoStatus = mpStatus
+        });
+    }
+
+    /// <summary>
+    /// Consulta a Mercado Pago el estado real de un pago. Failed = no se pudo verificar (red, 5xx,
+    /// credenciales): el borrado se rechaza en vez de arriesgarse. Si MP ya no conoce el pago (404)
+    /// o no hay token configurado, devuelve Status null y no bloquea.
+    /// </summary>
+    private async Task<(string? Status, bool Failed)> GetMercadoPagoStatusAsync(
+        IHttpClientFactory httpClientFactory, long mercadoPagoPaymentId)
+    {
+        var mpAccessToken = _config["MercadoPago:AccessToken"];
+        if (string.IsNullOrEmpty(mpAccessToken))
+        {
+            _logger.LogWarning("[Payments] MercadoPago:AccessToken no configurado; no se pudo verificar MP#{MpId}", mercadoPagoPaymentId);
+            return (null, false);
+        }
+
+        try
+        {
+            using var client = httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {mpAccessToken}");
+
+            var response = await client.GetAsync($"https://api.mercadopago.com/v1/payments/{mercadoPagoPaymentId}");
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return (null, false);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("[Payments] MP respondió {Status} al consultar MP#{MpId}", (int)response.StatusCode, mercadoPagoPaymentId);
+                return (null, true);
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var status = doc.RootElement.TryGetProperty("status", out var statusEl) ? statusEl.GetString() : null;
+            return (status, false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Payments] Error consultando MP#{MpId}", mercadoPagoPaymentId);
+            return (null, true);
+        }
     }
 
     // ---------------------------------------------------------
