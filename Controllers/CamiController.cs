@@ -1,4 +1,4 @@
-using EntregasApi.Data;
+﻿using EntregasApi.Data;
 using EntregasApi.DTOs;
 using EntregasApi.Models;
 using EntregasApi.Services;
@@ -207,12 +207,15 @@ public class CamiController : ControllerBase
             var alerts = new List<CamiAlert>();
             var now = DateTime.UtcNow;
 
-            // 1. Pedidos entregados sin cobrar hace más de 5 días
-            var sinCobrar = await _db.Orders
-                .Include(o => o.Client)
-                .Where(o => o.Status == OrderStatus.Delivered && o.BalanceDue > 0
-                       && o.CreatedAt < now.AddDays(-5))
-                .CountAsync();
+            // 1. Pedidos entregados sin cobrar hace mÃ¡s de 5 dÃ­as
+            // BalanceDue es calculado ([NotMapped]); filtramos candidatos en BD y refinamos en memoria.
+            var cutoffCobranza = now.AddDays(-5);
+            var sinCobrarCandidates = await _db.Orders
+                .Include(o => o.Payments)
+                .Where(o => o.Status == OrderStatus.Delivered && o.Total > 0
+                       && o.CreatedAt < cutoffCobranza)
+                .ToListAsync();
+            var sinCobrar = sinCobrarCandidates.Count(o => o.BalanceDue > 0);
             if (sinCobrar > 0)
                 alerts.Add(new CamiAlert("cobranza", $"{sinCobrar} pedido{(sinCobrar > 1 ? "s" : "")} entregado{(sinCobrar > 1 ? "s" : "")} sin cobrar desde hace más de 5 días", "💸"));
 
