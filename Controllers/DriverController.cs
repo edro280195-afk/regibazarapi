@@ -1173,10 +1173,27 @@ public class DriverController : ControllerBase
         return Ok(new DailyExchangeRateDto(settings.DailyExchangeRate, settings.ExchangeRateUpdatedAt));
     }
 
+    /// <summary>GET /repartidor/{driverToken}/corte - Redirecciona al frontend web oficial de liquidacion</summary>
+    [HttpGet("/repartidor/{driverToken}/corte")]
+    public IActionResult RedirectToSettlementWeb(string driverToken)
+    {
+        var frontendUrl = GetBaseUrl();
+        return Redirect($"{frontendUrl}/repartidor/{driverToken}/corte");
+    }
+
+    /// <summary>GET /repartidor/{driverToken} - Redirecciona al frontend web oficial de la ruta</summary>
+    [HttpGet("/repartidor/{driverToken}")]
+    public IActionResult RedirectToRouteWeb(string driverToken)
+    {
+        var frontendUrl = GetBaseUrl();
+        return Redirect($"{frontendUrl}/repartidor/{driverToken}");
+    }
+
     private string GetBaseUrl()
     {
-        var frontendUrl = _config.GetValue<string>("FrontendUrl");
-        if (!string.IsNullOrWhiteSpace(frontendUrl)) return frontendUrl.TrimEnd('/');
-        return $"{Request.Scheme}://{Request.Host}";
+        var frontendUrl = _config["App:FrontendUrl"]
+            ?? _config.GetValue<string>("FrontendUrl")
+            ?? "https://regibazar.com";
+        return frontendUrl.TrimEnd('/');
     }
 }
