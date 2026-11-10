@@ -216,8 +216,26 @@ public class DriverController : ControllerBase
             .FirstOrDefaultAsync(r => r.DriverToken == driverToken);
 
         if (route == null) return NotFound();
-        if (route.Status != RouteStatus.Pending)
-            return BadRequest("La ruta ya fue iniciada o completada.");
+        if (route.Status == RouteStatus.Completed || route.Status == RouteStatus.Canceled)
+            return BadRequest("La ruta ya fue completada o cancelada.");
+
+        if (route.Status == RouteStatus.Active)
+        {
+            if (req != null)
+            {
+                route.InitialCash = req.InitialCash ?? req.Breakdown?.TotalInMxn ?? route.InitialCash;
+                if (req.Breakdown != null)
+                    route.InitialCashBreakdownJson = System.Text.Json.JsonSerializer.Serialize(req.Breakdown);
+                if (req.ExchangeRate.HasValue || req.Breakdown?.ExchangeRate != null)
+                {
+                    route.InitialExchangeRate = req.ExchangeRate ?? req.Breakdown?.ExchangeRate ?? route.InitialExchangeRate;
+                }
+                await _db.SaveChangesAsync();
+                return Ok(new { message = "Fondo inicial actualizado.", initialCash = route.InitialCash });
+            }
+            return Ok(new { message = "La ruta ya se encuentra activa.", initialCash = route.InitialCash });
+        }
+
 
         route.Status = RouteStatus.Active;
         route.StartedAt = DateTime.UtcNow;

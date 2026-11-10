@@ -426,7 +426,10 @@ public record CreateRouteRequest(
     /// (típicamente desde un preview del frontend) y se respeta sin re-optimizar.
     /// Si es false (default), el backend vuelve a calcular el orden con el optimizador local.
     /// </summary>
-    bool PreOptimized = false
+    bool PreOptimized = false,
+    decimal? InitialCash = null,
+    CashDenominationsDto? InitialBreakdown = null,
+    decimal? InitialExchangeRate = null
 );
 
 public record SkippedStopDto(

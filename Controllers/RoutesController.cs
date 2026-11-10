@@ -127,7 +127,10 @@ public class RoutesController : ControllerBase
                 Status = RouteStatus.Pending,
                 CreatedAt = DateTime.UtcNow,
                 Name = $"Ruta {DateTime.Now:dd/MM HH:mm}",
-                ScheduledDate = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc)
+                ScheduledDate = DateTime.SpecifyKind(DateTime.Today, DateTimeKind.Utc),
+                InitialCash = req.InitialCash ?? req.InitialBreakdown?.TotalInMxn ?? 0m,
+                InitialCashBreakdownJson = req.InitialBreakdown != null ? System.Text.Json.JsonSerializer.Serialize(req.InitialBreakdown) : null,
+                InitialExchangeRate = req.InitialExchangeRate ?? req.InitialBreakdown?.ExchangeRate ?? 18.0m
             };
             _db.DeliveryRoutes.Add(route);
 
