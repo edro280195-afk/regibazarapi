@@ -42,6 +42,13 @@ public class Delivery
 
     public DateTime? DeliveredAt { get; set; }
 
+    /// <summary>Indica si el repartidor entregó el pedido sin haber recibido el pago.</summary>
+    public bool DeliveredWithoutPayment { get; set; } = false;
+
+    /// <summary>Motivo de entregar sin recibir pago.</summary>
+    [MaxLength(500)]
+    public string? UnpaidReason { get; set; }
+
     /// <summary>Firma digital de quien recibe (SVG inline del canvas de firma).</summary>
     public string? SignatureSvg { get; set; }
 

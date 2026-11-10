@@ -25,7 +25,9 @@ public class RoutesController : ControllerBase
     private readonly IRouteOptimizerService _optimizer;
     private readonly ILogger<RoutesController> _logger;
 
-    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IElevenLabsTtsService tts, IRouteOptimizerService optimizer, ILogger<RoutesController> logger)
+    private readonly IRouteSettlementService _settlementService;
+
+    public RoutesController(AppDbContext db, ITokenService tokenService, IConfiguration config, IHubContext<DeliveryHub> hub, IPushNotificationService push, IGeminiService geminiService, IElevenLabsTtsService tts, IRouteOptimizerService optimizer, ILogger<RoutesController> logger, IRouteSettlementService settlementService)
     {
         _db = db;
         _tokenService = tokenService;
@@ -36,6 +38,7 @@ public class RoutesController : ControllerBase
         _tts = tts;
         _optimizer = optimizer;
         _logger = logger;
+        _settlementService = settlementService;
     }
 
     private string FrontendUrl => _config["App:FrontendUrl"] ?? "http://localhost:4200";
@@ -1750,5 +1753,47 @@ public class RoutesController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok(new { Message = "Ruta liquidada exitosamente." });
+    }
+
+    /// <summary>GET /api/routes/{id}/settlement - Obtener corte y conciliación financiera de la ruta</summary>
+    [HttpGet("{id}/settlement")]
+    public async Task<IActionResult> GetSettlement(int id)
+    {
+        var route = await _db.DeliveryRoutes.FindAsync(id);
+        if (route == null) return NotFound("Ruta no encontrada.");
+
+        var settlement = await _settlementService.GetSettlementAsync(id, FrontendUrl);
+        return Ok(settlement);
+    }
+
+    /// <summary>GET /api/routes/exchange-rate - Obtener tipo de cambio del día</summary>
+    [HttpGet("exchange-rate")]
+    public async Task<IActionResult> GetDailyExchangeRate()
+    {
+        var settings = await _db.AppSettings.FirstOrDefaultAsync(s => s.Id == 1) ?? new AppSettings();
+        return Ok(new DailyExchangeRateDto(settings.DailyExchangeRate, settings.ExchangeRateUpdatedAt));
+    }
+
+    /// <summary>POST /api/routes/exchange-rate - Fijar tipo de cambio del día</summary>
+    [HttpPost("exchange-rate")]
+    public async Task<IActionResult> SetDailyExchangeRate([FromBody] SetExchangeRateRequest req)
+    {
+        if (req.ExchangeRate <= 0) return BadRequest("El tipo de cambio debe ser mayor a 0.");
+        var settings = await _db.AppSettings.FirstOrDefaultAsync(s => s.Id == 1);
+        if (settings == null)
+        {
+            settings = new AppSettings { Id = 1, DailyExchangeRate = req.ExchangeRate, ExchangeRateUpdatedAt = DateTime.UtcNow };
+            _db.AppSettings.Add(settings);
+        }
+        else
+        {
+            settings.DailyExchangeRate = req.ExchangeRate;
+            settings.ExchangeRateUpdatedAt = DateTime.UtcNow;
+        }
+        await _db.SaveChangesAsync();
+
+        await _hub.Clients.All.SendAsync("ExchangeRateUpdated", new { ExchangeRate = settings.DailyExchangeRate, UpdatedAt = settings.ExchangeRateUpdatedAt });
+
+        return Ok(new DailyExchangeRateDto(settings.DailyExchangeRate, settings.ExchangeRateUpdatedAt));
     }
 }

@@ -51,7 +51,20 @@ public class TandaPayment
     [Column("notes")]
     public string? Notes { get; set; }
 
+    [Column("delivery_route_id")]
+    public int? DeliveryRouteId { get; set; }
+
+    [Column("delivery_id")]
+    public int? DeliveryId { get; set; }
+
+    [MaxLength(50)]
+    [Column("registered_by")]
+    public string? RegisteredBy { get; set; }
+
     // Relaciones
+    [ForeignKey(nameof(DeliveryRouteId))]
+    public DeliveryRoute? DeliveryRoute { get; set; }
+
     [ForeignKey(nameof(ParticipantId))]
     [System.Text.Json.Serialization.JsonIgnore]
     public TandaParticipant? Participant { get; set; }

@@ -20,6 +20,7 @@ public class AppDbContext : DbContext
     public DbSet<Supplier> Suppliers => Set<Supplier>();
     public DbSet<Investment> Investments => Set<Investment>();
     public DbSet<DriverExpense> DriverExpenses => Set<DriverExpense>();
+    public DbSet<RouteExtraIncome> RouteExtraIncomes => Set<RouteExtraIncome>();
 
     // --- NUEVAS TABLAS ---
     public DbSet<CashRegisterSession> CashRegisterSessions => Set<CashRegisterSession>();
@@ -416,8 +417,28 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.DeliveryRouteId);
             entity.HasIndex(e => e.Date);
             entity.HasOne(e => e.DeliveryRoute)
-                  .WithMany()
+                  .WithMany(r => r.Expenses)
                   .HasForeignKey(e => e.DeliveryRouteId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Pagos de Tanda en Ruta
+        modelBuilder.Entity<TandaPayment>(entity =>
+        {
+            entity.HasIndex(p => p.DeliveryRouteId);
+            entity.HasOne(p => p.DeliveryRoute)
+                  .WithMany(r => r.TandaPayments)
+                  .HasForeignKey(p => p.DeliveryRouteId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // Ingresos Extras en Ruta (Tandas no registradas o extras)
+        modelBuilder.Entity<RouteExtraIncome>(entity =>
+        {
+            entity.HasIndex(i => i.DeliveryRouteId);
+            entity.HasOne(i => i.DeliveryRoute)
+                  .WithMany(r => r.ExtraIncomes)
+                  .HasForeignKey(i => i.DeliveryRouteId)
                   .OnDelete(DeleteBehavior.Cascade);
         });
 

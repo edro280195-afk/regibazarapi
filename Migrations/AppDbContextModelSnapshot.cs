@@ -30,8 +30,14 @@ namespace EntregasApi.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<decimal>("DailyExchangeRate")
+                        .HasColumnType("numeric");
+
                     b.Property<decimal>("DefaultShippingCost")
                         .HasColumnType("numeric");
+
+                    b.Property<DateTime?>("ExchangeRateUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("LinkExpirationHours")
                         .HasColumnType("integer");
@@ -44,6 +50,7 @@ namespace EntregasApi.Migrations
                         new
                         {
                             Id = 1,
+                            DailyExchangeRate = 18.0m,
                             DefaultShippingCost = 60m,
                             LinkExpirationHours = 72
                         });
@@ -295,6 +302,9 @@ namespace EntregasApi.Migrations
                     b.Property<DateTime?>("DeliveredAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("DeliveredWithoutPayment")
+                        .HasColumnType("boolean");
+
                     b.Property<int>("DeliveryRouteId")
                         .HasColumnType("integer");
 
@@ -330,6 +340,10 @@ namespace EntregasApi.Migrations
 
                     b.Property<Guid?>("TandaParticipantId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("UnpaidReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.HasKey("Id");
 
@@ -399,6 +413,21 @@ namespace EntregasApi.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<decimal?>("FinalCashActual")
+                        .HasColumnType("decimal(12, 2)");
+
+                    b.Property<string>("FinalCashBreakdownJson")
+                        .HasColumnType("text");
+
+                    b.Property<decimal>("InitialCash")
+                        .HasColumnType("decimal(12, 2)");
+
+                    b.Property<string>("InitialCashBreakdownJson")
+                        .HasColumnType("text");
+
+                    b.Property<decimal>("InitialExchangeRate")
+                        .HasColumnType("decimal(12, 4)");
+
                     b.Property<DateTime?>("LastLocationUpdate")
                         .HasColumnType("timestamp with time zone");
 
@@ -409,6 +438,16 @@ namespace EntregasApi.Migrations
 
                     b.Property<DateTime>("ScheduledDate")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("SettledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal?>("SettlementDifference")
+                        .HasColumnType("decimal(12, 2)");
+
+                    b.Property<string>("SettlementNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
 
                     b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
@@ -1281,6 +1320,12 @@ namespace EntregasApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("DeliveredWithoutPayment")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("DeliveredWithoutPaymentAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("DeliveryInstructions")
                         .HasColumnType("text");
 
@@ -1352,6 +1397,10 @@ namespace EntregasApi.Migrations
 
                     b.Property<int?>("TotalPackages")
                         .HasColumnType("integer");
+
+                    b.Property<string>("UnpaidDeliveryReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.HasKey("Id");
 
@@ -1988,6 +2037,60 @@ namespace EntregasApi.Migrations
                     b.ToTable("raffle_participants");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.RouteExtraIncome", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(12, 2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("ClientName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("client_name");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("DeliveryId")
+                        .HasColumnType("integer")
+                        .HasColumnName("delivery_id");
+
+                    b.Property<int>("DeliveryRouteId")
+                        .HasColumnType("integer")
+                        .HasColumnName("delivery_route_id");
+
+                    b.Property<string>("IncomeType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("income_type");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("notes");
+
+                    b.Property<string>("PaymentMethod")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("payment_method");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeliveryRouteId");
+
+                    b.ToTable("route_extra_incomes");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.SalesPeriod", b =>
                 {
                     b.Property<int>("Id")
@@ -2266,6 +2369,14 @@ namespace EntregasApi.Migrations
                         .HasColumnType("decimal(12, 2)")
                         .HasColumnName("amount_paid");
 
+                    b.Property<int?>("DeliveryId")
+                        .HasColumnType("integer")
+                        .HasColumnName("delivery_id");
+
+                    b.Property<int?>("DeliveryRouteId")
+                        .HasColumnType("integer")
+                        .HasColumnName("delivery_route_id");
+
                     b.Property<DateTime?>("DepositDate")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deposit_date");
@@ -2312,11 +2423,18 @@ namespace EntregasApi.Migrations
                         .HasColumnType("character varying(1000)")
                         .HasColumnName("proof_url");
 
+                    b.Property<string>("RegisteredBy")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("registered_by");
+
                     b.Property<int>("WeekNumber")
                         .HasColumnType("integer")
                         .HasColumnName("week_number");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("DeliveryRouteId");
 
                     b.HasIndex("ParticipantId");
 
@@ -2571,7 +2689,7 @@ namespace EntregasApi.Migrations
             modelBuilder.Entity("EntregasApi.Models.DriverExpense", b =>
                 {
                     b.HasOne("EntregasApi.Models.DeliveryRoute", "DeliveryRoute")
-                        .WithMany()
+                        .WithMany("Expenses")
                         .HasForeignKey("DeliveryRouteId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -2913,6 +3031,17 @@ namespace EntregasApi.Migrations
                     b.Navigation("Raffle");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.RouteExtraIncome", b =>
+                {
+                    b.HasOne("EntregasApi.Models.DeliveryRoute", "DeliveryRoute")
+                        .WithMany("ExtraIncomes")
+                        .HasForeignKey("DeliveryRouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DeliveryRoute");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.Tanda", b =>
                 {
                     b.HasOne("EntregasApi.Models.TandaProduct", "Product")
@@ -2963,11 +3092,18 @@ namespace EntregasApi.Migrations
 
             modelBuilder.Entity("EntregasApi.Models.TandaPayment", b =>
                 {
+                    b.HasOne("EntregasApi.Models.DeliveryRoute", "DeliveryRoute")
+                        .WithMany("TandaPayments")
+                        .HasForeignKey("DeliveryRouteId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("EntregasApi.Models.TandaParticipant", "Participant")
                         .WithMany("Payments")
                         .HasForeignKey("ParticipantId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("DeliveryRoute");
 
                     b.Navigation("Participant");
                 });
@@ -3021,7 +3157,13 @@ namespace EntregasApi.Migrations
 
                     b.Navigation("Deliveries");
 
+                    b.Navigation("Expenses");
+
+                    b.Navigation("ExtraIncomes");
+
                     b.Navigation("Orders");
+
+                    b.Navigation("TandaPayments");
                 });
 
             modelBuilder.Entity("EntregasApi.Models.InventoryBox", b =>

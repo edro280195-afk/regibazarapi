@@ -314,7 +314,10 @@ public class ExcelService : IExcelService
             OrderConsolidationId: order.OrderConsolidationId,
             ConsolidationOwnerClientId: order.ConsolidationOwnerClientId,
             ConsolidationOwnerNameSnapshot: order.ConsolidationOwnerNameSnapshot,
-            DeliveryTime: order.DeliveryTime
+            DeliveryTime: order.DeliveryTime,
+            DeliveredWithoutPayment: order.DeliveredWithoutPayment,
+            UnpaidDeliveryReason: order.UnpaidDeliveryReason,
+            DeliveredWithoutPaymentAt: order.DeliveredWithoutPaymentAt
         );
     }
 }

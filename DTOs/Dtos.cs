@@ -297,7 +297,10 @@ public record OrderSummaryDto(
     int? OrderConsolidationId = null,
     int? ConsolidationOwnerClientId = null,
     string? ConsolidationOwnerNameSnapshot = null,
-    string? DeliveryTime = null
+    string? DeliveryTime = null,
+    bool DeliveredWithoutPayment = false,
+    string? UnpaidDeliveryReason = null,
+    DateTime? DeliveredWithoutPaymentAt = null
 );
 
 public record CreateOrderConsolidationRequest(
@@ -583,7 +586,9 @@ public record RouteDeliveryDto(
     int? ConsolidationId = null,
     string? ConsolidationOwnerName = null,
     string? ConsolidationPrimaryClientName = null,
-    bool IsConsolidationPrimaryOrder = false
+    bool IsConsolidationPrimaryOrder = false,
+    int? ClientId = null,
+    List<ActiveTandaInfoDto>? ActiveTandas = null
 )
 {
     public int Id => DeliveryId;
@@ -625,9 +630,18 @@ public record UpdateAdminExpenseRequest(decimal Amount, string ExpenseType, Date
 
 // ── Driver ──
 public record UpdateLocationRequest(double Latitude, double Longitude);
-public record CompleteDeliveryRequest(string? Notes, string? PaymentsJson, string? SignatureSvg = null, string? SignedByName = null);
+public record CompleteDeliveryRequest(
+    string? Notes, 
+    string? PaymentsJson, 
+    string? SignatureSvg = null, 
+    string? SignedByName = null,
+    bool? DeliveredWithoutPayment = false,
+    string? UnpaidReason = null
+);
 public record PaymentInputDto(decimal Amount, string Method, string? Notes);
 public record FailDeliveryRequest(string Reason, string? Notes);
+public record DailyExchangeRateDto(decimal ExchangeRate, DateTime? UpdatedAt);
+public record SetExchangeRateRequest(decimal ExchangeRate);
 
 // ── Client View ──
 public record ClientOrderView(

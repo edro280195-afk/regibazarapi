@@ -90,6 +90,16 @@ public class Order
 
     public string? AlternativeAddress { get; set; }
 
+    /// <summary>Indica si el repartidor entregó el pedido sin haber recibido el pago completo (fió el pedido).</summary>
+    public bool DeliveredWithoutPayment { get; set; } = false;
+
+    /// <summary>Motivo u observación ingresada por el chofer al entregar sin cobrar.</summary>
+    [MaxLength(500)]
+    public string? UnpaidDeliveryReason { get; set; }
+
+    /// <summary>Fecha y hora en que se entregó sin pago.</summary>
+    public DateTime? DeliveredWithoutPaymentAt { get; set; }
+
     [Obsolete("Usar Payments collection")]
     [Column(TypeName = "decimal(10,2)")]
     public decimal AdvancePayment { get; set; } = 0m;

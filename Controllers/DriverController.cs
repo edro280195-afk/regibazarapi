@@ -22,15 +22,20 @@ public class DriverController : ControllerBase
     private readonly IPushNotificationService _push;
     private readonly ICamiService _cami;
     private readonly ICloudinaryService _cloudinary;
+    private readonly IRouteSettlementService _settlementService;
+    private readonly IConfiguration _config;
 
     public DriverController(AppDbContext db, IHubContext<DeliveryHub> hub,
-        IPushNotificationService push, ICamiService cami, ICloudinaryService cloudinary)
+        IPushNotificationService push, ICamiService cami, ICloudinaryService cloudinary,
+        IRouteSettlementService settlementService, IConfiguration config)
     {
         _db = db;
         _hub = hub;
         _push = push;
         _cami = cami;
         _cloudinary = cloudinary;
+        _settlementService = settlementService;
+        _config = config;
     }
 
     /// <summary>GET /api/driver/{token} - Obtener ruta del repartidor</summary>
@@ -55,17 +60,43 @@ public class DriverController : ControllerBase
             .OrderBy(d => d.SortOrder)
             .ToListAsync();
 
+        var clientIds = deliveries
+            .Where(d => d.Order != null && d.Order.ClientId > 0)
+            .Select(d => d.Order!.ClientId)
+            .Distinct()
+            .ToList();
+
+        var activeTandasLookup = await _settlementService.GetActiveTandasForClientsAsync(clientIds);
+
+        var allExpenses = await _db.DriverExpenses
+            .Where(e => e.DeliveryRouteId == route.Id)
+            .ToListAsync();
+
+        var appSettings = await _db.AppSettings.FirstOrDefaultAsync(s => s.Id == 1) ?? new AppSettings();
+
         return Ok(new
         {
             route.Id,
             route.Name,
             Status = route.Status.ToString(),
             route.StartedAt,
-            Deliveries = deliveries.Select(MapDeliveryToDto).ToList()
+            route.CompletedAt,
+            DailyExchangeRate = appSettings.DailyExchangeRate,
+            ExchangeRateUpdatedAt = appSettings.ExchangeRateUpdatedAt,
+            route.InitialCash,
+            route.InitialCashBreakdownJson,
+            route.InitialExchangeRate,
+            route.FinalCashActual,
+            route.FinalCashBreakdownJson,
+            route.SettledAt,
+            route.SettlementDifference,
+            route.SettlementNotes,
+            Deliveries = deliveries.Select(d => MapDeliveryToDto(d, activeTandasLookup)).ToList(),
+            Expenses = allExpenses.Select(e => new DriverExpenseDto(e.Id, e.DeliveryRouteId ?? route.Id, route.Name, e.Amount, e.ExpenseType, e.Date, e.Notes, e.EvidencePath, e.CreatedAt)).ToList()
         });
     }
 
-    private RouteDeliveryDto MapDeliveryToDto(Delivery d)
+    private RouteDeliveryDto MapDeliveryToDto(Delivery d, Dictionary<int, List<ActiveTandaInfoDto>>? activeTandasLookup = null)
     {
         if (d.Kind == DeliveryKind.Tanda && d.TandaParticipant != null)
         {
@@ -113,13 +144,21 @@ public class DriverController : ControllerBase
                 TandaProductName: tanda?.Product?.Name,
                 TandaWeek: currentWeek,
                 TandaTotalWeeks: tanda?.TotalWeeks,
-                TandaVariant: participant.Variant
+                TandaVariant: participant.Variant,
+                ClientId: participant.CustomerId,
+                ActiveTandas: null
             );
         }
 
         var order = d.Order!;
         var consolidation = order.OrderConsolidation;
         var isConsolidated = consolidation != null;
+        List<ActiveTandaInfoDto>? clientActiveTandas = null;
+        if (activeTandasLookup != null && activeTandasLookup.TryGetValue(order.ClientId, out var tandas))
+        {
+            clientActiveTandas = tandas;
+        }
+
         return new RouteDeliveryDto(
             DeliveryId: d.Id,
             OrderId: d.OrderId,
@@ -159,7 +198,9 @@ public class DriverController : ControllerBase
             ConsolidationId: order.OrderConsolidationId,
             ConsolidationOwnerName: order.ConsolidationOwnerNameSnapshot ?? order.Client.Name,
             ConsolidationPrimaryClientName: consolidation?.PrimaryClientNameSnapshot,
-            IsConsolidationPrimaryOrder: consolidation?.PrimaryOrderId == order.Id
+            IsConsolidationPrimaryOrder: consolidation?.PrimaryOrderId == order.Id,
+            ClientId: order.ClientId,
+            ActiveTandas: clientActiveTandas
         );
     }
 
@@ -169,7 +210,7 @@ public class DriverController : ControllerBase
     // ═══════════════════════════════════════════
 
     [HttpPost("start")]
-    public async Task<IActionResult> StartRoute(string driverToken)
+    public async Task<IActionResult> StartRoute(string driverToken, [FromBody] StartRouteRequest? req = null)
     {
         var route = await _db.DeliveryRoutes
             .FirstOrDefaultAsync(r => r.DriverToken == driverToken);
@@ -180,6 +221,13 @@ public class DriverController : ControllerBase
 
         route.Status = RouteStatus.Active;
         route.StartedAt = DateTime.UtcNow;
+
+        if (req != null)
+        {
+            route.InitialCash = req.InitialCash ?? req.Breakdown?.TotalInMxn ?? 0m;
+            route.InitialCashBreakdownJson = req.Breakdown != null ? System.Text.Json.JsonSerializer.Serialize(req.Breakdown) : null;
+            route.InitialExchangeRate = req.ExchangeRate ?? req.Breakdown?.ExchangeRate ?? 18.0m;
+        }
 
         var firstDelivery = await _db.Deliveries
             .Include(d => d.Order)
@@ -204,9 +252,9 @@ public class DriverController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Notificar admin
-        await _hub.Clients.Group("Admins").SendAsync("RouteStarted", new { RouteId = route.Id });
+        await _hub.Clients.Group("Admins").SendAsync("RouteStarted", new { RouteId = route.Id, InitialCash = route.InitialCash });
 
-        return Ok(new { message = "Ruta iniciada.", firstDeliveryId = firstDelivery?.Id });
+        return Ok(new { message = "Ruta iniciada.", firstDeliveryId = firstDelivery?.Id, initialCash = route.InitialCash });
     }
 
     [HttpPost("transit/{deliveryId}")]
@@ -617,6 +665,39 @@ public class DriverController : ControllerBase
                 }
             }
 
+            // ⚠️ ALERTA: Entregar pedido sin recibir pago
+            bool isUnpaidDelivery = (req.DeliveredWithoutPayment == true) || 
+                                    (delivery.Order!.BalanceDue > 0.01m && (parsedPayments == null || !parsedPayments.Any()));
+
+            if (isUnpaidDelivery)
+            {
+                var unpaidReason = req.UnpaidReason ?? req.Notes ?? "Entregado sin recibir pago";
+                delivery.DeliveredWithoutPayment = true;
+                delivery.UnpaidReason = unpaidReason;
+                delivery.Order.DeliveredWithoutPayment = true;
+                delivery.Order.UnpaidDeliveryReason = unpaidReason;
+                delivery.Order.DeliveredWithoutPaymentAt = DateTime.UtcNow;
+
+                delivery.Notes = string.IsNullOrWhiteSpace(delivery.Notes)
+                    ? $"[ENTREGADO SIN PAGO] {unpaidReason}"
+                    : $"{delivery.Notes} | [ENTREGADO SIN PAGO] {unpaidReason}";
+
+                await _push.SendNotificationToAdminsAsync(
+                    "🚨 Pedido Entregado SIN RECIBIR PAGO",
+                    $"Pedido #{delivery.Order.Id} ({delivery.Order.Client?.Name ?? "Clienta"}): resta {delivery.Order.BalanceDue:C}. Motivo: {unpaidReason}",
+                    tag: "unpaid-delivery"
+                );
+
+                await _hub.Clients.Group("Admins").SendAsync("OrderDeliveredWithoutPayment", new
+                {
+                    OrderId = delivery.Order.Id,
+                    ClientName = delivery.Order.Client?.Name,
+                    BalanceDue = delivery.Order.BalanceDue,
+                    Reason = unpaidReason,
+                    DeliveredAt = DateTime.UtcNow
+                });
+            }
+
             // -----------------------------------------------------------
             // 🎀 LÓGICA DE REGIPUNTOS (10 pts por cada $100)
             // -----------------------------------------------------------
@@ -1006,5 +1087,96 @@ public class DriverController : ControllerBase
         var responseText = await _cami.ProcessDriverCommandAsync(driverToken, req.CommandText);
 
         return Ok(new DriverCamiResponse(responseText));
+    }
+
+    // ═══════════════════════════════════════════
+    //  COBROS DE TANDA EN RUTA & CORTE DE CAJA
+    // ═══════════════════════════════════════════
+
+    /// <summary>POST /api/driver/{token}/tanda-payment — Registrar pago de tanda cobrado por el chofer</summary>
+    [HttpPost("tanda-payment")]
+    public async Task<IActionResult> RecordTandaPayment(string driverToken, [FromBody] DriverTandaPaymentRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound("Ruta no encontrada.");
+
+        var success = await _settlementService.RecordDriverTandaPaymentAsync(route.Id, req);
+        if (!success) return BadRequest("No se pudo registrar el pago de tanda.");
+
+        await _hub.Clients.Group("Admins").SendAsync("TandaPaymentRecorded", new {
+            RouteId = route.Id,
+            ClientName = req.ClientName,
+            Amount = req.Amount,
+            Method = req.PaymentMethod
+        });
+
+        await _push.SendNotificationToAdminsAsync(
+            "🌸 Pago de Tanda en Ruta",
+            $"El chofer cobró {req.Amount:C} de tanda ({req.ClientName ?? "Clienta"}) por {req.PaymentMethod}",
+            tag: "tanda-payment-received"
+        );
+
+        return Ok(new { message = "Pago de tanda registrado correctamente." });
+    }
+
+    /// <summary>POST /api/driver/{token}/settle — Realizar corte de caja final con arqueo de billetes</summary>
+    [HttpPost("settle")]
+    public async Task<IActionResult> SettleRoute(string driverToken, [FromBody] RouteSettlementRequest req)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound("Ruta no encontrada.");
+
+        var baseUrl = GetBaseUrl();
+        var settlement = await _settlementService.SettleRouteAsync(route.Id, req, baseUrl);
+
+        await _hub.Clients.Group("Admins").SendAsync("RouteSettled", new {
+            RouteId = route.Id,
+            ActualCash = settlement.ActualCash,
+            ExpectedCash = settlement.ExpectedCash,
+            Difference = settlement.Difference,
+            Status = settlement.SettlementStatus
+        });
+
+        string diffText = settlement.Difference == 0
+            ? "¡Cuadró exacto! ✓"
+            : settlement.Difference > 0
+                ? $"Sobrante de +${settlement.Difference:N2}"
+                : $"Faltante de -${Math.Abs(settlement.Difference ?? 0):N2}";
+
+        await _push.SendNotificationToAdminsAsync(
+            "🏁 Corte de Ruta Realizado",
+            $"Ruta '{route.Name}': {diffText}. Esperado: ${settlement.ExpectedCash:N2}, Entregado: ${settlement.ActualCash:N2}",
+            url: "/admin/routes",
+            tag: "route-settled"
+        );
+
+        return Ok(settlement);
+    }
+
+    /// <summary>GET /api/driver/{token}/settlement — Consultar reporte y corte detallado de la ruta</summary>
+    [HttpGet("settlement")]
+    public async Task<IActionResult> GetSettlement(string driverToken)
+    {
+        var route = await _db.DeliveryRoutes.FirstOrDefaultAsync(r => r.DriverToken == driverToken);
+        if (route == null) return NotFound("Ruta no encontrada.");
+
+        var baseUrl = GetBaseUrl();
+        var settlement = await _settlementService.GetSettlementAsync(route.Id, baseUrl);
+        return Ok(settlement);
+    }
+
+    /// <summary>GET /api/driver/exchange-rate — Consultar tipo de cambio del día fijado por la dueña</summary>
+    [HttpGet("exchange-rate")]
+    public async Task<IActionResult> GetExchangeRate()
+    {
+        var settings = await _db.AppSettings.FirstOrDefaultAsync(s => s.Id == 1) ?? new AppSettings();
+        return Ok(new DailyExchangeRateDto(settings.DailyExchangeRate, settings.ExchangeRateUpdatedAt));
+    }
+
+    private string GetBaseUrl()
+    {
+        var frontendUrl = _config.GetValue<string>("FrontendUrl");
+        if (!string.IsNullOrWhiteSpace(frontendUrl)) return frontendUrl.TrimEnd('/');
+        return $"{Request.Scheme}://{Request.Host}";
     }
 }

@@ -183,7 +183,11 @@ public class OrdersController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(status))
         {
-            if (Enum.TryParse<EntregasApi.Models.OrderStatus>(status, true, out var parsedStatus))
+            if (status.Equals("unpaid_delivered", StringComparison.OrdinalIgnoreCase))
+            {
+                query = query.Where(o => o.Status == OrderStatus.Delivered && (o.DeliveredWithoutPayment || o.Total > (o.Payments.Sum(p => p.Amount) + o.AdvancePayment)));
+            }
+            else if (Enum.TryParse<EntregasApi.Models.OrderStatus>(status, true, out var parsedStatus))
             {
                 query = query.Where(o => o.Status == parsedStatus);
             }
@@ -259,6 +263,21 @@ public class OrdersController : ControllerBase
     /// cancelados. Los entregados-con-saldo (fugas) se devuelven primero por ser los más urgentes.
     /// Filtro opcional por corte de venta.
     /// </summary>
+    [HttpGet("unpaid-delivered")]
+    public async Task<ActionResult<List<OrderSummaryDto>>> GetUnpaidDelivered()
+    {
+        var orders = await _db.Orders
+            .Include(o => o.Client)
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Include(o => o.SalesPeriod)
+            .Where(o => o.Status == OrderStatus.Delivered && (o.DeliveredWithoutPayment || o.Total > (o.Payments.Sum(p => p.Amount) + o.AdvancePayment)))
+            .OrderByDescending(o => o.DeliveredWithoutPaymentAt ?? o.CreatedAt)
+            .ToListAsync();
+
+        return Ok(orders.Select(o => ExcelService.MapToSummary(o, o.Client, FrontendUrl)).ToList());
+    }
+
     [HttpGet("unpaid")]
     public async Task<ActionResult<List<OrderSummaryDto>>> GetUnpaid([FromQuery] int? salesPeriodId = null)
     {

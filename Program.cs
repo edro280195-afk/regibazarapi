@@ -135,6 +135,7 @@ builder.Services.AddScoped<IGeocodingService, GeocodingService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPosService, PosService>();
 builder.Services.AddScoped<ITandaService, TandaService>();
+builder.Services.AddScoped<IRouteSettlementService, RouteSettlementService>();
 builder.Services.AddScoped<ITandaPaymentOcrService, TandaPaymentOcrService>();
 builder.Services.AddScoped<IRaffleService, RaffleService>();
 builder.Services.AddSingleton<ICloudinaryService, CloudinaryService>();
