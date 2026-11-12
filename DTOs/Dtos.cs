@@ -873,6 +873,24 @@ public enum ClientTag
     Blacklist = 3     // Lista Negra 🚫
 }
 
+public record CreateClientRequest
+{
+    [Required, MaxLength(200)]
+    public string Name { get; init; } = string.Empty;
+
+    [MaxLength(20)]
+    public string? Phone { get; init; }
+
+    [MaxLength(500)]
+    public string? Address { get; init; }
+
+    [MaxLength(30)]
+    public string Tag { get; init; } = nameof(ClientTag.None);
+
+    [MaxLength(1000)]
+    public string? DeliveryInstructions { get; init; }
+}
+
 public record SupplierDto(
     int Id,
     string Name,

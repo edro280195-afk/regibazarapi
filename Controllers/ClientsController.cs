@@ -264,6 +264,62 @@ public class ClientsController : ControllerBase
         return Ok(clients);
     }
 
+    /// <summary>
+    /// POST /api/clients - Registra una clienta sin crear pedidos.
+    /// </summary>
+    [HttpPost]
+    public async Task<ActionResult<ClientDto>> Create([FromBody] CreateClientRequest req)
+    {
+        var name = req.Name?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return BadRequest("El nombre de la clienta es obligatorio.");
+
+        if (!Enum.TryParse<ClientTag>(req.Tag, true, out var tag)
+            || !Enum.IsDefined(typeof(ClientTag), tag))
+        {
+            return BadRequest("La etiqueta de la clienta no es válida.");
+        }
+
+        var phone = string.IsNullOrWhiteSpace(req.Phone) ? null : req.Phone.Trim();
+        var address = ClientDataPolicy.NormalizeOptionalAddress(req.Address);
+        var instructions = string.IsNullOrWhiteSpace(req.DeliveryInstructions)
+            ? null
+            : req.DeliveryInstructions.Trim();
+
+        var client = new Client
+        {
+            Name = name,
+            Phone = phone,
+            NormalizedName = TextNormalizer.NormalizeName(name),
+            NormalizedPhone = TextNormalizer.NormalizePhone(phone),
+            Address = address,
+            NormalizedAddress = TextNormalizer.NormalizeAddress(address),
+            Tag = tag,
+            Type = "Nueva",
+            DeliveryInstructions = instructions,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _db.Clients.Add(client);
+        await _db.SaveChangesAsync();
+
+        var result = new ClientDto(
+            client.Id,
+            client.Name,
+            client.Phone,
+            client.Address,
+            client.Tag.ToString(),
+            0,
+            0m,
+            client.Type,
+            client.DeliveryInstructions,
+            client.Latitude,
+            client.Longitude
+        );
+
+        return CreatedAtAction(nameof(GetById), new { id = client.Id }, result);
+    }
+
     [HttpGet("{id:int}")]
     public async Task<ActionResult<ClientDto>> GetById(int id)
     {
