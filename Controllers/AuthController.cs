@@ -23,6 +23,17 @@ public class AuthController : ControllerBase
     [HttpPost("register")]
     public async Task<ActionResult<LoginResponse>> Register(RegisterRequest req)
     {
+        // Solo el primer usuario puede registrarse sin sesión; después, únicamente una administradora.
+        var decision = RegistrationPolicy.Evaluate(
+            anyUsers: await _db.Users.AnyAsync(),
+            isAuthenticated: User.Identity?.IsAuthenticated == true,
+            isAdmin: User.IsInRole("Admin"));
+
+        if (decision == RegistrationDecision.Unauthorized)
+            return Unauthorized("Inicia sesión como administradora para crear usuarios.");
+        if (decision == RegistrationDecision.Forbidden)
+            return StatusCode(StatusCodes.Status403Forbidden, "Solo una administradora puede crear usuarios.");
+
         if (await _db.Users.AnyAsync(u => u.Email == req.Email))
             return Conflict("Ya existe un usuario con ese correo.");
 
