@@ -1400,3 +1400,21 @@ public record ColoniaReportDto(
     List<ColoniaStatsDto> Colonias,
     List<ZoneSummaryDto>? Zones = null
 );
+
+// ── Campanita (recordatorio) de pedido ──
+public record OrderReminderDto(
+    int Id,
+    int OrderId,
+    DateTime TargetAt,
+    int LeadMinutes,
+    DateTime RemindAt,
+    string? Note,
+    DateTime? SentAt
+);
+
+/// <summary>TargetAt = hora que pidió la clienta (ISO UTC). LeadMinutes = anticipación del aviso (0 = a la hora exacta).</summary>
+public record SaveOrderReminderRequest(
+    DateTime TargetAt,
+    int LeadMinutes = 30,
+    string? Note = null
+);

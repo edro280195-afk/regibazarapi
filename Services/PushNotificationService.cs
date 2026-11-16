@@ -12,6 +12,13 @@ public interface IPushNotificationService
     Task SendNotificationToDriverAsync(string routeToken, string title, string message, string? url = null, string? tag = null);
     Task SendNotificationToAdminsAsync(string title, string message, string? url = null, string? tag = null);
 
+    /// <summary>
+    /// Igual que <see cref="SendNotificationToAdminsAsync"/>, pero devuelve a cuántos dispositivos admin
+    /// les aceptó el push el servicio de mensajería (0 = no llegó a ninguno o no hay dispositivos suscritos).
+    /// Para avisos que no deben darse por entregados si nadie los recibió.
+    /// </summary>
+    Task<int> TrySendNotificationToAdminsAsync(string title, string message, string? url = null, string? tag = null);
+
     // Helpers específicos — WebPush (clientes web/PWA)
     Task NotifyClientDriverEnRouteAsync(int clientId, string? driverName = null);
     Task NotifyClientDriverNearbyAsync(int clientId, int distanceMeters);
@@ -68,6 +75,15 @@ public class PushNotificationService : IPushNotificationService
             .ToListAsync();
 
         await SendToSubscriptionsAsync(subscriptions, title, message, url, tag);
+    }
+
+    public async Task<int> TrySendNotificationToAdminsAsync(string title, string message, string? url = null, string? tag = null)
+    {
+        var subscriptions = await _db.PushSubscriptions
+            .Where(s => s.Role == "admin")
+            .ToListAsync();
+
+        return await SendToSubscriptionsAsync(subscriptions, title, message, url, tag);
     }
 
     // ═══════════════════════════════════════════
@@ -209,9 +225,9 @@ public class PushNotificationService : IPushNotificationService
     //  CORE DE ENVÍO
     // ═══════════════════════════════════════════
 
-    private async Task SendToSubscriptionsAsync(List<PushSubscriptionModel> subscriptions, string title, string message, string? url, string? tag = null)
+    private async Task<int> SendToSubscriptionsAsync(List<PushSubscriptionModel> subscriptions, string title, string message, string? url, string? tag = null)
     {
-        if (!subscriptions.Any()) return;
+        if (!subscriptions.Any()) return 0;
 
         var subject = _config["VapidDetails:Subject"] ?? "mailto:info@regibazar.com";
         var publicKey = _config["VapidDetails:PublicKey"];
@@ -220,7 +236,7 @@ public class PushNotificationService : IPushNotificationService
         if (string.IsNullOrEmpty(publicKey) || string.IsNullOrEmpty(privateKey))
         {
             _logger.LogWarning("VAPID Keys not configured in appsettings.json.");
-            return;
+            return 0;
         }
 
         var vapidDetails = new VapidDetails(subject, publicKey, privateKey);
@@ -240,6 +256,8 @@ public class PushNotificationService : IPushNotificationService
             }
         });
 
+        var delivered = 0;
+
         foreach (var sub in subscriptions)
         {
             try
@@ -247,6 +265,7 @@ public class PushNotificationService : IPushNotificationService
                 var pushSubscription = new PushSubscription(sub.Endpoint, sub.P256dh, sub.Auth);
                 await webPushClient.SendNotificationAsync(pushSubscription, jsonPayload, vapidDetails);
                 sub.LastUsedAt = DateTime.UtcNow;
+                delivered++;
             }
             catch (WebPushException exception)
             {
@@ -264,5 +283,6 @@ public class PushNotificationService : IPushNotificationService
         }
 
         await _db.SaveChangesAsync();
+        return delivered;
     }
 }

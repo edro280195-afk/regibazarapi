@@ -150,6 +150,9 @@ builder.Services.AddHostedService<PackagesReminderService>();
 // ── Notificaciones inteligentes al admin (por vencer, saldos, pulso semanal) ──
 builder.Services.AddHostedService<AdminNotificationsService>();
 
+// ── Campanitas de pedidos (aviso a la hora que pidió la clienta) ──
+builder.Services.AddHostedService<OrderRemindersService>();
+
 // ── SignalR ──
 builder.Services.AddSignalR();
 

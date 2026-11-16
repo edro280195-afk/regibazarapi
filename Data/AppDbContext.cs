@@ -38,6 +38,7 @@ public class AppDbContext : DbContext
     public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
     public DbSet<SalesPeriod> SalesPeriods => Set<SalesPeriod>();
     public DbSet<OrderPackage> OrderPackages => Set<OrderPackage>();
+    public DbSet<OrderReminder> OrderReminders => Set<OrderReminder>();
     public DbSet<FcmToken> FcmTokens => Set<FcmToken>();
 
     // Inventario físico de bodega (independiente del POS legado)
@@ -376,6 +377,17 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(p => p.QrCodeValue).IsUnique();
             entity.HasIndex(p => p.OrderId); // Útil cuando pidas "Todas las bolsas de la orden X"
+        });
+
+        // Campanita (recordatorio) por pedido: una sola por pedido; se borra con el pedido.
+        modelBuilder.Entity<OrderReminder>(entity =>
+        {
+            entity.HasIndex(r => r.OrderId).IsUnique();
+            entity.HasIndex(r => new { r.SentAt, r.RemindAt }); // Consulta del servicio: pendientes ya vencidos
+            entity.HasOne(r => r.Order)
+                  .WithMany()
+                  .HasForeignKey(r => r.OrderId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
 
         // Proveedores e Inversiones

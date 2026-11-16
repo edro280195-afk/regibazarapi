@@ -1586,6 +1586,49 @@ namespace EntregasApi.Migrations
                     b.ToTable("OrderPayments");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.OrderReminder", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("LeadMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("RemindAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("SentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("TargetAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.HasIndex("SentAt", "RemindAt");
+
+                    b.ToTable("OrderReminders");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.Product", b =>
                 {
                     b.Property<int>("Id")
@@ -2939,6 +2982,17 @@ namespace EntregasApi.Migrations
                         .IsRequired();
 
                     b.Navigation("CashRegisterSession");
+
+                    b.Navigation("Order");
+                });
+
+            modelBuilder.Entity("EntregasApi.Models.OrderReminder", b =>
+                {
+                    b.HasOne("EntregasApi.Models.Order", "Order")
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("Order");
                 });
