@@ -30,10 +30,7 @@ namespace EntregasApi.Migrations
             migrationBuilder.DropColumn(
                 name: "AlternativeAddress",
                 table: "Orders");
-
-            migrationBuilder.DropColumn(
-                name: "ReturnedAt",
-                table: "OrderPackages");
+            migrationBuilder.Sql("ALTER TABLE \"OrderPackages\" DROP COLUMN IF EXISTS \"ReturnedAt\";");
         }
     }
 }

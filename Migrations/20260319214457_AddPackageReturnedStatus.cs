@@ -10,19 +10,17 @@ namespace EntregasApi.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<DateTime>(
-                name: "ReturnedAt",
-                table: "OrderPackages",
-                type: "timestamp with time zone",
-                nullable: true);
+            // 20260319182010_AddAlternativeAddress ya agrega esta misma columna; en una base nueva
+            // el AddColumn directo fallaba con "column already exists". En producción esta migración
+            // ya está aplicada y no se vuelve a ejecutar, así que solo se vuelve idempotente.
+            migrationBuilder.Sql(
+                "ALTER TABLE \"OrderPackages\" ADD COLUMN IF NOT EXISTS \"ReturnedAt\" timestamp with time zone;");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "ReturnedAt",
-                table: "OrderPackages");
+            migrationBuilder.Sql("ALTER TABLE \"OrderPackages\" DROP COLUMN IF EXISTS \"ReturnedAt\";");
         }
     }
 }
