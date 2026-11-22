@@ -979,7 +979,10 @@ public class DriverController : ControllerBase
             Type = expense.ExpenseType 
         });
 
-        return Ok(expense);
+        // Devolver un DTO, no la entidad: EF enlaza expense.DeliveryRoute ↔ route.Expenses (ambos rastreados)
+        // y serializar la entidad lanza JsonException por ciclo → 500 después de haber guardado el gasto.
+        return Ok(new DriverExpenseDto(expense.Id, expense.DeliveryRouteId ?? route.Id, route.Name, expense.Amount,
+            expense.ExpenseType, expense.Date, expense.Notes, expense.EvidencePath, expense.CreatedAt));
     }
 
 
