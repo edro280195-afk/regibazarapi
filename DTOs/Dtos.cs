@@ -1223,19 +1223,22 @@ public record PosVoiceRequest(string Text, int? OrderId = null);
 public record PosVoiceResponse(string Message, string? AudioBase64, List<PosVoiceAction> Actions);
 public record PosVoiceAction(string Type, string? ClientName = null, string? ProductName = null, decimal? Price = null, int? Quantity = null);
 
-// ── Pago con Mercado Pago (Checkout Pro - Pedidos) ──
-public record CheckoutProPreferenceResponse(
-    string PreferenceId,
-    string InitPoint,
-    decimal Amount);
+// ── Pago con Tarjeta (Mercado Pago Checkout API - Pedidos) ──
+public record CardPaymentRequest(
+    string CardToken,
+    string PaymentMethodId,
+    string? IssuerId,
+    int Installments,
+    string? PayerEmail = null,
+    string? CardholderName = null,
+    string? DeviceSessionId = null);
 
-public record VerifyOrderPaymentResponse(
+public record CardPaymentResultDto(
     string Status,
     string StatusDetail,
     decimal Amount,
     string Message,
-    long? PaymentId = null,
-    bool OrderPaid = false);
+    long? PaymentId = null);
 
 // ── Identidad multi-señal de clientas ──
 

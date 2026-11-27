@@ -320,13 +320,19 @@ public class ClientViewController : ControllerBase
         return Ok(new { message = "Instrucciones actualizadas." });
     }
 
-    /// <summary>POST /api/pedido/{token}/payment/checkout-pro - Crea una preferencia de Mercado Pago Checkout Pro para liquidar el saldo del pedido</summary>
-    [HttpPost("payment/checkout-pro")]
+    /// <summary>POST /api/pedido/{token}/payment/card - La clienta paga con tarjeta (crédito o débito, física o digital) directo en la página</summary>
+    [HttpPost("payment/card")]
     [AllowAnonymous]
-    public async Task<ActionResult<CheckoutProPreferenceResponse>> CreateCheckoutPro(
+    public async Task<ActionResult<CardPaymentResultDto>> PayWithCard(
         string accessToken,
+        [FromBody] CardPaymentRequest req,
         [FromServices] IMercadoPagoOrderService mpOrderService)
     {
+        if (string.IsNullOrWhiteSpace(req.CardToken) ||
+            string.IsNullOrWhiteSpace(req.PaymentMethodId) ||
+            req.Installments < 1)
+            return BadRequest(new { message = "Datos de pago incompletos." });
+
         var order = await _db.Orders
             .Include(o => o.Payments)
             .Include(o => o.Client)
@@ -343,31 +349,13 @@ public class ClientViewController : ControllerBase
         try
         {
             var webhookBaseUrl = $"{Request.Scheme}://{Request.Host}";
-            var pref = await mpOrderService.CreateOrderPreferenceAsync(order, webhookBaseUrl);
-            return Ok(pref);
+            var result = await mpOrderService.ProcessOrderCardPaymentAsync(order, req, webhookBaseUrl);
+            return Ok(result);
         }
         catch (InvalidOperationException ex)
         {
             return StatusCode(502, new { message = ex.Message });
         }
-    }
-
-    /// <summary>POST /api/pedido/{token}/payment/verify/{paymentId} - Verifica y acredita un pago de Mercado Pago al volver de Checkout Pro</summary>
-    [HttpPost("payment/verify/{paymentId:long}")]
-    [AllowAnonymous]
-    public async Task<ActionResult<VerifyOrderPaymentResponse>> VerifyCheckoutProPayment(
-        string accessToken,
-        long paymentId,
-        [FromServices] IMercadoPagoOrderService mpOrderService)
-    {
-        var order = await _db.Orders
-            .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
-
-        if (order == null) return NotFound(new { message = "Pedido no encontrado." });
-        if (!IsPublicLinkAvailable(order, DateTime.UtcNow)) return StatusCode(410, new { message = "Este enlace ha expirado." });
-
-        var result = await mpOrderService.ReconcileOrderPaymentAsync(paymentId, expectedOrderId: order.Id);
-        return Ok(result);
     }
 
     private static bool IsPublicPaymentAvailable(Order order)

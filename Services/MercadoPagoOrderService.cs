@@ -11,8 +11,8 @@ namespace EntregasApi.Services;
 
 public interface IMercadoPagoOrderService
 {
-    Task<CheckoutProPreferenceResponse> CreateOrderPreferenceAsync(Order order, string? webhookBaseUrl = null);
-    Task<VerifyOrderPaymentResponse> ReconcileOrderPaymentAsync(long mpPaymentId, int? expectedOrderId = null);
+    Task<CardPaymentResultDto> ProcessOrderCardPaymentAsync(Order order, CardPaymentRequest req, string? webhookBaseUrl = null);
+    Task ReconcileOrderPaymentAsync(long mpPaymentId);
     Task<MpPaymentLookupResult?> FetchPaymentAsync(long mpPaymentId);
 }
 
@@ -32,12 +32,6 @@ public sealed class MpPaymentLookupResult
 
     [JsonPropertyName("transaction_amount")]
     public decimal TransactionAmount { get; set; }
-
-    [JsonPropertyName("payment_type_id")]
-    public string? PaymentTypeId { get; set; }
-
-    [JsonPropertyName("payment_method_id")]
-    public string? PaymentMethodId { get; set; }
 }
 
 public class MercadoPagoOrderService : IMercadoPagoOrderService
@@ -67,7 +61,10 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         _config = config;
     }
 
-    public async Task<CheckoutProPreferenceResponse> CreateOrderPreferenceAsync(Order order, string? webhookBaseUrl = null)
+    public async Task<CardPaymentResultDto> ProcessOrderCardPaymentAsync(
+        Order order,
+        CardPaymentRequest req,
+        string? webhookBaseUrl = null)
     {
         var balanceDue = Math.Round(order.BalanceDue, 2, MidpointRounding.AwayFromZero);
         if (balanceDue <= 0m)
@@ -76,9 +73,6 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         var mpAccessToken = _config["MercadoPago:AccessToken"];
         if (string.IsNullOrWhiteSpace(mpAccessToken))
             throw new InvalidOperationException("MercadoPago:AccessToken no configurado.");
-
-        var frontendUrl = (_config["App:FrontendUrl"] ?? "https://regibazar.com").TrimEnd('/');
-        var returnUrl = $"{frontendUrl}/pedido/{order.AccessToken}";
 
         var configuredApiUrl = _config["App:ApiUrl"]?.TrimEnd('/');
         var notificationBase = !string.IsNullOrWhiteSpace(configuredApiUrl)
@@ -89,64 +83,64 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
                 ? webhookBaseUrl.TrimEnd('/')
                 : "https://regibazarapi.onrender.com";
 
+        var payerEmail = !string.IsNullOrWhiteSpace(req.PayerEmail) && req.PayerEmail.Contains('@')
+            ? req.PayerEmail.Trim().ToLowerInvariant()
+            : $"cliente.pedido{order.Id}@regibazar.com";
+
+        var fullName = !string.IsNullOrWhiteSpace(req.CardholderName)
+            ? req.CardholderName.Trim()
+            : order.Client?.Name;
+        var (firstName, lastName) = SplitClientName(fullName);
+        var cleanPhone = CleanPhoneDigits(order.Client?.Phone);
+
         var itemSummary = order.Items != null && order.Items.Count > 0
             ? string.Join(", ", order.Items.Select(i => i.Quantity > 1 ? $"{i.Quantity}x {i.ProductName}" : i.ProductName))
-            : $"Saldo pendiente del pedido #{order.Id}";
+            : $"Pedido #{order.Id} - Regi Bazar";
         if (itemSummary.Length > 240)
             itemSummary = itemSummary[..237] + "...";
 
-        var (firstName, lastName) = SplitClientName(order.Client?.Name);
-        var cleanPhone = CleanPhoneDigits(order.Client?.Phone);
+        long? issuerId = long.TryParse(req.IssuerId, out var parsedIssuer) ? parsedIssuer : null;
 
-        // No enviamos email fijo del comercio: Checkout Pro usa el correo real de la clienta
-        // (su cuenta de Mercado Pago o el que capture al pagar), evitando falsos positivos antifraude.
-        object? payer = null;
-        if (!string.IsNullOrWhiteSpace(firstName) || !string.IsNullOrWhiteSpace(cleanPhone))
+        var paymentBody = new
         {
-            payer = new
-            {
-                name = firstName,
-                surname = lastName,
-                phone = !string.IsNullOrWhiteSpace(cleanPhone)
-                    ? new { area_code = "52", number = cleanPhone }
-                    : null
-            };
-        }
-
-        var preferenceBody = new
-        {
-            items = new[]
-            {
-                new
-                {
-                    id = $"order-{order.Id}",
-                    title = $"Pedido #{order.Id} - Regi Bazar",
-                    description = itemSummary,
-                    category_id = "retail",
-                    quantity = 1,
-                    currency_id = "MXN",
-                    unit_price = balanceDue
-                }
-            },
-            payer,
-            payment_methods = new
-            {
-                excluded_payment_types = new[]
-                {
-                    new { id = "ticket" },
-                    new { id = "atm" }
-                }
-            },
-            back_urls = new
-            {
-                success = $"{returnUrl}?mp_return=success",
-                pending = $"{returnUrl}?mp_return=pending",
-                failure = $"{returnUrl}?mp_return=failure"
-            },
-            auto_return = "approved",
-            external_reference = $"order_{order.Id}",
+            transaction_amount = balanceDue,
+            token = req.CardToken,
+            description = $"Pedido #{order.Id} - Regi Bazar",
+            installments = Math.Max(1, req.Installments),
+            payment_method_id = req.PaymentMethodId,
+            issuer_id = issuerId,
             statement_descriptor = "REGI BAZAR",
             notification_url = $"{notificationBase}/api/payments/webhook",
+            external_reference = $"order_{order.Id}",
+            payer = new
+            {
+                email = payerEmail,
+                first_name = firstName,
+                last_name = lastName
+            },
+            additional_info = new
+            {
+                items = new[]
+                {
+                    new
+                    {
+                        id = $"order-{order.Id}",
+                        title = $"Pedido #{order.Id} - Regi Bazar",
+                        description = itemSummary,
+                        category_id = "retail",
+                        quantity = 1,
+                        unit_price = balanceDue
+                    }
+                },
+                payer = new
+                {
+                    first_name = firstName,
+                    last_name = lastName,
+                    phone = !string.IsNullOrWhiteSpace(cleanPhone)
+                        ? new { area_code = "52", number = cleanPhone }
+                        : null
+                }
+            },
             metadata = new
             {
                 order_id = order.Id,
@@ -156,38 +150,79 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
 
         using var httpClient = _httpClientFactory.CreateClient();
         httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {mpAccessToken}");
+        httpClient.DefaultRequestHeaders.Add("X-Idempotency-Key", Guid.NewGuid().ToString());
+
+        // Header antifraude crítico de Mercado Pago (generado por security.js en el navegador)
+        if (!string.IsNullOrWhiteSpace(req.DeviceSessionId))
+        {
+            httpClient.DefaultRequestHeaders.Add("X-meli-session-id", req.DeviceSessionId.Trim());
+        }
 
         HttpResponseMessage httpResponse;
         try
         {
-            httpResponse = await httpClient.PostAsJsonAsync(
-                "https://api.mercadopago.com/checkout/preferences",
-                preferenceBody);
+            httpResponse = await httpClient.PostAsJsonAsync("https://api.mercadopago.com/v1/payments", paymentBody);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[MercadoPago] Error de red creando preferencia para pedido #{order.Id}: {ex.Message}");
+            Console.WriteLine($"[MercadoPago] Error de red en pedido #{order.Id}: {ex.Message}");
             throw new InvalidOperationException("No se pudo conectar con Mercado Pago. Intenta de nuevo.");
         }
 
         var rawBody = await httpResponse.Content.ReadAsStringAsync();
-        Console.WriteLine($"[MercadoPago] Preference Pedido #{order.Id} HTTP {(int)httpResponse.StatusCode}");
+        Console.WriteLine(
+            $"[MercadoPago] POST /v1/payments Pedido #{order.Id} HTTP {(int)httpResponse.StatusCode} " +
+            $"(deviceSession={(string.IsNullOrWhiteSpace(req.DeviceSessionId) ? "NONE" : "OK")}): {rawBody}");
 
         if (!httpResponse.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[MercadoPago] Preference Error Body: {rawBody}");
-            throw new InvalidOperationException("Mercado Pago no pudo iniciar el pago en este momento. Intenta de nuevo.");
+            string mpErrorMsg = "Error al procesar el pago con Mercado Pago.";
+            try
+            {
+                var errDoc = JsonDocument.Parse(rawBody);
+                if (errDoc.RootElement.TryGetProperty("message", out var msgEl))
+                    mpErrorMsg = msgEl.GetString() ?? mpErrorMsg;
+                if (errDoc.RootElement.TryGetProperty("cause", out var causeEl) && causeEl.GetArrayLength() > 0)
+                {
+                    var desc = causeEl[0].TryGetProperty("description", out var d) ? d.GetString() : null;
+                    if (!string.IsNullOrEmpty(desc)) mpErrorMsg = desc;
+                }
+            }
+            catch { }
+            throw new InvalidOperationException(mpErrorMsg);
         }
 
-        var pref = JsonSerializer.Deserialize<MpPreferenceResponse>(rawBody, JsonOpts);
-        var initPoint = !string.IsNullOrWhiteSpace(pref?.InitPoint) ? pref.InitPoint : pref?.SandboxInitPoint;
-        if (pref == null || string.IsNullOrWhiteSpace(pref.Id) || string.IsNullOrWhiteSpace(initPoint))
+        MpPaymentLookupResult? mpResult;
+        try
         {
-            Console.WriteLine($"[MercadoPago] Preference inválida: {rawBody}");
+            mpResult = JsonSerializer.Deserialize<MpPaymentLookupResult>(rawBody, JsonOpts);
+        }
+        catch
+        {
             throw new InvalidOperationException("Respuesta inesperada de Mercado Pago.");
         }
 
-        return new CheckoutProPreferenceResponse(pref.Id, initPoint, balanceDue);
+        if (mpResult == null)
+            throw new InvalidOperationException("Error al procesar la respuesta de Mercado Pago.");
+
+        // Regla crítica: SOLO registramos el pago como acreditado cuando Mercado Pago responde "approved".
+        // Si nace en "in_process" o "pending", NO lo marcamos pagado todavía; el webhook lo acreditará
+        // automáticamente únicamente si Mercado Pago lo aprueba.
+        if (mpResult.Status == "approved")
+        {
+            await CreditApprovedOrderPaymentAsync(order, mpResult.Id, balanceDue, mpResult.StatusDetail, "Cliente");
+        }
+
+        var message = mpResult.Status switch
+        {
+            "approved" => "¡Pago aprobado con éxito! 🎉",
+            "in_process" => "Tu pago está en revisión por Mercado Pago. En cuanto se apruebe se reflejará automáticamente 💕",
+            "pending" => "Pago pendiente de confirmación.",
+            "rejected" => GetRejectionMessage(mpResult.StatusDetail),
+            _ => "No se pudo procesar el pago. Intenta con otra tarjeta."
+        };
+
+        return new CardPaymentResultDto(mpResult.Status, mpResult.StatusDetail, balanceDue, message, mpResult.Id);
     }
 
     public async Task<MpPaymentLookupResult?> FetchPaymentAsync(long mpPaymentId)
@@ -223,42 +258,16 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         return mpPayment;
     }
 
-    public async Task<VerifyOrderPaymentResponse> ReconcileOrderPaymentAsync(long mpPaymentId, int? expectedOrderId = null)
+    public async Task ReconcileOrderPaymentAsync(long mpPaymentId)
     {
         var mpPayment = await FetchPaymentAsync(mpPaymentId);
-        if (mpPayment == null)
-        {
-            return new VerifyOrderPaymentResponse(
-                Status: "error",
-                StatusDetail: "lookup_failed",
-                Amount: 0m,
-                Message: "No pudimos verificar tu pago con Mercado Pago todavía. Intenta de nuevo en unos segundos.",
-                PaymentId: mpPaymentId,
-                OrderPaid: false);
-        }
+        if (mpPayment == null) return;
 
         if (string.IsNullOrWhiteSpace(mpPayment.ExternalReference) ||
             !mpPayment.ExternalReference.StartsWith("order_", StringComparison.OrdinalIgnoreCase) ||
             !int.TryParse(mpPayment.ExternalReference["order_".Length..], out var orderId))
         {
-            return new VerifyOrderPaymentResponse(
-                Status: "error",
-                StatusDetail: "invalid_reference",
-                Amount: mpPayment.TransactionAmount,
-                Message: "Este pago no corresponde a un pedido válido.",
-                PaymentId: mpPayment.Id,
-                OrderPaid: false);
-        }
-
-        if (expectedOrderId.HasValue && orderId != expectedOrderId.Value)
-        {
-            return new VerifyOrderPaymentResponse(
-                Status: "error",
-                StatusDetail: "order_mismatch",
-                Amount: 0m,
-                Message: "Este pago no pertenece a este pedido.",
-                PaymentId: mpPayment.Id,
-                OrderPaid: false);
+            return;
         }
 
         var order = await _db.Orders
@@ -268,57 +277,31 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
 
         if (order == null)
         {
-            Console.WriteLine($"[MercadoPago] Pedido #{orderId} no encontrado para MP#{mpPayment.Id}.");
-            return new VerifyOrderPaymentResponse(
-                Status: "error",
-                StatusDetail: "order_not_found",
-                Amount: mpPayment.TransactionAmount,
-                Message: "Pedido no encontrado.",
-                PaymentId: mpPayment.Id,
-                OrderPaid: false);
+            Console.WriteLine($"[Webhook] Pedido #{orderId} no encontrado para MP#{mpPayment.Id}.");
+            return;
         }
 
         var existingPayment = order.Payments?
             .FirstOrDefault(p => OrderPaymentPolicy.TryGetMercadoPagoId(p.Notes) == mpPayment.Id);
 
-        // Regla crítica: SOLO acreditamos el pago en la BD cuando Mercado Pago reporta "approved".
-        // Nunca acreditamos "in_process" ni "pending" para evitar falsos pagados.
         if (mpPayment.Status == "approved")
         {
             if (existingPayment == null)
             {
-                var payment = new OrderPayment
-                {
-                    OrderId = order.Id,
-                    Amount = mpPayment.TransactionAmount,
-                    Method = "Tarjeta",
-                    Date = DateTime.UtcNow,
-                    RegisteredBy = "Mercado Pago",
-                    Notes = $"MP#{mpPayment.Id} | {mpPayment.StatusDetail}"
-                };
-                _db.OrderPayments.Add(payment);
-
-                if (order.Status is OrderStatus.Pending or OrderStatus.Postponed)
-                {
-                    order.Status = OrderStatus.Confirmed;
-                }
-
-                await _db.SaveChangesAsync();
-
-                var newTotalPaid = (order.Payments?.Sum(p => p.Amount) ?? 0m);
-                await NotifyDriverBalanceChangedAsync(order, newTotalPaid);
-                await NotifyAdminsAsync(order, mpPayment.TransactionAmount, "aprobado");
+                await CreditApprovedOrderPaymentAsync(
+                    order,
+                    mpPayment.Id,
+                    mpPayment.TransactionAmount,
+                    mpPayment.StatusDetail,
+                    "Sistema (Webhook)");
             }
             else if (existingPayment.Notes != null &&
                      !existingPayment.Notes.Contains("accredited", StringComparison.OrdinalIgnoreCase) &&
                      !existingPayment.Notes.Contains("approved", StringComparison.OrdinalIgnoreCase))
             {
-                // Pago legacy que existía como in_process y finalmente se aprobó
                 existingPayment.Notes = $"MP#{mpPayment.Id} | {mpPayment.StatusDetail}";
                 if (order.Status is OrderStatus.Pending or OrderStatus.Postponed)
-                {
                     order.Status = OrderStatus.Confirmed;
-                }
 
                 await _db.SaveChangesAsync();
                 await NotifyAdminsAsync(order, mpPayment.TransactionAmount, "confirmado");
@@ -326,12 +309,11 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         }
         else if (OrderPaymentPolicy.ShouldRevertCardPayment(mpPayment.Status))
         {
-            // Rechazado / cancelado / reembolsado / contracargo: si existía registrado, se retira.
             if (existingPayment != null)
             {
                 var removedAmount = existingPayment.Amount;
                 Console.WriteLine(
-                    $"[MercadoPago] MP#{mpPayment.Id} quedó '{mpPayment.Status}' ({mpPayment.StatusDetail}): " +
+                    $"[Webhook] MP#{mpPayment.Id} quedó '{mpPayment.Status}' ({mpPayment.StatusDetail}): " +
                     $"se quita el pago #{existingPayment.Id} (${removedAmount:F2}) del pedido #{order.Id}.");
 
                 _db.OrderPayments.Remove(existingPayment);
@@ -352,29 +334,44 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
             else
             {
                 Console.WriteLine(
-                    $"[MercadoPago] MP#{mpPayment.Id} quedó '{mpPayment.Status}' ({mpPayment.StatusDetail}) " +
-                    $"para pedido #{order.Id} (no estaba acreditado, sin cambios).");
+                    $"[Webhook] MP#{mpPayment.Id} quedó '{mpPayment.Status}' ({mpPayment.StatusDetail}) " +
+                    $"para pedido #{order.Id} (no estaba acreditado).");
             }
         }
+    }
 
-        var message = mpPayment.Status switch
+    private async Task CreditApprovedOrderPaymentAsync(
+        Order order,
+        long mpPaymentId,
+        decimal amount,
+        string statusDetail,
+        string registeredBy)
+    {
+        var alreadyExists = order.Payments?
+            .Any(p => OrderPaymentPolicy.TryGetMercadoPagoId(p.Notes) == mpPaymentId) == true;
+        if (alreadyExists) return;
+
+        var payment = new OrderPayment
         {
-            "approved" => "¡Pago aprobado con éxito! Tu pedido ya quedó registrado 🎉",
-            "in_process" or "pending" or "authorized" =>
-                "Mercado Pago está verificando tu pago. En cuanto se apruebe, tu pedido se actualizará automáticamente 💕",
-            "rejected" => GetRejectionMessage(mpPayment.StatusDetail),
-            "cancelled" => "El pago fue cancelado. Puedes intentarlo de nuevo cuando gustes.",
-            "refunded" or "charged_back" => "Este pago fue reembolsado.",
-            _ => "No se pudo confirmar el pago. Puedes intentarlo de nuevo o elegir otro método."
+            OrderId = order.Id,
+            Amount = amount,
+            Method = "Tarjeta",
+            Date = DateTime.UtcNow,
+            RegisteredBy = registeredBy,
+            Notes = $"MP#{mpPaymentId} | {statusDetail}"
         };
+        _db.OrderPayments.Add(payment);
 
-        return new VerifyOrderPaymentResponse(
-            Status: mpPayment.Status,
-            StatusDetail: mpPayment.StatusDetail,
-            Amount: mpPayment.TransactionAmount,
-            Message: message,
-            PaymentId: mpPayment.Id,
-            OrderPaid: order.BalanceDue <= 0m);
+        if (order.Status is OrderStatus.Pending or OrderStatus.Postponed)
+        {
+            order.Status = OrderStatus.Confirmed;
+        }
+
+        await _db.SaveChangesAsync();
+
+        var newTotalPaid = order.Payments?.Sum(p => p.Amount) ?? 0m;
+        await NotifyDriverBalanceChangedAsync(order, newTotalPaid);
+        await NotifyAdminsAsync(order, amount, "aprobado");
     }
 
     private async Task NotifyDriverBalanceChangedAsync(Order order, decimal totalPaid)
@@ -402,15 +399,15 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         {
             OrderId = order.Id,
             Status = order.Status.ToString(),
-            ChangeType = "card_payment_webhook",
+            ChangeType = "card_payment",
             ClientName = clientName,
             AmountPaid = amount
         });
 
         await _push.SendNotificationToAdminsAsync(
             $"💳 Pago {action}: ${amount:F2}",
-            $"Pedido #{order.Id} de {clientName} actualizado vía Mercado Pago.",
-            tag: "card-payment-webhook");
+            $"Pedido #{order.Id} de {clientName} con tarjeta vía Mercado Pago.",
+            tag: "card-payment");
     }
 
     private static (string? firstName, string? lastName) SplitClientName(string? fullName)
@@ -433,27 +430,15 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
 
     public static string GetRejectionMessage(string? statusDetail) => statusDetail switch
     {
-        "cc_rejected_insufficient_amount" => "Fondos insuficientes. Verifica tu saldo o intenta con otra tarjeta.",
+        "cc_rejected_insufficient_amount" => "Fondos insuficientes. Verifica tu saldo.",
         "cc_rejected_bad_filled_card_number" => "Número de tarjeta incorrecto.",
         "cc_rejected_bad_filled_date" => "Fecha de vencimiento incorrecta.",
         "cc_rejected_bad_filled_security_code" => "Código de seguridad incorrecto.",
-        "cc_rejected_blacklist" => "No pudimos procesar esta tarjeta. Intenta con otra o con tu cuenta de Mercado Pago.",
-        "cc_rejected_call_for_authorize" => "Tu banco requiere autorización para esta compra. Autorízala en tu app bancaria e intenta de nuevo.",
-        "cc_rejected_card_disabled" => "Tu tarjeta no está activa para compras en línea. Actívala en tu app bancaria o usa otra tarjeta.",
-        "cc_rejected_duplicated_payment" => "Ya se registró un pago igual hace unos momentos.",
-        "cc_rejected_high_risk" => "Mercado Pago rechazó el pago por seguridad. Intenta pagando con tu cuenta de Mercado Pago o con otra tarjeta.",
-        _ => "El pago fue rechazado. Puedes intentar con otra tarjeta o elegir Transferencia / OXXO / Efectivo."
+        "cc_rejected_blacklist" => "Tarjeta no autorizada. Intenta con otra.",
+        "cc_rejected_call_for_authorize" => "Tu banco requiere autorización. Autorízala en tu app bancaria e intenta de nuevo.",
+        "cc_rejected_card_disabled" => "Tarjeta deshabilitada para compras en línea. Actívala en tu app bancaria o usa otra.",
+        "cc_rejected_duplicated_payment" => "Pago duplicado detectado.",
+        "cc_rejected_high_risk" => "Pago rechazado por validación de seguridad. Intenta con otra tarjeta o método de pago.",
+        _ => "Pago rechazado. Intenta con otra tarjeta o método de pago."
     };
-
-    private sealed class MpPreferenceResponse
-    {
-        [JsonPropertyName("id")]
-        public string Id { get; set; } = "";
-
-        [JsonPropertyName("init_point")]
-        public string InitPoint { get; set; } = "";
-
-        [JsonPropertyName("sandbox_init_point")]
-        public string SandboxInitPoint { get; set; } = "";
-    }
 }
