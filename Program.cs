@@ -143,6 +143,7 @@ builder.Services.AddSingleton<ILabelTemplateDesignValidator, LabelTemplateDesign
 builder.Services.AddScoped<IClientResolverService, ClientResolverService>();
 builder.Services.AddScoped<ILiveCaptureService, LiveCaptureService>();
 builder.Services.AddScoped<IColoniaClassifierService, ColoniaClassifierService>();
+builder.Services.AddScoped<IMercadoPagoOrderService, MercadoPagoOrderService>();
 
 // ── Recordatorios de bolsas pendientes (background) ──
 builder.Services.AddHostedService<PackagesReminderService>();
