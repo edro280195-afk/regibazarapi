@@ -397,6 +397,7 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         await _push.SendNotificationToAdminsAsync(
             $"💳 Pago por confirmar: ${amount:F2} ({clientName})",
             $"Pedido #{order.Id} · {mpRef}. Revisa tu Mercado Pago y confirma de recibido.",
+            url: "/admin/orders",
             tag: "payment-report");
     }
 

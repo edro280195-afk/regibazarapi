@@ -70,11 +70,7 @@ public class PushNotificationService : IPushNotificationService
 
     public async Task SendNotificationToAdminsAsync(string title, string message, string? url = null, string? tag = null)
     {
-        var subscriptions = await _db.PushSubscriptions
-            .Where(s => s.Role == "admin")
-            .ToListAsync();
-
-        await SendToSubscriptionsAsync(subscriptions, title, message, url, tag);
+        await TrySendNotificationToAdminsAsync(title, message, url, tag);
     }
 
     public async Task<int> TrySendNotificationToAdminsAsync(string title, string message, string? url = null, string? tag = null)
@@ -83,7 +79,25 @@ public class PushNotificationService : IPushNotificationService
             .Where(s => s.Role == "admin")
             .ToListAsync();
 
-        return await SendToSubscriptionsAsync(subscriptions, title, message, url, tag);
+        var webDelivered = await SendToSubscriptionsAsync(subscriptions, title, message, url, tag);
+
+        var adminFcmTokens = await _db.FcmTokens
+            .Where(t => t.Role == "admin")
+            .Select(t => t.Token)
+            .ToListAsync();
+
+        if (adminFcmTokens.Count > 0)
+        {
+            var data = new Dictionary<string, string>
+            {
+                { "type", tag ?? "admin" },
+                { "url", url ?? "/admin/orders" }
+            };
+            await _fcm.SendToTokensAsync(adminFcmTokens, title, message, data);
+        }
+
+        Console.WriteLine($"[Push] Admins '{title}': WebPush {webDelivered}/{subscriptions.Count}, FCM tokens={adminFcmTokens.Count}");
+        return webDelivered + adminFcmTokens.Count;
     }
 
     // ═══════════════════════════════════════════
@@ -248,8 +262,8 @@ public class PushNotificationService : IPushNotificationService
             {
                 title,
                 body = message,
-                icon = "/assets/icons/icon-192x192.png",
-                badge = "/assets/icons/icon-72x72.png",
+                icon = "/pwa-icon.png",
+                badge = "/pwa-icon.png",
                 vibrate = new[] { 200, 100, 200 },
                 tag = tag ?? "general",
                 data = new { url = url ?? "/" }

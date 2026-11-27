@@ -440,6 +440,7 @@ public class ClientViewController : ControllerBase
         await _push.SendNotificationToAdminsAsync(
             $"💸 Pago reportado: ${reportedAmount:F2} ({clientName})",
             $"Pedido #{order.Id} ({cleanMethod}). Revisa y confirma de recibido.",
+            url: "/admin/orders",
             tag: "payment-report");
 
         return Ok(new OrderPaymentReportDto(

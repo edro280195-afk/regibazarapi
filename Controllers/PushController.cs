@@ -111,8 +111,14 @@ public class PushController : ControllerBase
             existing.Auth = req.Keys.Auth;
             existing.LastUsedAt = DateTime.UtcNow;
 
-            // Actualizar role/identifiers si vienen
-            if (!string.IsNullOrEmpty(req.Role)) existing.Role = req.Role;
+            // Actualizar role/identifiers si vienen, pero NUNCA degradar un dispositivo "admin"
+            // a "client" solo porque la dueña abrió un enlace de pedido en su propio teléfono.
+            if (!string.IsNullOrEmpty(req.Role) &&
+                !(string.Equals(existing.Role, "admin", StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(req.Role, "client", StringComparison.OrdinalIgnoreCase)))
+            {
+                existing.Role = req.Role;
+            }
             if (req.ClientId.HasValue) existing.ClientId = req.ClientId;
             if (!string.IsNullOrEmpty(req.DriverRouteToken)) existing.DriverRouteToken = req.DriverRouteToken;
         }
