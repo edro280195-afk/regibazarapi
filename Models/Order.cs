@@ -108,6 +108,7 @@ public class Order
     public string? PaymentMethod { get; set; }
 
     public ICollection<OrderPayment> Payments { get; set; } = new List<OrderPayment>();
+    public ICollection<OrderPaymentReport> PaymentReports { get; set; } = new List<OrderPaymentReport>();
     public ICollection<OrderPackage> Packages { get; set; } = new List<OrderPackage>();
 
     [NotMapped]

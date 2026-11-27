@@ -205,18 +205,18 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         if (mpResult == null)
             throw new InvalidOperationException("Error al procesar la respuesta de Mercado Pago.");
 
-        // Regla crítica: SOLO registramos el pago como acreditado cuando Mercado Pago responde "approved".
-        // Si nace en "in_process" o "pending", NO lo marcamos pagado todavía; el webhook lo acreditará
-        // automáticamente únicamente si Mercado Pago lo aprueba.
+        // Regla de validación de la dueña: cuando Mercado Pago aprueba, creamos un aviso de pago
+        // (OrderPaymentReport en estado Pending) para que la dueña revise su cuenta de Mercado Pago
+        // y confirme de recibido antes de marcar el pedido como pagado.
         if (mpResult.Status == "approved")
         {
-            await CreditApprovedOrderPaymentAsync(order, mpResult.Id, balanceDue, mpResult.StatusDetail, "Cliente");
+            await CreatePendingCardPaymentReportAsync(order, mpResult.Id, balanceDue, mpResult.StatusDetail);
         }
 
         var message = mpResult.Status switch
         {
-            "approved" => "¡Pago aprobado con éxito! 🎉",
-            "in_process" => "Tu pago está en revisión por Mercado Pago. En cuanto se apruebe se reflejará automáticamente 💕",
+            "approved" => "¡Pago aprobado por Mercado Pago! Avisamos a Regi Bazar para que confirme de recibido 💕",
+            "in_process" => "Tu pago está en revisión por Mercado Pago. En cuanto se apruebe avisaremos a Regi Bazar 💕",
             "pending" => "Pago pendiente de confirmación.",
             "rejected" => GetRejectionMessage(mpResult.StatusDetail),
             _ => "No se pudo procesar el pago. Intenta con otra tarjeta."
@@ -272,6 +272,7 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
 
         var order = await _db.Orders
             .Include(o => o.Payments)
+            .Include(o => o.PaymentReports)
             .Include(o => o.Client)
             .FirstOrDefaultAsync(o => o.Id == orderId);
 
@@ -283,19 +284,22 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
 
         var existingPayment = order.Payments?
             .FirstOrDefault(p => OrderPaymentPolicy.TryGetMercadoPagoId(p.Notes) == mpPayment.Id);
+        var mpRef = $"MP#{mpPayment.Id}";
+        var existingReport = order.PaymentReports?
+            .FirstOrDefault(r => string.Equals(r.Reference, mpRef, StringComparison.OrdinalIgnoreCase));
 
         if (mpPayment.Status == "approved")
         {
-            if (existingPayment == null)
+            if (existingPayment == null && existingReport == null)
             {
-                await CreditApprovedOrderPaymentAsync(
+                await CreatePendingCardPaymentReportAsync(
                     order,
                     mpPayment.Id,
                     mpPayment.TransactionAmount,
-                    mpPayment.StatusDetail,
-                    "Sistema (Webhook)");
+                    mpPayment.StatusDetail);
             }
-            else if (existingPayment.Notes != null &&
+            else if (existingPayment != null &&
+                     existingPayment.Notes != null &&
                      !existingPayment.Notes.Contains("accredited", StringComparison.OrdinalIgnoreCase) &&
                      !existingPayment.Notes.Contains("approved", StringComparison.OrdinalIgnoreCase))
             {
@@ -309,6 +313,16 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         }
         else if (OrderPaymentPolicy.ShouldRevertCardPayment(mpPayment.Status))
         {
+            if (existingReport != null && existingReport.Status == PaymentReportStatus.Pending)
+            {
+                existingReport.Status = PaymentReportStatus.Rejected;
+                existingReport.ReviewedAt = DateTime.UtcNow;
+                existingReport.ReviewedBy = "Mercado Pago (Webhook)";
+                existingReport.RejectionReason = $"Mercado Pago cambió el estado a '{mpPayment.Status}' ({mpPayment.StatusDetail}).";
+                await _db.SaveChangesAsync();
+                await _hub.Clients.Group($"Order_{order.AccessToken}").SendAsync("DeliveryUpdate", new { OrderId = order.Id, ChangeType = "payment_report_rejected" });
+            }
+
             if (existingPayment != null)
             {
                 var removedAmount = existingPayment.Amount;
@@ -340,38 +354,50 @@ public class MercadoPagoOrderService : IMercadoPagoOrderService
         }
     }
 
-    private async Task CreditApprovedOrderPaymentAsync(
+    private async Task CreatePendingCardPaymentReportAsync(
         Order order,
         long mpPaymentId,
         decimal amount,
-        string statusDetail,
-        string registeredBy)
+        string statusDetail)
     {
-        var alreadyExists = order.Payments?
-            .Any(p => OrderPaymentPolicy.TryGetMercadoPagoId(p.Notes) == mpPaymentId) == true;
-        if (alreadyExists) return;
+        var mpRef = $"MP#{mpPaymentId}";
+        var alreadyReported = await _db.OrderPaymentReports
+            .AnyAsync(r => r.OrderId == order.Id && r.Reference == mpRef);
+        if (alreadyReported) return;
 
-        var payment = new OrderPayment
+        var report = new OrderPaymentReport
         {
             OrderId = order.Id,
             Amount = amount,
             Method = "Tarjeta",
-            Date = DateTime.UtcNow,
-            RegisteredBy = registeredBy,
-            Notes = $"MP#{mpPaymentId} | {statusDetail}"
+            Reference = mpRef,
+            Notes = $"Aprobado por Mercado Pago ({statusDetail})",
+            Status = PaymentReportStatus.Pending,
+            CreatedAt = DateTime.UtcNow
         };
-        _db.OrderPayments.Add(payment);
-
-        if (order.Status is OrderStatus.Pending or OrderStatus.Postponed)
-        {
-            order.Status = OrderStatus.Confirmed;
-        }
-
+        _db.OrderPaymentReports.Add(report);
         await _db.SaveChangesAsync();
 
-        var newTotalPaid = order.Payments?.Sum(p => p.Amount) ?? 0m;
-        await NotifyDriverBalanceChangedAsync(order, newTotalPaid);
-        await NotifyAdminsAsync(order, amount, "aprobado");
+        var clientName = order.Client?.Name ?? "Clienta";
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            ChangeType = "payment_report",
+            ClientName = clientName,
+            AmountPaid = amount
+        });
+
+        await _hub.Clients.Group($"Order_{order.AccessToken}").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            ChangeType = "payment_report"
+        });
+
+        await _push.SendNotificationToAdminsAsync(
+            $"💳 Pago por confirmar: ${amount:F2} ({clientName})",
+            $"Pedido #{order.Id} · {mpRef}. Revisa tu Mercado Pago y confirma de recibido.",
+            tag: "payment-report");
     }
 
     private async Task NotifyDriverBalanceChangedAsync(Order order, decimal totalPaid)

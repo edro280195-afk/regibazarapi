@@ -694,7 +694,8 @@ public record ClientOrderView(
     DateTime? PublicAccessUntil = null,
     /// <summary>Indica si la clienta puede liquidar el saldo desde el enlace.</summary>
     bool PaymentVisible = false,
-    string? DeliveryTime = null
+    string? DeliveryTime = null,
+    List<OrderPaymentReportDto>? PaymentReports = null
 );
 
 // ── OrderPayment ──
@@ -707,6 +708,26 @@ public record OrderPaymentDto(
     string RegisteredBy,
     string? Notes
 );
+
+public record OrderPaymentReportDto(
+    int Id,
+    int OrderId,
+    decimal Amount,
+    string Method,
+    string? Reference,
+    string? Notes,
+    string? ProofImageUrl,
+    string Status,
+    DateTime CreatedAt,
+    DateTime? ReviewedAt,
+    string? RejectionReason,
+    string? ClientName = null,
+    string? ClientPhone = null,
+    decimal? OrderTotal = null,
+    decimal? OrderBalanceDue = null
+);
+
+public record RejectPaymentReportRequest(string? Reason = null);
 
 
 public record AddPaymentRequest

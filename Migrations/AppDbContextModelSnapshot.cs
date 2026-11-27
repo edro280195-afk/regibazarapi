@@ -1586,6 +1586,58 @@ namespace EntregasApi.Migrations
                     b.ToTable("OrderPayments");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.OrderPaymentReport", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("numeric");
+
+                    b.Property<int?>("ConfirmedPaymentId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProofImageUrl")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Reference")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReviewedBy")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId");
+
+                    b.ToTable("OrderPaymentReports");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.OrderReminder", b =>
                 {
                     b.Property<int>("Id")
@@ -2986,6 +3038,17 @@ namespace EntregasApi.Migrations
                     b.Navigation("Order");
                 });
 
+            modelBuilder.Entity("EntregasApi.Models.OrderPaymentReport", b =>
+                {
+                    b.HasOne("EntregasApi.Models.Order", "Order")
+                        .WithMany("PaymentReports")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
+                });
+
             modelBuilder.Entity("EntregasApi.Models.OrderReminder", b =>
                 {
                     b.HasOne("EntregasApi.Models.Order", "Order")
@@ -3263,6 +3326,8 @@ namespace EntregasApi.Migrations
                     b.Navigation("Items");
 
                     b.Navigation("Packages");
+
+                    b.Navigation("PaymentReports");
 
                     b.Navigation("Payments");
                 });

@@ -2089,6 +2089,162 @@ public class OrdersController : ControllerBase
         });
     }
 
+    // ═══════════════════════════════════════════
+    //  AVISOS DE PAGO POR CONFIRMAR (CLIENTA -> DUEÑA)
+    // ═══════════════════════════════════════════
+
+    [HttpGet("payment-reports/pending")]
+    public async Task<ActionResult<List<OrderPaymentReportDto>>> GetPendingPaymentReports()
+    {
+        var reports = await _db.OrderPaymentReports
+            .Include(r => r.Order).ThenInclude(o => o.Client)
+            .Include(r => r.Order).ThenInclude(o => o.Payments)
+            .Where(r => r.Status == PaymentReportStatus.Pending)
+            .OrderByDescending(r => r.CreatedAt)
+            .ToListAsync();
+
+        return Ok(reports.Select(r => new OrderPaymentReportDto(
+            r.Id, r.OrderId, r.Amount, r.Method, r.Reference, r.Notes,
+            r.ProofImageUrl, r.Status.ToString(), r.CreatedAt, r.ReviewedAt, r.RejectionReason,
+            ClientName: r.Order.Client?.Name,
+            ClientPhone: r.Order.Client?.Phone,
+            OrderTotal: r.Order.Total,
+            OrderBalanceDue: r.Order.BalanceDue
+        )).ToList());
+    }
+
+    [HttpGet("{id:int}/payment-reports")]
+    public async Task<ActionResult<List<OrderPaymentReportDto>>> GetOrderPaymentReports(int id)
+    {
+        var reports = await _db.OrderPaymentReports
+            .Where(r => r.OrderId == id)
+            .OrderByDescending(r => r.CreatedAt)
+            .Select(r => new OrderPaymentReportDto(
+                r.Id, r.OrderId, r.Amount, r.Method, r.Reference, r.Notes,
+                r.ProofImageUrl, r.Status.ToString(), r.CreatedAt, r.ReviewedAt, r.RejectionReason,
+                null, null, null, null))
+            .ToListAsync();
+
+        return Ok(reports);
+    }
+
+    [HttpPost("payment-reports/{reportId:int}/confirm")]
+    public async Task<IActionResult> ConfirmPaymentReport(int reportId)
+    {
+        var report = await _db.OrderPaymentReports
+            .Include(r => r.Order).ThenInclude(o => o.Payments)
+            .Include(r => r.Order).ThenInclude(o => o.Client)
+            .FirstOrDefaultAsync(r => r.Id == reportId);
+
+        if (report == null) return NotFound(new { message = "Aviso de pago no encontrado." });
+        if (report.Status == PaymentReportStatus.Confirmed)
+            return Ok(new { message = "Este pago ya había sido confirmado." });
+        if (report.Status == PaymentReportStatus.Rejected)
+            return BadRequest(new { message = "Este aviso de pago ya fue rechazado." });
+
+        var order = report.Order;
+        var noteParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(report.Reference)) noteParts.Add(report.Reference);
+        if (!string.IsNullOrWhiteSpace(report.Notes)) noteParts.Add(report.Notes);
+
+        var payment = new OrderPayment
+        {
+            OrderId = order.Id,
+            Amount = report.Amount,
+            Method = report.Method,
+            Date = DateTime.UtcNow,
+            RegisteredBy = "Admin (Confirmado)",
+            Notes = noteParts.Count > 0 ? string.Join(" | ", noteParts) : "Confirmado por la dueña"
+        };
+        _db.OrderPayments.Add(payment);
+
+        if (order.Status is Models.OrderStatus.Pending or Models.OrderStatus.Postponed)
+        {
+            order.Status = Models.OrderStatus.Confirmed;
+        }
+
+        await _db.SaveChangesAsync();
+
+        report.Status = PaymentReportStatus.Confirmed;
+        report.ReviewedAt = DateTime.UtcNow;
+        report.ReviewedBy = User.Identity?.Name ?? "Admin";
+        report.ConfirmedPaymentId = payment.Id;
+        await _db.SaveChangesAsync();
+
+        // Notificar a Admins y al enlace en vivo de la clienta
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            ChangeType = "payment_confirmed",
+            ClientName = order.Client?.Name,
+            AmountPaid = report.Amount
+        });
+
+        await _hub.Clients.Group($"Order_{order.AccessToken}").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            ChangeType = "payment_confirmed",
+            AmountPaid = report.Amount
+        });
+
+        // Si el pedido está en ruta, actualizar el saldo al repartidor
+        if (order.DeliveryRouteId.HasValue)
+        {
+            var route = await _db.DeliveryRoutes.FindAsync(order.DeliveryRouteId.Value);
+            if (route != null)
+            {
+                var totalPaid = (order.Payments?.Sum(p => p.Amount) ?? 0m);
+                await _hub.Clients.Group($"Route_{route.DriverToken}").SendAsync("OrderDataChanged", new
+                {
+                    OrderId = order.Id,
+                    ClientName = order.Client?.Name ?? "",
+                    NewTotal = order.Total,
+                    BalanceDue = Math.Max(0m, order.Total - totalPaid),
+                    ChangeType = "payment"
+                });
+            }
+        }
+
+        return Ok(new
+        {
+            message = "Pago confirmado y aplicado al pedido 💖",
+            paymentId = payment.Id,
+            orderId = order.Id,
+            balanceDue = order.BalanceDue
+        });
+    }
+
+    [HttpPost("payment-reports/{reportId:int}/reject")]
+    public async Task<IActionResult> RejectPaymentReport(int reportId, [FromBody] RejectPaymentReportRequest? req)
+    {
+        var report = await _db.OrderPaymentReports
+            .Include(r => r.Order)
+            .FirstOrDefaultAsync(r => r.Id == reportId);
+
+        if (report == null) return NotFound(new { message = "Aviso de pago no encontrado." });
+        if (report.Status != PaymentReportStatus.Pending)
+            return BadRequest(new { message = "Este aviso de pago ya fue revisado." });
+
+        report.Status = PaymentReportStatus.Rejected;
+        report.ReviewedAt = DateTime.UtcNow;
+        report.ReviewedBy = User.Identity?.Name ?? "Admin";
+        report.RejectionReason = string.IsNullOrWhiteSpace(req?.Reason)
+            ? "No se reflejó el pago en la cuenta. Por favor verifica tu comprobante."
+            : req.Reason.Trim();
+
+        await _db.SaveChangesAsync();
+
+        await _hub.Clients.Group($"Order_{report.Order.AccessToken}").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = report.OrderId,
+            ChangeType = "payment_rejected"
+        });
+
+        return Ok(new { message = "Aviso de pago rechazado." });
+    }
+
     [HttpDelete("wipe")]
     [Authorize]
     public async Task<IActionResult> WipeAllOrders()

@@ -35,6 +35,7 @@ public class ClientViewController : ControllerBase
             .Include(o => o.Items)
             .Include(o => o.DeliveryRoute)
             .Include(o => o.Payments)
+            .Include(o => o.PaymentReports)
             .Include(o => o.Deliveries).ThenInclude(d => d.Evidences)
             .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
 
@@ -168,7 +169,13 @@ public class ClientViewController : ControllerBase
             PublicViewMode: publicViewMode,
             PublicAccessUntil: publicAccessUntil,
             PaymentVisible: paymentVisible,
-            DeliveryTime: order.DeliveryTime
+            DeliveryTime: order.DeliveryTime,
+            PaymentReports: (order.PaymentReports ?? new List<OrderPaymentReport>())
+                .OrderByDescending(r => r.CreatedAt)
+                .Select(r => new OrderPaymentReportDto(
+                    r.Id, r.OrderId, r.Amount, r.Method, r.Reference, r.Notes,
+                    r.ProofImageUrl, r.Status.ToString(), r.CreatedAt, r.ReviewedAt, r.RejectionReason))
+                .ToList()
         ));
     }
 
@@ -356,6 +363,89 @@ public class ClientViewController : ControllerBase
         {
             return StatusCode(502, new { message = ex.Message });
         }
+    }
+
+    /// <summary>POST /api/pedido/{token}/payment/report - La clienta avisa que pagó (Transferencia u OXXO) con comprobante opcional</summary>
+    [HttpPost("payment/report")]
+    [AllowAnonymous]
+    [RequestSizeLimit(8_000_000)]
+    [Consumes("multipart/form-data")]
+    public async Task<ActionResult<OrderPaymentReportDto>> ReportPayment(
+        string accessToken,
+        [FromForm] string method,
+        [FromForm] decimal? amount,
+        [FromForm] string? reference,
+        [FromForm] string? notes,
+        [FromForm] IFormFile? file,
+        [FromServices] ICloudinaryService cloudinary)
+    {
+        var order = await _db.Orders
+            .Include(o => o.Payments)
+            .Include(o => o.Client)
+            .FirstOrDefaultAsync(o => o.AccessToken == accessToken);
+
+        if (order == null) return NotFound(new { message = "Pedido no encontrado." });
+        if (!IsPublicLinkAvailable(order, DateTime.UtcNow)) return StatusCode(410, new { message = "Este enlace ha expirado." });
+        if (!IsPublicPaymentAvailable(order)) return BadRequest(new { message = "Este pedido ya no acepta avisos de pago." });
+
+        var reportedAmount = amount is > 0m ? Math.Round(amount.Value, 2, MidpointRounding.AwayFromZero) : Math.Round(order.BalanceDue, 2, MidpointRounding.AwayFromZero);
+        if (reportedAmount <= 0m)
+            return BadRequest(new { message = "Indica un monto válido." });
+
+        var cleanMethod = string.IsNullOrWhiteSpace(method) ? "Transferencia" : method.Trim();
+
+        string? proofUrl = null;
+        if (file is { Length: > 0 })
+        {
+            if (file.Length > 8_000_000)
+                return BadRequest(new { message = "La imagen del comprobante no puede superar 8 MB." });
+
+            try
+            {
+                await using var stream = file.OpenReadStream();
+                proofUrl = await cloudinary.UploadAsync(stream, file.FileName, "order-payment-proofs");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PaymentReport] Error subiendo comprobante: {ex.Message}");
+                return StatusCode(500, new { message = "No se pudo guardar la foto del comprobante. Intenta de nuevo." });
+            }
+        }
+
+        var report = new OrderPaymentReport
+        {
+            OrderId = order.Id,
+            Amount = reportedAmount,
+            Method = cleanMethod,
+            Reference = string.IsNullOrWhiteSpace(reference) ? null : reference.Trim(),
+            Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim(),
+            ProofImageUrl = proofUrl,
+            Status = PaymentReportStatus.Pending,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _db.OrderPaymentReports.Add(report);
+        await _db.SaveChangesAsync();
+
+        var clientName = order.Client?.Name ?? "Clienta";
+        await _hub.Clients.Group("Admins").SendAsync("DeliveryUpdate", new
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            ChangeType = "payment_report",
+            ClientName = clientName,
+            AmountPaid = reportedAmount
+        });
+
+        await _push.SendNotificationToAdminsAsync(
+            $"💸 Pago reportado: ${reportedAmount:F2} ({clientName})",
+            $"Pedido #{order.Id} ({cleanMethod}). Revisa y confirma de recibido.",
+            tag: "payment-report");
+
+        return Ok(new OrderPaymentReportDto(
+            report.Id, report.OrderId, report.Amount, report.Method, report.Reference,
+            report.Notes, report.ProofImageUrl, report.Status.ToString(),
+            report.CreatedAt, report.ReviewedAt, report.RejectionReason));
     }
 
     private static bool IsPublicPaymentAvailable(Order order)
